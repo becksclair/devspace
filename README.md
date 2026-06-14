@@ -38,9 +38,9 @@ programs such as `grep`, `rg`, `find`, `ls`, and `tree` for search and directory
 inspection.
 
 `DEVSPACE_WIDGETS` controls ChatGPT Apps widget iframe usage. `changes`, the
-default, only attaches widget UI to `review_changes`, creating one aggregate
-review card instead of per-tool iframes. Use `full` to restore legacy per-tool
-cards for debugging, or `off` to disable widget UI entirely.
+default, exposes `review_changes` and only attaches widget UI to that aggregate
+review tool. Use `full` to restore legacy per-tool cards for debugging without
+the aggregate review tool, or `off` to disable widget UI entirely.
 
 `DEVSPACE_TOOL_CARD_MODE` remains supported as a deprecated compatibility alias.
 

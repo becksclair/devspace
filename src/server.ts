@@ -172,7 +172,12 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames): string 
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
-  return `Use DevSpace as a local coding workspace. First call ${toolNames.openWorkspace} with a project directory inside an allowed root. Then use the returned workspaceId for all file, search, edit, write, and shell tools. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files. After completing a coherent set of file modifications, call review_changes once to show the user an aggregate diff review.`;
+  const review =
+    config.widgets === "changes"
+      ? " After completing a coherent set of file modifications, call review_changes once to show the user an aggregate diff review."
+      : "";
+
+  return `Use DevSpace as a local coding workspace. First call ${toolNames.openWorkspace} with a project directory inside an allowed root. Then use the returned workspaceId for all file, search, edit, write, and shell tools. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${review}`;
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -495,10 +500,12 @@ function createMcpServer(
         workspaceId: workspace.id,
         workspaceRoot: workspace.root,
       });
-      void reviewCheckpoints.initializeWorkspace({
-        workspaceId: workspace.id,
-        root: workspace.root,
-      });
+      if (config.widgets === "changes") {
+        void reviewCheckpoints.initializeWorkspace({
+          workspaceId: workspace.id,
+          root: workspace.root,
+        });
+      }
       const visibleSkills = workspace.skills
         .filter((skill) => !skill.disableModelInvocation)
         .map((skill) => ({
@@ -804,60 +811,62 @@ function createMcpServer(
     },
   );
 
-  registerAppTool(
-    server,
-    "review_changes",
-    {
-      title: "Review changes",
-      description:
-        "Review aggregate file changes in an open workspace since the last review checkpoint or since the workspace was opened. Use this after a coherent set of file modifications to show a single diff review card.",
-      inputSchema: {
-        workspaceId: z
-          .string()
-          .describe("Workspace identifier returned by open_workspace."),
-        since: z
-          .enum(["last_review", "workspace_open"])
-          .optional()
-          .describe("Defaults to last_review. Use workspace_open to compare against the initial open_workspace checkpoint."),
-        markReviewed: z
-          .boolean()
-          .optional()
-          .describe("Defaults to true. When true, advances the last_review checkpoint to the current workspace state."),
+  if (config.widgets === "changes") {
+    registerAppTool(
+      server,
+      "review_changes",
+      {
+        title: "Review changes",
+        description:
+          "Review aggregate file changes in an open workspace since the last review checkpoint or since the workspace was opened. Use this after a coherent set of file modifications to show a single diff review card.",
+        inputSchema: {
+          workspaceId: z
+            .string()
+            .describe("Workspace identifier returned by open_workspace."),
+          since: z
+            .enum(["last_review", "workspace_open"])
+            .optional()
+            .describe("Defaults to last_review. Use workspace_open to compare against the initial open_workspace checkpoint."),
+          markReviewed: z
+            .boolean()
+            .optional()
+            .describe("Defaults to true. When true, advances the last_review checkpoint to the current workspace state."),
+        },
+        outputSchema: resultOutputSchema(),
+        ...toolWidgetDescriptorMeta(config, "review_changes"),
+        annotations: { readOnlyHint: true },
       },
-      outputSchema: resultOutputSchema(),
-      ...toolWidgetDescriptorMeta(config, "review_changes"),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ workspaceId, since, markReviewed }) => {
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const review = await reviewCheckpoints.reviewChanges({
-        workspaceId,
-        root: workspace.root,
-        since: since ?? "last_review",
-        markReviewed: markReviewed ?? true,
-      });
+      async ({ workspaceId, since, markReviewed }) => {
+        const workspace = workspaces.getWorkspace(workspaceId);
+        const review = await reviewCheckpoints.reviewChanges({
+          workspaceId,
+          root: workspace.root,
+          since: since ?? "last_review",
+          markReviewed: markReviewed ?? true,
+        });
 
-      const content = [textBlock(review.result)];
+        const content = [textBlock(review.result)];
 
-      return {
-        content,
-        _meta: {
-          tool: "review_changes",
-          card: {
-            workspaceId,
-            summary: review.summary,
-            files: review.files,
-            payload: {
-              patch: review.patch,
+        return {
+          content,
+          _meta: {
+            tool: "review_changes",
+            card: {
+              workspaceId,
+              summary: review.summary,
+              files: review.files,
+              payload: {
+                patch: review.patch,
+              },
             },
           },
-        },
-        structuredContent: {
-          result: contentText(content),
-        },
-      };
-    },
-  );
+          structuredContent: {
+            result: contentText(content),
+          },
+        };
+      },
+    );
+  }
 
   if (!config.minimalTools) {
     registerAppTool(
