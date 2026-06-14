@@ -121,18 +121,12 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames): string 
 
   return `Use DevSpace as a local coding workspace. First call ${toolNames.openWorkspace} with a project directory inside an allowed root. Then use the returned workspaceId for all file, search, edit, write, and shell tools. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.`;
 }
-function cardOutputSchema(
-  summary: z.ZodType,
-  extra: z.ZodRawShape = {},
-): z.ZodRawShape {
+function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
-    workspaceId: z.string(),
-    path: z.string().optional(),
-    summary,
     result: z
       .string()
       .describe(
-        "Model-readable result text. Mirrors the important tool output for hosts that prioritize structuredContent over content blocks.",
+        "Model-readable result text for follow-up reasoning and plain MCP hosts.",
       ),
     ...extra,
   };
@@ -547,14 +541,7 @@ function createMcpServer(
           .optional()
           .describe("Maximum number of lines to read."),
       },
-      outputSchema: cardOutputSchema(
-        z.object({
-          lines: z.number().int().nonnegative(),
-          characters: z.number().int().nonnegative(),
-          offset: z.number().int().positive(),
-          limited: z.boolean(),
-        }),
-      ),
+      outputSchema: resultOutputSchema(),
       _meta: {
         ui: {
           resourceUri: WORKSPACE_APP_URI,
@@ -596,9 +583,6 @@ function createMcpServer(
           },
         },
         structuredContent: {
-          workspaceId,
-          path: input.path,
-          summary,
           result: contentText(response.content),
         },
       };
@@ -621,14 +605,7 @@ function createMcpServer(
           .describe("File path to write, relative to the workspace root."),
         content: z.string().describe("Complete new file content."),
       },
-      outputSchema: cardOutputSchema(
-        z.object({
-          additions: z.number().int().nonnegative(),
-          removals: z.number().int().nonnegative(),
-          lines: z.number().int().nonnegative(),
-          characters: z.number().int().nonnegative(),
-        }),
-      ),
+      outputSchema: resultOutputSchema(),
       _meta: {
         ui: {
           resourceUri: WORKSPACE_APP_URI,
@@ -679,9 +656,6 @@ function createMcpServer(
           },
         },
         structuredContent: {
-          workspaceId,
-          path: input.path,
-          summary,
           result: contentText(response.content),
         },
       };
@@ -715,16 +689,9 @@ function createMcpServer(
           )
           .min(1),
       },
-      outputSchema: cardOutputSchema(
-        z.object({
-          additions: z.number().int().nonnegative(),
-          removals: z.number().int().nonnegative(),
-          editCount: z.number().int().positive(),
-        }),
-        {
-          status: z.literal("applied"),
-        },
-      ),
+      outputSchema: resultOutputSchema({
+        status: z.literal("applied"),
+      }),
       _meta: {
         ui: {
           resourceUri: WORKSPACE_APP_URI,
@@ -778,10 +745,7 @@ function createMcpServer(
           },
         },
         structuredContent: {
-          workspaceId,
           status: "applied",
-          path: input.path,
-          summary,
           result: contentText(editContent),
         },
       };
@@ -809,14 +773,7 @@ function createMcpServer(
             ),
           include: z.string().optional().describe("Optional include glob."),
         },
-        outputSchema: cardOutputSchema(
-          z.object({
-            pattern: z.string(),
-            scope: z.string(),
-            lines: z.number().int().nonnegative(),
-            characters: z.number().int().nonnegative(),
-          }),
-        ),
+        outputSchema: resultOutputSchema(),
         _meta: {
           ui: {
             resourceUri: WORKSPACE_APP_URI,
@@ -853,9 +810,6 @@ function createMcpServer(
             },
           },
           structuredContent: {
-            workspaceId,
-            path: input.path,
-            summary,
             result: contentText(response.content),
           },
         };
@@ -879,14 +833,7 @@ function createMcpServer(
             .optional()
             .describe("Optional path scope relative to the workspace root."),
         },
-        outputSchema: cardOutputSchema(
-          z.object({
-            pattern: z.string(),
-            scope: z.string(),
-            lines: z.number().int().nonnegative(),
-            characters: z.number().int().nonnegative(),
-          }),
-        ),
+        outputSchema: resultOutputSchema(),
         _meta: {
           ui: {
             resourceUri: WORKSPACE_APP_URI,
@@ -923,9 +870,6 @@ function createMcpServer(
             },
           },
           structuredContent: {
-            workspaceId,
-            path: input.path,
-            summary,
             result: contentText(response.content),
           },
         };
@@ -949,12 +893,7 @@ function createMcpServer(
               "Directory path to list, relative to the workspace root.",
             ),
         },
-        outputSchema: cardOutputSchema(
-          z.object({
-            lines: z.number().int().nonnegative(),
-            characters: z.number().int().nonnegative(),
-          }),
-        ),
+        outputSchema: resultOutputSchema(),
         _meta: {
           ui: {
             resourceUri: WORKSPACE_APP_URI,
@@ -987,9 +926,6 @@ function createMcpServer(
             },
           },
           structuredContent: {
-            workspaceId,
-            path: input.path,
-            summary,
             result: contentText(response.content),
           },
         };
@@ -1027,14 +963,7 @@ function createMcpServer(
           .optional()
           .describe("Timeout in seconds. Defaults to 30, max 300."),
       },
-      outputSchema: cardOutputSchema(
-        z.object({
-          command: z.string(),
-          workingDirectory: z.string(),
-          lines: z.number().int().nonnegative(),
-          characters: z.number().int().nonnegative(),
-        }),
-      ),
+      outputSchema: resultOutputSchema(),
       _meta: {
         ui: {
           resourceUri: WORKSPACE_APP_URI,
@@ -1082,9 +1011,6 @@ function createMcpServer(
           },
         },
         structuredContent: {
-          workspaceId,
-          path: workingDirectory,
-          summary,
           result: contentText(response.content),
         },
       };
