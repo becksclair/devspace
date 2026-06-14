@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { PatchDiff } from "@pierre/diffs/react";
 import {
   App,
   applyDocumentTheme,
@@ -9,6 +8,9 @@ import {
 } from "@modelcontextprotocol/ext-apps/app-with-deps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import "./workspace-app.css";
+
+type PatchDiffComponent = typeof import("@pierre/diffs/react")["PatchDiff"];
+const DIFFS_MODULE_URL = "https://esm.sh/@pierre/diffs@1.2.5/react?bundle";
 
 type ToolName =
   | "open_workspace"
@@ -269,7 +271,7 @@ function ToolPayloadView({
   payload: ToolPayload | null;
   loadState: LoadState;
   errorMessage: string | null;
-  diffOptions: React.ComponentProps<typeof PatchDiff>["options"];
+  diffOptions: Parameters<PatchDiffComponent>[0]["options"];
 }) {
   if (loadState === "loading") return <StatusLine message="Loading details..." />;
   if (loadState === "error") {
@@ -280,6 +282,42 @@ function ToolPayloadView({
     const patch = payload?.patch || payload?.diff;
     if (!patch) return <StatusLine message="Diff payload is not available." />;
 
+    return <DiffPayload patch={patch} diffOptions={diffOptions} />;
+  }
+
+  const text = payloadText(payload);
+  if (!text) return <StatusLine message="No details available." />;
+
+  return <pre className={`text-payload ${card.tool}`}>{text}</pre>;
+}
+
+function DiffPayload({
+  patch,
+  diffOptions,
+}: {
+  patch: string;
+  diffOptions: Parameters<PatchDiffComponent>[0]["options"];
+}) {
+  const [PatchDiff, setPatchDiff] = useState<PatchDiffComponent | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    void import(/* @vite-ignore */ DIFFS_MODULE_URL)
+      .then((module: { PatchDiff?: PatchDiffComponent }) => {
+        if (mounted && module.PatchDiff) setPatchDiff(() => module.PatchDiff!);
+      })
+      .catch(() => {
+        if (mounted) setLoadFailed(true);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  if (PatchDiff) {
     return (
       <PatchDiff
         patch={patch}
@@ -290,10 +328,31 @@ function ToolPayloadView({
     );
   }
 
-  const text = payloadText(payload);
-  if (!text) return <StatusLine message="No details available." />;
+  if (loadFailed) {
+    return <BasicDiff patch={patch} />;
+  }
 
-  return <pre className={`text-payload ${card.tool}`}>{text}</pre>;
+  return <StatusLine message="Loading diff renderer..." />;
+}
+
+function BasicDiff({ patch }: { patch: string }) {
+  return (
+    <pre className="basic-diff">
+      {patch.split("\n").map((line, index) => (
+        <span className={diffLineClass(line)} key={`${index}-${line}`}>
+          {line || " "}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+function diffLineClass(line: string): string {
+  if (line.startsWith("+") && !line.startsWith("+++")) return "basic-line add-line";
+  if (line.startsWith("-") && !line.startsWith("---")) return "basic-line remove-line";
+  if (line.startsWith("@@")) return "basic-line hunk-line";
+  return "basic-line context-line";
 }
 
 function SummaryBadges({ card }: { card: ToolResultCard }) {

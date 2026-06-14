@@ -127,7 +127,10 @@ function createMcpServer(
       description: "Interactive card for viewing edit_file diffs.",
       _meta: {
         ui: {
-          csp: {},
+          csp: {
+            resourceDomains: ["https://esm.sh"],
+            connectDomains: ["https://esm.sh"],
+          },
         },
       },
     },
@@ -141,7 +144,10 @@ function createMcpServer(
             text: html,
             _meta: {
               ui: {
-                csp: {},
+                csp: {
+                  resourceDomains: ["https://esm.sh"],
+                  connectDomains: ["https://esm.sh"],
+                },
               },
             },
           },
