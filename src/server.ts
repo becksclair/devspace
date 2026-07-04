@@ -78,6 +78,16 @@ interface WorkspaceAppManifestEntry {
   isEntry?: boolean;
 }
 
+interface AppCsp {
+  resourceDomains: string[];
+  connectDomains: string[];
+}
+
+interface OpenAiWidgetCsp {
+  resource_domains: string[];
+  connect_domains: string[];
+}
+
 type WorkspaceAppManifest = Record<string, WorkspaceAppManifestEntry>;
 
 interface DiffStats {
@@ -419,10 +429,7 @@ ${stylesheets}
 </html>`;
 }
 
-function appCsp(config: ServerConfig): {
-  resourceDomains: string[];
-  connectDomains: string[];
-} {
+function appCsp(config: ServerConfig): AppCsp {
   const publicBaseUrl = config.publicBaseUrl.replace(/\/+$/, "");
   return {
     resourceDomains: [publicBaseUrl],
@@ -430,11 +437,52 @@ function appCsp(config: ServerConfig): {
   };
 }
 
+function openAiWidgetCsp(config: ServerConfig): OpenAiWidgetCsp {
+  const csp = appCsp(config);
+  return {
+    resource_domains: csp.resourceDomains,
+    connect_domains: csp.connectDomains,
+  };
+}
+
+function contentSecurityPolicy(config: ServerConfig, options: { frameAncestors?: string } = {}): string {
+  const publicBaseUrl = config.publicBaseUrl.replace(/\/+$/, "");
+  const directives = [
+    ["default-src", "'none'"],
+    ["base-uri", "'self'"],
+    ["form-action", "'self'"],
+    ["object-src", "'none'"],
+    ["script-src", "'self'", "'wasm-unsafe-eval'"],
+    ["style-src", "'self'", "'unsafe-inline'"],
+    ["img-src", "'self'", "data:", publicBaseUrl],
+    ["font-src", "'self'", "data:", publicBaseUrl],
+    ["connect-src", "'self'", publicBaseUrl],
+    ["media-src", "'self'", publicBaseUrl],
+    ["worker-src", "'none'"],
+    ["frame-src", "'none'"],
+  ];
+
+  if (options.frameAncestors) {
+    directives.splice(3, 0, ["frame-ancestors", options.frameAncestors]);
+  }
+
+  return directives.map(([name, ...values]) => `${name} ${values.join(" ")}`).join("; ");
+}
+
 function uiBuildDirectory(): string {
   return fileURLToPath(new URL("../dist/ui", import.meta.url));
 }
 
-function setAssetHeaders(res: Response): void {
+function setSecurityHeaders(config: ServerConfig, res: Response): void {
+  res.setHeader("Content-Security-Policy", contentSecurityPolicy(config, { frameAncestors: "'none'" }));
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+}
+
+function setAssetHeaders(config: ServerConfig, res: Response): void {
+  res.setHeader("Content-Security-Policy", contentSecurityPolicy(config));
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
@@ -481,6 +529,7 @@ function createMcpServer(
         ui: {
           csp: appCsp(config),
         },
+        "openai/widgetCSP": openAiWidgetCsp(config),
       },
     },
     async () => {
@@ -495,6 +544,7 @@ function createMcpServer(
               ui: {
                 csp: appCsp(config),
               },
+              "openai/widgetCSP": openAiWidgetCsp(config),
             },
           },
         ],
@@ -1288,8 +1338,13 @@ export function createServer(config = loadConfig()): RunningServer {
   const reviewCheckpoints = createReviewCheckpointManager();
 
   if (config.logging.trustProxy) {
-    app.set("trust proxy", true);
+    app.set("trust proxy", 1);
   }
+
+  app.use((_req, res, next) => {
+    setSecurityHeaders(config, res);
+    next();
+  });
 
   app.use((req, res, next) => {
     const requestId = randomUUID();
@@ -1326,7 +1381,7 @@ export function createServer(config = loadConfig()): RunningServer {
   );
 
   app.options("/mcp-app-assets/{*asset}", (_req, res) => {
-    setAssetHeaders(res);
+    setAssetHeaders(config, res);
     res.sendStatus(204);
   });
 
@@ -1336,7 +1391,7 @@ export function createServer(config = loadConfig()): RunningServer {
       immutable: true,
       maxAge: "1y",
       fallthrough: false,
-      setHeaders: setAssetHeaders,
+      setHeaders: (res) => setAssetHeaders(config, res),
     }),
   );
 
