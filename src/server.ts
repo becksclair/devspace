@@ -197,7 +197,7 @@ function toolNamesFor(config: ServerConfig): ToolNames {
 function serverInstructions(config: ServerConfig, toolNames: ToolNames): string {
   const inspection = config.minimalTools
     ? `In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use ${toolNames.shell} with command-line tools such as grep, rg, find, ls, and tree for search and directory inspection. `
-    : `Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. `;
+    : `${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} provide structured file inspection when useful. `;
 
   const skills = config.skillsEnabled
     ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
@@ -210,7 +210,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames): string 
       ? " After creating, editing, or overwriting files, call show_changes once after the related file changes are complete so the user can see the aggregate diff."
       : "";
 
-  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${showChanges}`;
+  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder; reopen only when switching folders or worktrees, changing checkout/worktree mode, the workspaceId is unknown, or the user explicitly asks. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may read, create, modify, move, or delete files; install dependencies; run builds and tests; use git; access the network; and perform other commands available to the DevSpace service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${showChanges}`;
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -1228,22 +1228,20 @@ function createMcpServer(
     {
       title: config.toolNaming === "short" ? "Bash" : "Run shell",
       description: config.minimalTools
-        ? `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`
-        : `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`,
+        ? `Execute a Bash command directly on the DevSpace host. Use it for the full development workflow, including inspecting and changing files, dependency management, builds, tests, git, and system commands. The command runs unfiltered as the DevSpace service account in a non-interactive shell without a terminal or input stream. In minimal tool mode, use command-line tools such as rg, find, and ls for inspection. Returns combined stdout and stderr; a nonzero exit or timeout is an error.`
+        : `Execute a Bash command directly on the DevSpace host. Use it for the full development workflow, including inspecting and changing files, dependency management, builds, tests, git, and system commands. The command runs unfiltered as the DevSpace service account in a non-interactive shell without a terminal or input stream. Returns combined stdout and stderr; a nonzero exit or timeout is an error.`,
       inputSchema: {
         workspaceId: z
           .string()
           .describe("Workspace identifier returned by open_workspace."),
         command: z
           .string()
-          .describe(
-            `Shell command to run. Must not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
-          ),
+          .describe("Bash command to execute directly on the DevSpace host."),
         workingDirectory: z
           .string()
           .optional()
           .describe(
-            "Optional working directory relative to the workspace root. Defaults to the workspace root.",
+            "Starting directory relative to the workspace root. Defaults to the workspace root; it does not confine the command to that directory.",
           ),
         timeout: z
           .number()
