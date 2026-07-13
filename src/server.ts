@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -42,7 +42,7 @@ import { createWorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 
 type Transport = StreamableHTTPServerTransport;
-const WORKSPACE_APP_URI = "ui://devspace/workspace-app.html";
+const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 const WRITE_TOOL_ANNOTATIONS = {
   readOnlyHint: false,
@@ -90,6 +90,16 @@ interface OpenAiWidgetCsp {
 
 type WorkspaceAppManifest = Record<string, WorkspaceAppManifestEntry>;
 
+export function workspaceAppResourceUri(
+  entry: Pick<WorkspaceAppManifestEntry, "file" | "css">,
+): string {
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify([entry.file, ...(entry.css ?? [])]))
+    .digest("hex")
+    .slice(0, 12);
+  return `${WORKSPACE_APP_URI_PREFIX}-${fingerprint}.html`;
+}
+
 interface DiffStats {
   additions: number;
   removals: number;
@@ -106,18 +116,16 @@ type ToolWidgetKind =
   | "show_changes";
 
 interface ToolDefinitionMeta extends Record<string, unknown> {
-  ui: {
+  "openai/outputTemplate"?: string;
+  "ui/resourceUri"?: string;
+  ui?: {
     resourceUri: string;
     visibility: ["model"];
   };
 }
 
-type EmptyToolDefinitionMeta = Record<string, unknown> & {
-  "ui/resourceUri"?: string;
-};
-
 interface ToolWidgetDescriptorMeta {
-  _meta: ToolDefinitionMeta | EmptyToolDefinitionMeta;
+  _meta: ToolDefinitionMeta;
 }
 
 function shouldAttachWidget(mode: WidgetMode, kind: ToolWidgetKind): boolean {
@@ -131,16 +139,19 @@ function shouldAttachWidget(mode: WidgetMode, kind: ToolWidgetKind): boolean {
   }
 }
 
-function toolWidgetDescriptorMeta(
-  config: ServerConfig,
+export function toolWidgetDescriptorMeta(
+  config: Pick<ServerConfig, "widgets">,
   kind: ToolWidgetKind,
+  resourceUri?: string,
 ): ToolWidgetDescriptorMeta {
   if (!shouldAttachWidget(config.widgets, kind)) return { _meta: {} };
+  if (!resourceUri) throw new Error("Widget resource URI is required when widgets are enabled.");
 
   return {
     _meta: {
+      "openai/outputTemplate": resourceUri,
       ui: {
-        resourceUri: WORKSPACE_APP_URI,
+        resourceUri,
         visibility: ["model"],
       },
     },
@@ -402,9 +413,11 @@ function assetUrl(baseUrl: string, assetPath: string): string {
   return `${baseUrl}/${assetPath.replace(/^\/+/, "")}`;
 }
 
-function workspaceAppHtml(config: ServerConfig): string {
+function workspaceAppHtml(
+  config: ServerConfig,
+  entry: WorkspaceAppManifestEntry,
+): string {
   const baseUrl = assetBaseUrl(config);
-  const entry = getWorkspaceAppManifestEntry();
   const stylesheets = (entry.css ?? [])
     .map(
       (stylesheet) =>
@@ -489,8 +502,9 @@ function setAssetHeaders(config: ServerConfig, res: Response): void {
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
 }
 
-async function assertWorkspaceAppAssets(): Promise<void> {
-  const entry = getWorkspaceAppManifestEntry();
+async function assertWorkspaceAppAssets(
+  entry: WorkspaceAppManifestEntry,
+): Promise<void> {
   const candidates = [entry.file, ...(entry.css ?? [])].map(
     (assetPath) => new URL(`../dist/ui/${assetPath}`, import.meta.url),
   );
@@ -506,6 +520,11 @@ function createMcpServer(
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
 ): McpServer {
   const toolNames = toolNamesFor(config);
+  const workspaceAppManifestEntry =
+    config.widgets === "off" ? undefined : getWorkspaceAppManifestEntry();
+  const workspaceAppUri = workspaceAppManifestEntry
+    ? workspaceAppResourceUri(workspaceAppManifestEntry)
+    : undefined;
   const server = new McpServer(
     {
       name: "devspace",
@@ -519,38 +538,40 @@ function createMcpServer(
     },
   );
 
-  registerAppResource(
-    server,
-    "DevSpace Diff Card",
-    WORKSPACE_APP_URI,
-    {
-      description: "Interactive card for viewing DevSpace file diffs.",
-      _meta: {
-        ui: {
-          csp: appCsp(config),
-        },
-        "openai/widgetCSP": openAiWidgetCsp(config),
-      },
-    },
-    async () => {
-      await assertWorkspaceAppAssets();
-      return {
-        contents: [
-          {
-            uri: WORKSPACE_APP_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text: workspaceAppHtml(config),
-            _meta: {
-              ui: {
-                csp: appCsp(config),
-              },
-              "openai/widgetCSP": openAiWidgetCsp(config),
-            },
+  if (workspaceAppManifestEntry && workspaceAppUri) {
+    registerAppResource(
+      server,
+      "DevSpace Diff Card",
+      workspaceAppUri,
+      {
+        description: "Interactive card for viewing DevSpace file diffs.",
+        _meta: {
+          ui: {
+            csp: appCsp(config),
           },
-        ],
-      };
-    },
-  );
+          "openai/widgetCSP": openAiWidgetCsp(config),
+        },
+      },
+      async () => {
+        await assertWorkspaceAppAssets(workspaceAppManifestEntry);
+        return {
+          contents: [
+            {
+              uri: workspaceAppUri,
+              mimeType: RESOURCE_MIME_TYPE,
+              text: workspaceAppHtml(config, workspaceAppManifestEntry),
+              _meta: {
+                ui: {
+                  csp: appCsp(config),
+                },
+                "openai/widgetCSP": openAiWidgetCsp(config),
+              },
+            },
+          ],
+        };
+      },
+    );
+  }
 
   registerAppTool(
     server,
@@ -597,7 +618,7 @@ function createMcpServer(
         skillDiagnostics: z.array(z.unknown()),
         instruction: z.string(),
       },
-      ...toolWidgetDescriptorMeta(config, "workspace"),
+      ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
       annotations: { readOnlyHint: true },
     },
     async ({ path, mode, baseRef }) => {
@@ -726,7 +747,7 @@ function createMcpServer(
           .describe("Maximum number of lines to read."),
       },
       outputSchema: resultOutputSchema(),
-      ...toolWidgetDescriptorMeta(config, "read"),
+      ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }) => {
@@ -800,7 +821,7 @@ function createMcpServer(
         content: z.string().describe("Complete new file content."),
       },
       outputSchema: resultOutputSchema(),
-      ...toolWidgetDescriptorMeta(config, "write"),
+      ...toolWidgetDescriptorMeta(config, "write", workspaceAppUri),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }) => {
@@ -887,7 +908,7 @@ function createMcpServer(
       outputSchema: resultOutputSchema({
         status: z.literal("applied"),
       }),
-      ...toolWidgetDescriptorMeta(config, "edit"),
+      ...toolWidgetDescriptorMeta(config, "edit", workspaceAppUri),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }) => {
@@ -969,7 +990,7 @@ function createMcpServer(
             .describe("Defaults to true. When true, advances the last shown checkpoint to the current workspace state."),
         },
         outputSchema: resultOutputSchema(),
-        ...toolWidgetDescriptorMeta(config, "show_changes"),
+        ...toolWidgetDescriptorMeta(config, "show_changes", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
       async ({ workspaceId, since, markReviewed }) => {
@@ -1033,7 +1054,7 @@ function createMcpServer(
           include: z.string().optional().describe("Optional include glob."),
         },
         outputSchema: resultOutputSchema(),
-        ...toolWidgetDescriptorMeta(config, "search"),
+        ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
       async ({ workspaceId, ...input }) => {
@@ -1103,7 +1124,7 @@ function createMcpServer(
             .describe("Optional path scope relative to the workspace root."),
         },
         outputSchema: resultOutputSchema(),
-        ...toolWidgetDescriptorMeta(config, "search"),
+        ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
       async ({ workspaceId, ...input }) => {
@@ -1173,7 +1194,7 @@ function createMcpServer(
             ),
         },
         outputSchema: resultOutputSchema(),
-        ...toolWidgetDescriptorMeta(config, "directory"),
+        ...toolWidgetDescriptorMeta(config, "directory", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
       async ({ workspaceId, ...input }) => {
@@ -1251,7 +1272,7 @@ function createMcpServer(
           .describe("Timeout in seconds. Defaults to 30, max 300."),
       },
       outputSchema: resultOutputSchema(),
-      ...toolWidgetDescriptorMeta(config, "shell"),
+      ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
