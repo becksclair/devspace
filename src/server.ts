@@ -283,6 +283,11 @@ export function mcpRequestTraceFields(
     : { rpcType: "invalid", rpcBodyType: body === null ? "null" : typeof body };
 }
 
+function containsInitializeRequest(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some(isInitializeRequest);
+}
+
 function toolNamesFor(config: ServerConfig): ToolNames {
   return config.toolNaming === "short"
     ? {
@@ -1523,7 +1528,7 @@ export function createServer(config = loadConfig()): RunningServer {
   app.all("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
-    const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
+    const initializeRequest = req.method === "POST" && containsInitializeRequest(req.body);
     const rpcTrace = mcpRequestTraceFields(req.body, req.method);
 
     await new Promise<void>((resolve, reject) => {
@@ -1558,6 +1563,8 @@ export function createServer(config = loadConfig()): RunningServer {
       });
     }
 
+    let newTransport: Transport | undefined;
+
     try {
       let transport: Transport | undefined;
 
@@ -1585,6 +1592,7 @@ export function createServer(config = loadConfig()): RunningServer {
             });
           },
         });
+        newTransport = transport;
 
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
@@ -1617,6 +1625,18 @@ export function createServer(config = loadConfig()): RunningServer {
       });
       if (!res.headersSent) {
         sendJsonRpcError(res, 500, -32603, "Internal server error");
+      }
+    } finally {
+      if (newTransport && !newTransport.sessionId) {
+        try {
+          await newTransport.close();
+        } catch (error) {
+          logEvent(config.logging, "error", "mcp_transport_cleanup_error", {
+            requestId,
+            error: error instanceof Error ? error.message : String(error),
+            ...rpcTrace,
+          });
+        }
       }
     }
   });
