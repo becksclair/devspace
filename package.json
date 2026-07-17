@@ -14,18 +14,22 @@
     "dist",
     "docs",
     "scripts",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && npm run build:app && tsc -p tsconfig.build.json",
+    "build": "node scripts/versioned-build.mjs",
+    "build:compile": "npm run clean && npm run build:app && tsc -p tsconfig.build.json",
+    "build:check": "npm run build:compile",
     "build:app": "vite build",
+    "rebuild:local": "node scripts/rebuild-local.mjs",
     "dev": "node scripts/dev-server.mjs",
     "start": "node dist/cli.js serve",
-    "test": "tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/review-checkpoints.test.ts && tsx src/oauth-provider.test.ts && tsx src/server-widget-metadata.test.ts && tsx src/server-mcp-logging.test.ts && tsx src/server-mcp-routing.test.ts",
+    "test": "node --test scripts/release-utils.test.mjs && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/review-checkpoints.test.ts && tsx src/oauth-provider.test.ts && tsx src/server-widget-metadata.test.ts && tsx src/server-mcp-logging.test.ts && tsx src/server-mcp-routing.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [],

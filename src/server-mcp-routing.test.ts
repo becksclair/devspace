@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ServerConfig } from "./config.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
 import { createServer } from "./server.js";
+import { DEVSPACE_VERSION } from "./version.js";
 
 const stateDir = await mkdtemp(join(tmpdir(), "devspace-mcp-routing-test-"));
 const accessToken = "test-access-token";
@@ -65,7 +66,15 @@ try {
   });
 
   const address = httpServer.address() as AddressInfo;
-  const endpoint = `http://${config.host}:${address.port}/mcp`;
+  const baseUrl = `http://${config.host}:${address.port}`;
+  const endpoint = `${baseUrl}/mcp`;
+  const healthResponse = await fetch(`${baseUrl}/healthz`);
+  assert.equal(healthResponse.status, 200);
+  assert.deepEqual(await healthResponse.json(), {
+    ok: true,
+    name: "devspace",
+    version: DEVSPACE_VERSION,
+  });
   const initializeRequest = {
     jsonrpc: "2.0",
     id: 1,
@@ -129,10 +138,11 @@ async function assertInitialized(response: Response, expectedId: number): Promis
   assert.ok(dataLine);
   const payload = JSON.parse(dataLine.slice("data: ".length)) as {
     id?: number;
-    result?: { serverInfo?: { name?: string } };
+    result?: { serverInfo?: { name?: string; version?: string } };
   };
   assert.equal(payload.id, expectedId);
   assert.equal(payload.result?.serverInfo?.name, "devspace");
+  assert.equal(payload.result?.serverInfo?.version, DEVSPACE_VERSION);
   return sessionId;
 }
 

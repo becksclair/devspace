@@ -37,6 +37,7 @@ import {
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createOAuthStateStore } from "./oauth-store.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
+import { DEVSPACE_VERSION } from "./version.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
@@ -636,7 +637,7 @@ function createMcpServer(
     {
       name: "devspace",
       title: "DevSpace",
-      version: "0.1.0",
+      version: DEVSPACE_VERSION,
       description:
         "Secure local coding workspace for MCP clients. Provides workspace-scoped file, search, edit, write, and shell tools.",
     },
@@ -1522,7 +1523,7 @@ export function createServer(config = loadConfig()): RunningServer {
   );
 
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, name: "devspace" });
+    res.json({ ok: true, name: "devspace", version: DEVSPACE_VERSION });
   });
 
   app.all("/mcp", async (req, res) => {

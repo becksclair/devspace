@@ -174,6 +174,13 @@ npm install --include=dev
 npm run dev
 npm run typecheck
 npm test
-npm run build
+npm run build:check
+npm run build # versioned build: bumps patch and updates CHANGELOG.md
+npm run rebuild:local # versioned build, restart devspace.service, verify /healthz
 npm run start
 ```
+
+Use `npm run build -- --bump minor` or `npm run build -- --bump major` when a
+patch increment is not appropriate. Versioned builds require committed build
+inputs; `build:check` is the non-versioning validation path for work in progress
+and prepares the initial `dist` required by `rebuild:local`.
