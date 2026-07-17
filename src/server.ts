@@ -181,6 +181,108 @@ interface ToolLogFields {
   error?: string;
 }
 
+interface JsonRpcMessage {
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+  result?: unknown;
+  error?: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function boundedLogString(value: unknown, maxLength = 512): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+}
+
+function rpcIdForLog(value: unknown): string | number | null | undefined {
+  if (value === null || typeof value === "number") return value;
+  return boundedLogString(value, 128);
+}
+
+function uriForLog(value: unknown): string | undefined {
+  const uri = boundedLogString(value);
+  if (!uri) return undefined;
+
+  try {
+    const parsed = new URL(uri);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return "<invalid-uri>";
+  }
+}
+
+function compactLogFields(fields: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  );
+}
+
+function rpcMessageTraceFields(body: JsonRpcMessage): Record<string, unknown> {
+  const rpcMethod = boundedLogString(body.method, 128);
+  const rpcId = rpcIdForLog(body.id);
+  const params = isRecord(body.params) ? body.params : undefined;
+  const rpcType = rpcMethod
+    ? body.id === undefined
+      ? "notification"
+      : "request"
+    : body.result !== undefined || body.error !== undefined
+      ? "response"
+      : "unknown";
+
+  return {
+    rpcType,
+    rpcMethod,
+    rpcId,
+    resourceUri:
+      rpcMethod?.startsWith("resources/") && params ? uriForLog(params.uri) : undefined,
+    toolName: rpcMethod === "tools/call" && params
+      ? boundedLogString(params.name, 128)
+      : undefined,
+    promptName: rpcMethod === "prompts/get" && params
+      ? boundedLogString(params.name, 128)
+      : undefined,
+    requestedLogLevel: rpcMethod === "logging/setLevel" && params
+      ? boundedLogString(params.level, 32)
+      : undefined,
+    relatedRpcId: rpcMethod === "notifications/cancelled" && params
+      ? rpcIdForLog(params.requestId)
+      : undefined,
+  };
+}
+
+export function mcpRequestTraceFields(
+  body: unknown,
+  httpMethod = "POST",
+): Record<string, unknown> {
+  if (httpMethod.toUpperCase() !== "POST") {
+    return {
+      rpcType: "transport",
+      transportMethod: httpMethod.toUpperCase(),
+    };
+  }
+
+  if (Array.isArray(body)) {
+    const messages = body.filter(isRecord).map(rpcMessageTraceFields);
+    return {
+      rpcType: "batch",
+      rpcBatchSize: body.length,
+      rpcMessages: messages.map(compactLogFields),
+    };
+  }
+
+  return isRecord(body)
+    ? rpcMessageTraceFields(body)
+    : { rpcType: "invalid", rpcBodyType: body === null ? "null" : typeof body };
+}
+
 function toolNamesFor(config: ServerConfig): ToolNames {
   return config.toolNaming === "short"
     ? {
@@ -1422,6 +1524,7 @@ export function createServer(config = loadConfig()): RunningServer {
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
     const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
+    const rpcTrace = mcpRequestTraceFields(req.body, req.method);
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
@@ -1437,19 +1540,23 @@ export function createServer(config = loadConfig()): RunningServer {
         method: req.method,
         path: requestPath(req),
         reason: "invalid_oauth_resource",
+        ...rpcTrace,
         ...requestLogFields(req, config),
       });
       sendJsonRpcError(res, 401, -32001, "Unauthorized");
       return;
     }
 
-    logEvent(config.logging, "debug", "mcp_request", {
-      requestId,
-      method: req.method,
-      sessionIdPresent: Boolean(sessionId),
-      sessionIdPrefix: sessionIdPrefix(sessionId),
-      isInitialize: initializeRequest,
-    });
+    if (config.logging.requests) {
+      logEvent(config.logging, "info", "mcp_request", {
+        requestId,
+        method: req.method,
+        sessionIdPresent: Boolean(sessionId),
+        sessionIdPrefix: sessionIdPrefix(sessionId),
+        isInitialize: initializeRequest,
+        ...rpcTrace,
+      });
+    }
 
     try {
       let transport: Transport | undefined;
@@ -1457,6 +1564,12 @@ export function createServer(config = loadConfig()): RunningServer {
       if (sessionId) {
         transport = transports.get(sessionId);
         if (!transport) {
+          logEvent(config.logging, "warn", "mcp_routing_error", {
+            requestId,
+            reason: "unknown_mcp_session",
+            sessionIdPrefix: sessionIdPrefix(sessionId),
+            ...rpcTrace,
+          });
           sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
           return;
         }
@@ -1486,6 +1599,11 @@ export function createServer(config = loadConfig()): RunningServer {
         const server = createMcpServer(config, workspaces, reviewCheckpoints);
         await server.connect(transport);
       } else {
+        logEvent(config.logging, "warn", "mcp_routing_error", {
+          requestId,
+          reason: "missing_mcp_session",
+          ...rpcTrace,
+        });
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");
         return;
       }
@@ -1495,6 +1613,7 @@ export function createServer(config = loadConfig()): RunningServer {
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
         error: error instanceof Error ? error.message : String(error),
+        ...rpcTrace,
       });
       if (!res.headersSent) {
         sendJsonRpcError(res, 500, -32603, "Internal server error");
