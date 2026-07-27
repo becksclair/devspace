@@ -45,7 +45,9 @@ jobs:
         run: |
           base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
           curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz" -o /tmp/readback.tar.gz
-          sha256sum /tmp/readback.tar.gz | cut -d' ' -f1 | cmp - <(cut -d' ' -f1 "${{ steps.package.outputs.archive }}.sha256")
+          sha256sum /tmp/readback.tar.gz | cut -d' ' -f1 > /tmp/readback.sha256
+          cut -d' ' -f1 "${{ steps.package.outputs.archive }}.sha256" > /tmp/published.sha256
+          cmp /tmp/readback.sha256 /tmp/published.sha256
       - name: Dispatch gated deployment
         if: ${{ vars.DEVSPACE_AUTO_DEPLOY_ENABLED == 'true' }}
         env:
