@@ -8,7 +8,7 @@ jobs:
     runs-on: asgard-build-1
     env:
       GITEA_SERVER_URL: ${{ github.server_url }}
-      GITEA_OWNER: ${{ github.repository_owner }}
+      GITEA_OWNER: ${{ vars.DEVSPACE_PACKAGE_OWNER }}
     # Gitea administrators must define this digest from the approved Node 24
     # image catalog; an unpinned fallback is intentionally not provided.
     container: node:24-bookworm@sha256:${{ vars.NODE24_BOOKWORM_AMD64_DIGEST }}
@@ -33,7 +33,7 @@ jobs:
           echo "digest=$(cut -d' ' -f1 "$archive.sha256")" >> "$GITHUB_OUTPUT"
       - name: Publish immutable Generic Package
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_PACKAGE_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
         run: |
           test -n "$GITEA_TOKEN"
           base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
@@ -41,7 +41,7 @@ jobs:
           curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" --upload-file "${{ steps.package.outputs.archive }}.sha256" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz.sha256"
       - name: Read back and verify digest
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_PACKAGE_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
         run: |
           base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
           curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz" -o /tmp/readback.tar.gz
@@ -49,7 +49,7 @@ jobs:
       - name: Dispatch gated deployment
         if: ${{ vars.DEVSPACE_AUTO_DEPLOY_ENABLED == 'true' }}
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_DEPLOY_DISPATCH_TOKEN }}
+          GITEA_TOKEN: ${{ secrets.DEVSPACE_DEPLOY_DISPATCH_TOKEN }}
         run: |
           test -n "$GITEA_TOKEN"
           curl --fail --silent --show-error \
