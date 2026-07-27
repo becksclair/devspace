@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,11 +38,22 @@ try {
   if (smoke.status !== 0) throw new Error("runtime artifact smoke test failed");
   const name = `devspace-linux-amd64-${commit}.tar.gz`;
   const archive = join(output, name);
-  const tar = spawnSync("tar", ["-C", stage, "--sort=name", "--format=pax", "--pax-option=delete=atime,delete=ctime", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "-cf", "-", "."], { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1024 * 1024 * 1024 });
+  const stageEntries = readdirSync(stage).sort();
+  if (stageEntries.some((entry) => entry === "." || entry === ".." || entry.startsWith("/") || entry.split("/").includes(".."))) {
+    throw new Error("invalid top-level stage entry");
+  }
+  const tar = spawnSync("tar", ["-C", stage, "--sort=name", "--format=pax", "--pax-option=delete=atime,delete=ctime", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "--null", "--files-from=-", "-cf", "-"], { input: Buffer.from(`${stageEntries.join("\0")}\0`), stdio: ["pipe", "pipe", "pipe"], maxBuffer: 1024 * 1024 * 1024 });
   if (tar.status !== 0 || !tar.stdout) throw new Error(`tar creation failed: ${tar.stderr?.toString() || tar.error?.message || "unknown error"}`);
   const gzip = spawnSync("gzip", ["-n", "-c"], { input: tar.stdout, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 1024 * 1024 * 1024 });
   if (gzip.status !== 0 || !gzip.stdout) throw new Error(`gzip creation failed: ${gzip.stderr?.toString() || gzip.error?.message || "unknown error"}`);
   writeFileSync(archive, gzip.stdout);
+  const members = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 }).trim().split("\n").filter(Boolean);
+  if (members.some((member) => member === "." || member.startsWith("/") || member.split("/").includes("..") || member.split("/").includes("."))) {
+    throw new Error("archive contains an unsafe member");
+  }
+  for (const entry of stageEntries) {
+    if (!members.some((member) => member === entry || member === `${entry}/`)) throw new Error(`archive is missing top-level entry ${entry}`);
+  }
   const digest = createHash("sha256").update(gzip.stdout).digest("hex");
   writeFileSync(`${archive}.sha256`, `${digest}  ${name}\n`);
   console.log(`${archive}\n${digest}`);

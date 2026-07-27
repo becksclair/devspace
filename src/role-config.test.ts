@@ -19,6 +19,16 @@ const reordered = loadRoleConfig(write({ ...base, machines: [
 ] }));
 assert.equal(reordered.role, "gateway");
 if (reordered.role === "gateway") { assert.equal(reordered.machines[0]?.canonical, false); assert.equal(reordered.machines[1]?.canonical, true); }
+const legacyRemote = loadRoleConfig(write({ ...base, machines: [
+  { ...base.machines[0], canonical: true },
+  { id: "remote", displayName: "Remote", kind: "remote", url: "https://remote.test", accessClientIdEnv: "REMOVED_ID", accessClientSecretEnv: "REMOVED_SECRET", nodeTokenEnv: "TOKEN", canonical: false },
+] }), { TOKEN: "node-secret" });
+if (legacyRemote.role === "gateway") {
+  const remote = legacyRemote.machines.find((machine) => machine.id === "remote");
+  assert.equal(remote?.nodeTokenEnv, "TOKEN");
+  assert.equal("accessClientIdEnv" in (remote ?? {}), false);
+  assert.equal("accessClientSecretEnv" in (remote ?? {}), false);
+}
 assert.throws(() => loadRoleConfig(write({ ...base, machines: [{ ...base.machines[0], aliases: [" HOME "] }, { id: "remote", displayName: "Remote", kind: "remote", aliases: ["home"], url: "https://remote.test", accessClientIdEnv: "ID", accessClientSecretEnv: "SECRET", nodeTokenEnv: "TOKEN", canonical: false }] })), /Duplicate machine/);
 for (const field of ["stateDir", "worktreeRoot"]) {
   const machine = { ...base.machines[0], [field]: join(dir, "gateway-state", "nested") };

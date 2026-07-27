@@ -150,8 +150,6 @@ The Saga gateway configuration is:
       "id": "asgard", "displayName": "Asgard", "aliases": ["home"],
       "canonical": true, "kind": "remote",
       "url": "https://devspace-asgard.heliasar.com",
-      "accessClientIdEnv": "DEVSPACE_ASGARD_ACCESS_CLIENT_ID",
-      "accessClientSecretEnv": "DEVSPACE_ASGARD_ACCESS_CLIENT_SECRET",
       "nodeTokenEnv": "DEVSPACE_ASGARD_NODE_TOKEN"
     },
     {
@@ -165,9 +163,8 @@ The Saga gateway configuration is:
 }
 ```
 
-The protected gateway environment supplies `DEVSPACE_OAUTH_OWNER_TOKEN` and the
-three Asgard variables named above. The gateway sends exactly
-`CF-Access-Client-Id`, `CF-Access-Client-Secret`, and
+The protected gateway environment supplies `DEVSPACE_OAUTH_OWNER_TOKEN` and
+`DEVSPACE_ASGARD_NODE_TOKEN`. The gateway sends only
 `X-DevSpace-Node-Token`; it never accepts credentials in JSON.
 
 The Asgard node configuration is:
@@ -183,6 +180,6 @@ The Asgard node configuration is:
 ```
 
 The node environment must define `DEVSPACE_NODE_TOKEN`. Configuration loading
-fails on missing credentials, non-HTTPS remote URLs, alias/ID collisions,
+fails on a missing node-token variable, non-HTTPS remote URLs, alias/ID collisions,
 multiple or missing canonical machines, non-loopback node binding, and
 overlapping gateway/executor state or worktree roots.

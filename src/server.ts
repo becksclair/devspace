@@ -1838,8 +1838,6 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
     targets.set(machine.id, new RemoteNodeClient({
       machineId: machine.id,
       url: machine.url!,
-      accessClientId: envSecret(machine.accessClientIdEnv!),
-      accessClientSecret: envSecret(machine.accessClientSecretEnv!),
       nodeToken: envSecret(machine.nodeTokenEnv!),
     }));
   }

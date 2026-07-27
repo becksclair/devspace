@@ -8,8 +8,6 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export interface RemoteNodeClientConfig {
   machineId: string;
   url: string;
-  accessClientId: string;
-  accessClientSecret: string;
   nodeToken: string;
   timeoutMs?: number;
   maxBodyBytes?: number;
@@ -106,8 +104,6 @@ export class RemoteNodeClient implements ExecutionTarget {
         redirect: "manual",
         signal,
         headers: {
-          "CF-Access-Client-Id": this.config.accessClientId,
-          "CF-Access-Client-Secret": this.config.accessClientSecret,
           "X-DevSpace-Node-Token": this.config.nodeToken,
           ...init.headers,
         },

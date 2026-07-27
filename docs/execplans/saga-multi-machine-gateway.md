@@ -26,7 +26,7 @@ The implementation should use the smallest topology that satisfies those rules:
        v
     Saga gateway on 127.0.0.1:7676
        |                         |
-       | local executor          | HTTPS + Cloudflare Access Service Auth
+       | local executor          | HTTPS + node bearer token
        v                         v
     Saga files/shell      devspace-asgard.heliasar.com
                                   |
@@ -34,7 +34,7 @@ The implementation should use the smallest topology that satisfies those rules:
                                   v
                            Asgard node on 127.0.0.1:7679
 
-Saga does not need a second node process. The gateway executes Saga work locally through the same executor used by standalone mode and proxies only Asgard work across the network. The Asgard node is loopback-only and requires both Cloudflare Access Service Auth at the edge and an independent DevSpace bearer token at the origin. The origin token prevents another local process or an accidentally weakened Access policy from obtaining Bex-level file and shell access. Do not add mTLS, Tailscale routing, a message broker, service discovery, failover, shared storage, or distributed coordination.
+Saga does not need a second node process. The gateway executes Saga work locally through the same executor used by standalone mode and proxies only Asgard work across the network. The Asgard node is loopback-only and requires an independent DevSpace bearer token at the origin. Do not add mTLS, Tailscale routing, a message broker, service discovery, failover, shared storage, or distributed coordination.
 
 The public gateway owns OAuth, MCP sessions, app metadata and widgets, target selection, durable public workspace bindings, and request logging. The local executor owns allowlist enforcement, workspaces, instructions and skills, filesystem tools, shell execution, worktrees, and change checkpoints. The Asgard node exposes that executor through one private versioned HTTP call endpoint; it does not expose OAuth, MCP, or app resources.
 
@@ -100,7 +100,7 @@ Add two explicit roles while preserving `serve`:
 The private protocol should be deliberately small:
 
 - `GET /internal/v1/hello` returns protocol major, machine ID, package version, source commit, and one deterministic hash of the canonical internal tool schemas.
-- `POST /internal/v1/call` accepts `{ protocolMajor, toolContractHash, requestId, tool, arguments }` and returns either the executor result or a structured error.
+- `POST /internal/v1/call` accepts `{ protocolMajor, toolContractHash, machineId, requestId, tool, arguments }` and returns either the executor result or a structured error. The node compares `machineId` with its configured identity before invoking the executor.
 - The node validates the envelope and the selected tool's arguments with the shared Zod schemas before execution. Public short or legacy names are translated to a fixed internal canonical name; they are never accepted as arbitrary strings by the node.
 - Exact protocol-major, machine-ID, or tool-contract-hash mismatch makes that target unavailable before a workspace operation runs.
 - MCP cancellation aborts the gateway `fetch`; node request abort/close aborts the executor signal. The gateway never automatically retries any tool call because a disconnected edit or shell command may already have completed.
@@ -108,7 +108,7 @@ The private protocol should be deliberately small:
 
 Use Express, Zod, platform `fetch`, and the existing SQLite/Drizzle stack already in the repository. Do not build a capability framework, generic RPC library, request queue, or broad new error taxonomy. The public behavior only needs stable errors for unknown machine, target unavailable, and unknown workspace; other executor errors can preserve the existing sanitized messages.
 
-The Asgard node binds only to `127.0.0.1:7679` and authenticates every internal endpoint with a constant-time comparison of an environment-supplied DevSpace bearer token. Its public hostname is reachable only through the dedicated Cloudflare Tunnel and a Cloudflare Access Service Auth policy that accepts the Saga gateway's separate service token. The gateway sends `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and a dedicated `X-DevSpace-Node-Token` header only to the configured Asgard origin, requires an `https:` URL, rejects redirects, bounds connect/total time, and redacts credentials and response bodies from transport errors. Saga-to-Saga execution is an in-process executor call and needs no HTTP credentials.
+The Asgard node binds only to `127.0.0.1:7679` and authenticates every internal endpoint with a constant-time comparison of an environment-supplied DevSpace bearer token. Its public hostname is reachable through the dedicated Cloudflare Tunnel. The gateway sends only a dedicated `X-DevSpace-Node-Token` header to the configured Asgard origin, requires an `https:` URL, rejects redirects, bounds connect/total time, and redacts credentials and response bodies from transport errors. Saga-to-Saga execution is an in-process executor call and needs no HTTP credentials.
 
 Extend only `open_workspace` with an optional `machine` string. Normalize surrounding whitespace and case, then match an exact configured ID or alias. Omission selects the single configured canonical target. Empty or unknown values fail and list the valid configured names. Later tools must not gain a machine argument.
 
@@ -131,9 +131,9 @@ Gateway configuration needs only:
 - bind address, port, public base URL, and a gateway state directory for OAuth plus public bindings;
 - one canonical machine;
 - stable machine IDs and aliases;
-- `kind: "local"` plus Saga's explicit allowlist (`/home/ubuntu`, `/opt/homelab`, and `/srv/services`) and separate local-executor state/worktree roots, or `kind: "remote"` plus HTTPS URL and environment-variable names for both Access and origin credentials.
+- `kind: "local"` plus Saga's explicit allowlist (`/home/ubuntu`, `/opt/homelab`, and `/srv/services`) and separate local-executor state/worktree roots, or `kind: "remote"` plus an HTTPS URL and an environment-variable name for the node token.
 
-Fail configuration loading if there is not exactly one canonical machine, IDs or aliases collide after normalization, gateway and executor state/worktree roots overlap, a remote URL is not HTTPS, or a required credential variable is absent. Keep credentials out of JSON, Git, logs, and process arguments. The Asgard node independently owns its state and worktree roots; never point the new node at the old standalone database or worktree directory.
+Fail configuration loading if there is not exactly one canonical machine, IDs or aliases collide after normalization, gateway and executor state/worktree roots overlap, a remote URL is not HTTPS, or its node-token variable is absent. Keep credentials out of JSON, Git, logs, and process arguments. The Asgard node independently owns its state and worktree roots; never point the new node at the old standalone database or worktree directory.
 
 Add the same non-secret machine metadata to the `open_workspace` structured result so ChatGPT can report where it opened the workspace. Keep existing required fields and the workspace-reuse instruction. Do not add a machine-list tool or make the badge interactive; target selection remains exclusively on `open_workspace.machine`.
 
@@ -208,23 +208,22 @@ Within protocol major 1, node/gateway changes must remain rolling-compatible bec
 External Cloudflare writes require explicit authorization. Create:
 
 1. A dedicated `devspace-asgard` Tunnel mapping `devspace-asgard.heliasar.com` to Asgard `http://127.0.0.1:7679`.
-2. A Cloudflare Access self-hosted application for that hostname with a Service Auth policy permitting only a dedicated Saga gateway service token.
-3. A dedicated `devspace-saga` Tunnel mapping `devspace-saga.heliasar.com` to Saga `http://127.0.0.1:7676`.
+2. A dedicated `devspace-saga` Tunnel mapping `devspace-saga.heliasar.com` to Saga `http://127.0.0.1:7676`.
 
-Store tunnel tokens only in protected token files. Store the Access service-token credentials and the Asgard origin bearer only in Saga's protected gateway environment; store the matching origin bearer only in Asgard's protected node environment. Use different values for tunnel, Access, origin, and OAuth credentials. Do not put Access in front of the public Saga hostname; DevSpace OAuth remains the ChatGPT authorization boundary.
+Store tunnel tokens only in protected token files. Store the Asgard node bearer only in Saga's protected gateway environment and the matching bearer only in Asgard's protected node environment. Use different values for tunnel, node, and OAuth credentials. The public Saga hostname uses DevSpace OAuth; the internal Asgard hostname requires the 256-bit node token on every route.
 
-Tunnel units are stable infrastructure installed and enabled during bootstrap, not artifact-deploy companions. Recurring application deploys restart only `devspace.service` on Saga and `devspace-asgard-node.service` on Asgard; they must not restart either tunnel or modify Cloudflare, DNS, Access, OAuth, or secret state. On first bootstrap, start and prove each loopback application before starting its tunnel. Leave Saga's existing general `cloudflared.service`, Watercooler tunnel, Fastmail tunnel, and every unrelated hostname untouched.
+Tunnel units are stable infrastructure installed and enabled during bootstrap, not artifact-deploy companions. Recurring application deploys restart only `devspace.service` on Saga and `devspace-asgard-node.service` on Asgard; they must not restart either tunnel or modify Cloudflare, DNS, OAuth, or secret state. On first bootstrap, start and prove each loopback application before starting its tunnel. Leave Saga's existing general `cloudflared.service`, Watercooler tunnel, Fastmail tunnel, and every unrelated hostname untouched.
 
 Bootstrap in this order:
 
 1. From clean pinned controller/package worktrees, converge the reviewed `saga-homelab` units/configuration and central artifact-service contract without deploying an unverified artifact.
 2. Install the Asgard node/tunnel units and both hosts' protected environment/token files; validate their exact permissions without printing values.
 3. Publish one DevSpace artifact, manually dispatch its deployment workflow, and let that workflow install Asgard first and Saga through Saga Ops second.
-4. After authenticated loopback `hello` works, start the Asgard tunnel. From Saga, prove Access denies an unauthenticated request, Access-only fails origin authentication, and both credentials return `hello` for `asgard` and the deployed commit.
+4. After authenticated loopback `hello` works, start the Asgard tunnel. From Saga, prove missing and incorrect node tokens receive origin 401 responses and the correct node token returns `hello` for `asgard` and the deployed commit.
 5. Start the Saga tunnel and verify public `/healthz`, OAuth discovery, and MCP connection.
 6. Enable automatic deployment from future successful Gitea `main` builds.
 
-Inspect service, tunnel, DNS, and Access state before retrying any mutation whose outcome is uncertain. Do not weaken the Access policy to diagnose it. Leave the old Asgard service and Funnel route running.
+Inspect service, tunnel, and DNS state before retrying any mutation whose outcome is uncertain. Do not weaken node authentication to diagnose it. Leave the old Asgard service and Funnel route running.
 
 ### 6. Prove the complete behavior from this development machine
 
@@ -240,15 +239,15 @@ Run this minimum matrix:
     both workspaceIds after gateway restart       -> original machine
     Asgard node stopped + omitted machine         -> explicit Asgard failure, zero Saga calls
     Asgard node stopped + existing Saga ID        -> Saga success
-    Asgard URL without Access credentials         -> denied
-    Asgard URL with Access only                    -> origin 401
-    Asgard hello with Access + origin credentials  -> success
+    Asgard URL without node token                  -> origin 401
+    Asgard URL with incorrect node token           -> origin 401
+    Asgard hello with correct node token            -> success
 
 For one workspace on each machine, run `hostname`, read a machine-specific file, edit a disposable fixture, inspect `show_changes`, and revert the fixture through normal tools. Inspect each resulting widget and confirm every Asgard-bound card says `Asgard` and every Saga-bound card says `Saga`, including later calls that did not restate a machine. Correlate one gateway request ID with the Asgard node log. Confirm logs name the target and outcome without secrets or file contents.
 
 Restart the gateway, establish a new MCP session with the existing OAuth token, and reuse both public IDs. Confirm the old MCP session is rejected rather than mistaken for durable state. Restart the Asgard node and confirm its existing workspace recovers through the node workspace store. After each executor restart, verify and document that `show_changes` starts a new lazy checkpoint baseline; durable review-checkpoint history is not part of this feature.
 
-Any wrong-host call, silent fallback, lost gateway binding after restart, Access bypass, or regression in standalone mode blocks ChatGPT testing.
+Any wrong-host call, silent fallback, lost gateway binding after restart, node-authentication bypass, or regression in standalone mode blocks ChatGPT testing.
 
 ### 7. Test in a parallel ChatGPT app, then cut over
 

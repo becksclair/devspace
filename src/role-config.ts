@@ -13,8 +13,6 @@ export interface MachineConfig {
   stateDir?: string;
   worktreeRoot?: string;
   url?: string;
-  accessClientIdEnv?: string;
-  accessClientSecretEnv?: string;
   nodeTokenEnv?: string;
 }
 
@@ -89,8 +87,6 @@ export function loadRoleConfig(filePath: string, env: NodeJS.ProcessEnv = proces
     }
   }
   for (const machine of machines.filter((m) => m.kind === "remote")) {
-    envSecret(machine.accessClientIdEnv!, env);
-    envSecret(machine.accessClientSecretEnv!, env);
     envSecret(machine.nodeTokenEnv!, env);
   }
   return { role: "gateway", host: nonEmpty(raw.host, "host"), port: parsePort(raw.port, "port"), publicBaseUrl: normalizeUrl(raw.publicBaseUrl), stateDir, machines };
@@ -104,7 +100,7 @@ function parseMachine(raw: Record<string, unknown>, index: number): MachineConfi
   if (kind === "local") { machine.allowedRoots = paths(raw.allowedRoots, "allowedRoots"); machine.stateDir = pathValue(raw.stateDir, "stateDir"); machine.worktreeRoot = pathValue(raw.worktreeRoot, "worktreeRoot"); }
   else {
     const url = normalizeUrl(raw.url); if (!url.startsWith("https://")) throw new Error(`remote machine ${machine.id} url must use https`); machine.url = url;
-    machine.accessClientIdEnv = nonEmpty(raw.accessClientIdEnv, "accessClientIdEnv"); machine.accessClientSecretEnv = nonEmpty(raw.accessClientSecretEnv, "accessClientSecretEnv"); machine.nodeTokenEnv = nonEmpty(raw.nodeTokenEnv, "nodeTokenEnv");
+    machine.nodeTokenEnv = nonEmpty(raw.nodeTokenEnv, "nodeTokenEnv");
   }
   return machine;
 }
