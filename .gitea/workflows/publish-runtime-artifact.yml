@@ -28,7 +28,7 @@ jobs:
           archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
           OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts-repeat" npm run package:runtime-artifact -- "$GITHUB_SHA"
           cmp "$archive" ".artifacts-repeat/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
-          sha256sum --check "$archive.sha256"
+          (cd "$(dirname "$archive")" && sha256sum --check "$(basename "$archive").sha256")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "digest=$(cut -d' ' -f1 "$archive.sha256")" >> "$GITHUB_OUTPUT"
       - name: Publish immutable Generic Package
