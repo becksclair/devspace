@@ -28,6 +28,9 @@ export interface ServerConfig {
   logging: LoggingConfig;
 }
 
+/** Publicly exported parser helpers used by role-specific configuration. */
+export { parsePort, parseAllowedRoots, parsePublicBaseUrl, localPublicBaseUrl };
+
 function parsePort(value: string | number | undefined): number {
   if (value === undefined || value === "") return 7676;
 

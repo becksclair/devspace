@@ -62,9 +62,23 @@ export const oauthTokens = sqliteTable(
   ],
 );
 
+export const publicWorkspaceBindings = sqliteTable(
+  "public_workspace_bindings",
+  {
+    publicWorkspaceId: text("public_workspace_id").primaryKey(),
+    machineId: text("machine_id").notNull(),
+    executorWorkspaceId: text("executor_workspace_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    lastUsedAt: text("last_used_at").notNull(),
+  },
+  (table) => [index("public_workspace_bindings_machine_idx").on(table.machineId, table.lastUsedAt)],
+);
+
 export type WorkspaceSessionRow = typeof workspaceSessions.$inferSelect;
 export type NewWorkspaceSessionRow = typeof workspaceSessions.$inferInsert;
 export type LoadedAgentFileRow = typeof loadedAgentFiles.$inferSelect;
 export type NewLoadedAgentFileRow = typeof loadedAgentFiles.$inferInsert;
 export type OAuthClientRow = typeof oauthClients.$inferSelect;
 export type OAuthTokenRow = typeof oauthTokens.$inferSelect;
+export type PublicWorkspaceBindingRow = typeof publicWorkspaceBindings.$inferSelect;
+export type NewPublicWorkspaceBindingRow = typeof publicWorkspaceBindings.$inferInsert;

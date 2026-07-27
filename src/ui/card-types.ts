@@ -22,6 +22,10 @@ export type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
 
 export interface ToolResultCard {
   tool: ToolName;
+  machine?: {
+    id?: string;
+    displayName?: string;
+  };
   workspaceId?: string;
   path?: string;
   root?: string;
@@ -49,6 +53,12 @@ export interface ToolResultCard {
   }>;
   skillDiagnostics?: unknown[];
   instruction?: string;
+}
+
+/** Returns the configured machine name when it is present and displayable. */
+export function machineDisplayName(card: { machine?: ToolResultCard["machine"] }): string | undefined {
+  const displayName = card.machine?.displayName?.trim();
+  return displayName || undefined;
 }
 
 export interface ToolContent {

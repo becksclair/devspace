@@ -130,3 +130,59 @@ npx @waishnav/devspace serve
 
 The environment assignments must be part of the same command invocation, or
 exported first.
+# Gateway and node roles
+
+Standalone `devspace serve` keeps the existing user/environment configuration.
+The multi-machine roles use explicit JSON passed with `--config`; the optional
+`role` property may be `gateway` or `node` but is inferred from `machines` or
+`machineId` when omitted.
+
+The Saga gateway configuration is:
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 7676,
+  "publicBaseUrl": "https://devspace-saga.heliasar.net",
+  "stateDir": "/srv/services-state/devspace/gateway",
+  "machines": [
+    {
+      "id": "asgard", "displayName": "Asgard", "aliases": ["home"],
+      "canonical": true, "kind": "remote",
+      "url": "https://devspace-asgard.heliasar.net",
+      "accessClientIdEnv": "DEVSPACE_ASGARD_ACCESS_CLIENT_ID",
+      "accessClientSecretEnv": "DEVSPACE_ASGARD_ACCESS_CLIENT_SECRET",
+      "nodeTokenEnv": "DEVSPACE_ASGARD_NODE_TOKEN"
+    },
+    {
+      "id": "saga", "displayName": "Saga", "aliases": ["cloud"],
+      "canonical": false, "kind": "local",
+      "allowedRoots": ["/home/ubuntu", "/opt/homelab", "/srv/services"],
+      "stateDir": "/srv/services-state/devspace/executor",
+      "worktreeRoot": "/srv/services-state/devspace/worktrees"
+    }
+  ]
+}
+```
+
+The protected gateway environment supplies `DEVSPACE_OAUTH_OWNER_TOKEN` and the
+three Asgard variables named above. The gateway sends exactly
+`CF-Access-Client-Id`, `CF-Access-Client-Secret`, and
+`X-DevSpace-Node-Token`; it never accepts credentials in JSON.
+
+The Asgard node configuration is:
+
+```json
+{
+  "host": "127.0.0.1", "port": 7679, "machineId": "asgard",
+  "allowedRoots": ["/home/bex/projects"],
+  "stateDir": "/home/bex/.local/state/devspace-asgard-node",
+  "worktreeRoot": "/home/bex/.local/share/devspace-asgard-worktrees",
+  "nodeTokenEnv": "DEVSPACE_NODE_TOKEN"
+}
+```
+
+The node environment must define `DEVSPACE_NODE_TOKEN`. Configuration loading
+fails on missing credentials, non-HTTPS remote URLs, alias/ID collisions,
+multiple or missing canonical machines, non-loopback node binding, and
+overlapping gateway/executor state or worktree roots.

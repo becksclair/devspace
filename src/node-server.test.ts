@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { createNodeServer } from "./node-server.js";
+import { TOOL_CONTRACT_HASH } from "./tool-contract.js";
+import { PROTOCOL_MAJOR } from "./build-metadata.js";
+
+process.env.NODE_SERVER_TEST_TOKEN = "secret-token";
+const calls: Array<{ tool: string; signal: AbortSignal }> = [];
+const executor = { async execute(tool: string, _args: unknown, context: { requestId: string; signal: AbortSignal }) { calls.push({ tool, signal: context.signal }); if (context.requestId === "slow") await new Promise<void>((resolve) => context.signal.addEventListener("abort", () => resolve(), { once: true })); return { ok: true }; } };
+const config = { role: "node" as const, host: "127.0.0.1" as const, port: 0, machineId: "m1", allowedRoots: [process.cwd()], stateDir: process.cwd(), worktreeRoot: process.cwd(), nodeTokenEnv: "NODE_SERVER_TEST_TOKEN" };
+const { app, metadata } = createNodeServer(config, executor, { allowedTools: ["read_file"] });
+const server = app.listen(0, "127.0.0.1");
+await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+const address = server.address(); assert.ok(address && typeof address !== "string");
+const url = `http://127.0.0.1:${address.port}`;
+const headers = { "content-type": "application/json", "X-DevSpace-Node-Token": "secret-token" };
+const hello = await fetch(`${url}/internal/v1/hello`, { headers }); assert.equal(hello.status, 200); assert.equal((await hello.json()).machineId, "m1");
+const call = async (body: unknown, token = "secret-token") => fetch(`${url}/internal/v1/call`, { method: "POST", headers: { ...headers, "X-DevSpace-Node-Token": token }, body: JSON.stringify(body) });
+const valid = { protocolMajor: PROTOCOL_MAJOR, toolContractHash: TOOL_CONTRACT_HASH, machineId: "m1", requestId: "r1", tool: "read_file", arguments: { workspaceId: "w", path: "x" } };
+assert.equal((await call(valid)).status, 200); assert.equal(calls.length, 1);
+assert.equal((await call(valid, "bad")).status, 401); assert.equal(calls.length, 1);
+assert.equal((await call({ ...valid, machineId: "wrong" })).status, 409); assert.equal(calls.length, 1);
+for (const body of [{ ...valid, protocolMajor: 999 }, { ...valid, toolContractHash: "bad" }, { ...valid, requestId: "" }, { ...valid, tool: "run_shell" }, { ...valid, arguments: {} }]) { assert.equal((await call(body)).status, 400); }
+assert.equal(calls.length, 1);
+const abortController = new AbortController();
+const pending = fetch(`${url}/internal/v1/call`, { method: "POST", headers, body: JSON.stringify({ ...valid, requestId: "slow" }), signal: abortController.signal }).catch(() => undefined);
+for (let i = 0; i < 20 && calls.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+abortController.abort(); await pending;
+for (let i = 0; i < 20 && !calls[1]?.signal.aborted; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+assert.equal(calls.length, 2); assert.equal(calls[1]?.signal.aborted, true);
+await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -1,0 +1,38 @@
+name: deploy-runtime-artifact
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full 40-character source commit
+        required: true
+        type: string
+      archive_sha256:
+        description: SHA-256 sidecar value
+        required: true
+        type: string
+jobs:
+  deploy:
+    # This workflow remains dispatch-only. The publish workflow dispatches it
+    # automatically only after DEVSPACE_AUTO_DEPLOY_ENABLED is explicitly set.
+    runs-on: asgard-build-1
+    steps:
+      - name: Submit fixed controller job and poll its result
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+        run: |
+          echo "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          echo "$ARCHIVE_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+          sudo /usr/local/bin/devspace-deployctl submit "$SOURCE_COMMIT" "sha256:$ARCHIVE_SHA256"
+          for attempt in $(seq 1 720); do
+            status=$(sudo /usr/local/bin/devspace-deployctl status "$SOURCE_COMMIT")
+            state=$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.state || ""))' "$status")
+            case "$state" in
+              succeeded) printf '%s\n' "$status"; exit 0 ;;
+              failed) printf '%s\n' "$status" >&2; exit 1 ;;
+              queued|running) sleep 5 ;;
+              *) echo "invalid controller status" >&2; exit 1 ;;
+            esac
+          done
+          echo "controller job did not finish within one hour" >&2
+          exit 1

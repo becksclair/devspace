@@ -1,0 +1,59 @@
+name: publish-runtime-artifact
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  publish:
+    runs-on: asgard-build-1
+    env:
+      GITEA_SERVER_URL: ${{ github.server_url }}
+      GITEA_OWNER: ${{ github.repository_owner }}
+    # Gitea administrators must define this digest from the approved Node 24
+    # image catalog; an unpinned fallback is intentionally not provided.
+    container: node:24-bookworm@sha256:${{ vars.NODE24_BOOKWORM_AMD64_DIGEST }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and build
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build:check
+      - name: Package deterministic artifact
+        id: package
+        run: |
+          export OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts"
+          npm run package:runtime-artifact -- "$GITHUB_SHA"
+          archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
+          OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts-repeat" npm run package:runtime-artifact -- "$GITHUB_SHA"
+          cmp "$archive" ".artifacts-repeat/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
+          sha256sum --check "$archive.sha256"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "digest=$(cut -d' ' -f1 "$archive.sha256")" >> "$GITHUB_OUTPUT"
+      - name: Publish immutable Generic Package
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_PACKAGE_TOKEN }}
+        run: |
+          test -n "$GITEA_TOKEN"
+          base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
+          curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" --upload-file "${{ steps.package.outputs.archive }}" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
+          curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" --upload-file "${{ steps.package.outputs.archive }}.sha256" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz.sha256"
+      - name: Read back and verify digest
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_PACKAGE_TOKEN }}
+        run: |
+          base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
+          curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz" -o /tmp/readback.tar.gz
+          sha256sum /tmp/readback.tar.gz | cut -d' ' -f1 | cmp - <(cut -d' ' -f1 "${{ steps.package.outputs.archive }}.sha256")
+      - name: Dispatch gated deployment
+        if: ${{ vars.DEVSPACE_AUTO_DEPLOY_ENABLED == 'true' }}
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_DEPLOY_DISPATCH_TOKEN }}
+        run: |
+          test -n "$GITEA_TOKEN"
+          curl --fail --silent --show-error \
+            -H "Authorization: token $GITEA_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data '{"ref":"main","inputs":{"source_commit":"${{ github.sha }}","archive_sha256":"${{ steps.package.outputs.digest }}"}}' \
+            "${GITEA_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-runtime-artifact.yml/dispatches"

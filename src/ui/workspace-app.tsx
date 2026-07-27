@@ -14,6 +14,7 @@ import {
   isShellTool,
   isToolName,
   isToolResultCard,
+  machineDisplayName,
   isWriteTool,
   payloadText,
   summaryNumber,
@@ -188,7 +189,10 @@ function render(): void {
     text: display.label,
     title: display.label,
   });
-  toolMain.append(title, label);
+  toolMain.append(title);
+  const machineBadge = renderMachineBadge(card);
+  if (machineBadge) toolMain.append(machineBadge);
+  toolMain.append(label);
 
   button.append(
     icon,
@@ -381,10 +385,10 @@ function renderReviewCard(card: ToolResultCard, display: ToolDisplay): void {
   icon.innerHTML = display.icon;
   const titleGroup = element("div", { className: "review-title-group" });
 
-  titleGroup.append(
-    element("span", { className: "tool-title", text: display.title }),
-    element("span", { className: "tool-label", text: display.label, title: display.label }),
-  );
+  titleGroup.append(element("span", { className: "tool-title", text: display.title }));
+  const machineBadge = renderMachineBadge(card);
+  if (machineBadge) titleGroup.append(machineBadge);
+  titleGroup.append(element("span", { className: "tool-label", text: display.label, title: display.label }));
   header.append(icon, titleGroup, renderSummaryBadge(card));
 
   const body = element("div", { className: "review-summary" });
@@ -412,6 +416,19 @@ function renderReviewCard(card: ToolResultCard, display: ToolDisplay): void {
   main.append(section);
   appRoot.replaceChildren(main);
   renderPayloadIfNeeded();
+}
+
+function renderMachineBadge(card: ToolResultCard): HTMLElement | null {
+  const displayName = machineDisplayName(card);
+  if (!displayName) return null;
+
+  const badge = element("span", {
+    className: "machine-badge",
+    text: displayName,
+    title: displayName,
+  });
+  badge.setAttribute("aria-label", `Machine: ${displayName}`);
+  return badge;
 }
 
 function renderChevron(isExpanded: boolean, visible: boolean): HTMLElement {

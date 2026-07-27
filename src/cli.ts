@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
-import { loadConfig } from "./config.js";
+import { loadConfig, type ServerConfig } from "./config.js";
 import {
   generateOwnerToken,
   loadDevspaceFiles,
@@ -14,8 +14,9 @@ import {
   type DevspaceUserConfig,
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
+import { loadRoleConfig } from "./role-config.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "help";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
 
@@ -29,6 +30,12 @@ async function main(argv: string[]): Promise<void> {
     case "serve":
       await ensureConfigured();
       await serve();
+      return;
+    case "gateway":
+      await runGateway(args);
+      return;
+    case "node":
+      await runNode(args);
       return;
     case "init":
       await runInit({ force: args.includes("--force") });
@@ -47,9 +54,88 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config") return command;
+  if (command === "init" || command === "doctor" || command === "config" || command === "gateway" || command === "node") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
+}
+
+function configArg(args: string[]): string {
+  const index = args.indexOf("--config");
+  if (index < 0 || !args[index + 1]) throw new Error("Usage: devspace gateway|node --config <path>");
+  return resolve(args[index + 1]);
+}
+
+async function runGateway(args: string[]): Promise<void> {
+  const config = loadRoleConfig(configArg(args));
+  if (config.role !== "gateway") throw new Error("gateway requires a gateway role config");
+  const serverModule = await import("./server.js") as typeof import("./server.js") & { createGatewayServer?: (config: unknown) => { app: import("express").Express; close?: () => void } };
+  if (!serverModule.createGatewayServer) throw new Error("Gateway server support is unavailable in this build");
+  const { app, close } = serverModule.createGatewayServer(config);
+  listenRole(app, config.port, config.host, "gateway", close);
+}
+
+async function runNode(args: string[]): Promise<void> {
+  const config = loadRoleConfig(configArg(args));
+  if (config.role !== "node") throw new Error("node requires a node role config");
+  const [{ createNodeServer }, { createExecutor }] = await Promise.all([
+    import("./node-server.js"),
+    import("./executor.js"),
+  ]);
+  const executor = createExecutor(nodeExecutorConfig(config));
+  const { app } = createNodeServer(config, executor);
+  listenRole(app, config.port, config.host, "node", () => executor.close());
+}
+
+function listenRole(
+  app: import("express").Express,
+  port: number,
+  host: string,
+  role: "gateway" | "node",
+  close?: () => void,
+): void {
+  const server = app.listen(port, host, () => console.log(`devspace ${role} listening on http://${host}:${port}`));
+  const shutdown = () => {
+    server.close(() => { close?.(); process.exit(0); });
+    setTimeout(() => process.exit(1), 10_000).unref();
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): ServerConfig {
+  return {
+    host: config.host,
+    port: config.port,
+    oauth: {
+      ownerToken: "node-role-does-not-own-oauth",
+      accessTokenTtlSeconds: 3600,
+      refreshTokenTtlSeconds: 2592000,
+      scopes: ["devspace"],
+      allowedRedirectHosts: [],
+    },
+    allowedRoots: config.allowedRoots,
+    allowedHosts: [config.host],
+    publicBaseUrl: `http://${config.host}:${config.port}`,
+    minimalTools: true,
+    toolNaming: "short",
+    // The private node renders no widgets, but it must establish the
+    // workspace-open review checkpoint used by the show_changes contract.
+    widgets: "changes",
+    stateDir: config.stateDir,
+    worktreeRoot: config.worktreeRoot,
+    skillsEnabled: true,
+    skillPaths: [],
+    agentDir: resolve(expandHomePath(process.env.DEVSPACE_AGENT_DIR ?? "~/.codex")),
+    logging: {
+      level: "info",
+      format: "json",
+      requests: true,
+      assets: false,
+      toolCalls: true,
+      shellCommands: false,
+      trustProxy: false,
+    },
+  };
 }
 
 async function ensureConfigured(): Promise<void> {
@@ -257,6 +343,8 @@ function printHelp(): void {
       "Usage:",
       "  devspace                 Run first-time setup if needed, then start the server",
       "  devspace serve           Start the server",
+      "  devspace gateway --config <path>  Start the public gateway",
+      "  devspace node --config <path>     Start the private node",
       "  devspace init            Create or update ~/.devspace/config.json and auth.json",
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",

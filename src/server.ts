@@ -41,6 +41,13 @@ import { DEVSPACE_VERSION } from "./version.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
+import { GatewayExecutionRouter, type ExecutionTarget, type RoutedExecution } from "./gateway-router.js";
+import type { ToolName as CanonicalToolName } from "./tool-contract.js";
+import { getBuildMetadata } from "./build-metadata.js";
+import { createGatewayWorkspaceStore } from "./gateway-workspace-store.js";
+import { LocalExecutor } from "./executor.js";
+import { RemoteNodeClient } from "./remote-node-client.js";
+import { envSecret, type GatewayRoleConfig } from "./role-config.js";
 
 type Transport = StreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
@@ -67,6 +74,7 @@ const SHELL_TOOL_ANNOTATIONS = {
 interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
+  close?: () => void;
 }
 
 type ToolContent =
@@ -622,10 +630,102 @@ async function assertWorkspaceAppAssets(
   }
 }
 
+async function routeGatewayTool(
+  router: GatewayExecutionRouter,
+  canonicalTool: CanonicalToolName,
+  publicTool: string,
+  args: Record<string, unknown>,
+  extra: { requestId: string | number; signal: AbortSignal },
+) {
+  const routed = await router.execute(canonicalTool, args, {
+    requestId: String(extra.requestId).slice(0, 128),
+    signal: extra.signal,
+  });
+  return gatewayPublicResult(routed, canonicalTool, publicTool, args);
+}
+
+async function routeStandaloneTool(
+  executor: LocalExecutor,
+  canonicalTool: CanonicalToolName,
+  publicTool: string,
+  args: Record<string, unknown>,
+  extra: { requestId: string | number; signal: AbortSignal },
+) {
+  const result = await executor.execute(canonicalTool, args as never, {
+    requestId: String(extra.requestId).slice(0, 128),
+    signal: extra.signal,
+  });
+  const workspaceId = canonicalTool === "open_workspace"
+    ? String(result.structuredContent?.workspaceId ?? "")
+    : String(args.workspaceId ?? "");
+  return publicExecutorResult({ result, publicWorkspaceId: workspaceId }, canonicalTool, publicTool, args);
+}
+
+export function gatewayPublicResult(
+  routed: RoutedExecution,
+  canonicalTool: CanonicalToolName,
+  publicTool: string,
+  args: Record<string, unknown>,
+) {
+  return publicExecutorResult(routed, canonicalTool, publicTool, args);
+}
+
+function publicExecutorResult(
+  routed: { result: RoutedExecution["result"]; machine?: RoutedExecution["machine"]; publicWorkspaceId: string },
+  canonicalTool: CanonicalToolName,
+  publicTool: string,
+  args: Record<string, unknown>,
+) {
+  const result = routed.result;
+  const content = result.content as ToolContent[];
+  const executorStructured = result.structuredContent ?? {};
+  const resultText = contentText(content);
+  const structuredContent = canonicalTool === "open_workspace" || canonicalTool === "show_changes"
+    ? executorStructured
+    : canonicalTool === "edit_file"
+      ? { status: "applied", result: resultText }
+      : { result: resultText };
+  const details = result.details && typeof result.details === "object"
+    ? result.details as Record<string, unknown>
+    : {};
+  const summary = canonicalTool === "show_changes"
+    ? ((executorStructured.summary as Record<string, unknown> | undefined) ?? {})
+    : textSummary(content);
+  const card = {
+    workspaceId: routed.publicWorkspaceId,
+    machine: routed.machine,
+    path: typeof args.path === "string" ? args.path : undefined,
+    root: typeof executorStructured.root === "string" ? executorStructured.root : undefined,
+    status: typeof structuredContent.status === "string" ? structuredContent.status : undefined,
+    summary,
+    files: Array.isArray(executorStructured.files) ? executorStructured.files : undefined,
+    agentsFiles: Array.isArray(executorStructured.agentsFiles) ? executorStructured.agentsFiles : undefined,
+    availableAgentsFiles: Array.isArray(executorStructured.availableAgentsFiles) ? executorStructured.availableAgentsFiles : undefined,
+    skills: Array.isArray(executorStructured.skills) ? executorStructured.skills : undefined,
+    skillDiagnostics: Array.isArray(executorStructured.skillDiagnostics) ? executorStructured.skillDiagnostics : undefined,
+    instruction: typeof executorStructured.instruction === "string" ? executorStructured.instruction : undefined,
+    payload: {
+      content,
+      diff: typeof details.diff === "string" ? details.diff : undefined,
+      patch: typeof details.patch === "string"
+        ? details.patch
+        : typeof executorStructured.patch === "string" ? executorStructured.patch : undefined,
+    },
+  };
+  return {
+    content,
+    structuredContent,
+    _meta: { tool: publicTool, card },
+    ...(result.isError ? { isError: true } : {}),
+  };
+}
+
 function createMcpServer(
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
+  executor: LocalExecutor,
+  gatewayRouter?: GatewayExecutionRouter,
 ): McpServer {
   const toolNames = toolNamesFor(config);
   const workspaceAppManifestEntry =
@@ -704,6 +804,10 @@ function createMcpServer(
           .string()
           .optional()
           .describe("Git ref to base a worktree on. Only used with mode=\"worktree\". Defaults to HEAD."),
+        machine: z
+          .string()
+          .optional()
+          .describe("Gateway only: exact configured machine ID or alias. Omission selects the canonical machine."),
       },
       outputSchema: {
         workspaceId: z.string(),
@@ -725,11 +829,23 @@ function createMcpServer(
         skills: z.array(workspaceSkillOutputSchema),
         skillDiagnostics: z.array(z.unknown()),
         instruction: z.string(),
+        machine: z.object({ id: z.string(), displayName: z.string() }).optional(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
       annotations: { readOnlyHint: true },
     },
-    async ({ path, mode, baseRef }) => {
+    async ({ path, mode, baseRef, machine }, extra) => {
+      if (gatewayRouter) {
+        return routeGatewayTool(
+          gatewayRouter,
+          "open_workspace",
+          "open_workspace",
+          { path, mode, baseRef, machine },
+          extra,
+        );
+      }
+      if (machine !== undefined) throw new Error("machine selection is available only in gateway mode");
+      return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef }, extra);
       const startedAt = performance.now();
       const { workspace, agentsFiles, availableAgentsFiles } = await workspaces.openWorkspace({ path, mode, baseRef });
       if (config.widgets === "changes") {
@@ -858,7 +974,9 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, ...input }, extra) => {
+      if (gatewayRouter) return routeGatewayTool(gatewayRouter, "read_file", toolNames.read, { workspaceId, ...input }, extra);
+      return routeStandaloneTool(executor, "read_file", toolNames.read, { workspaceId, ...input }, extra);
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
@@ -869,6 +987,8 @@ function createMcpServer(
           root: workspace.root,
           readRoots: readPath.readRoots,
         },
+        extra.signal,
+        String(extra.requestId),
       );
 
       if (response.isError) {
@@ -932,14 +1052,16 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "write", workspaceAppUri),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, ...input }, extra) => {
+      if (gatewayRouter) return routeGatewayTool(gatewayRouter, "write_file", toolNames.write, { workspaceId, ...input }, extra);
+      return routeStandaloneTool(executor, "write_file", toolNames.write, { workspaceId, ...input }, extra);
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
-      });
+      }, extra.signal, String(extra.requestId));
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -1019,14 +1141,16 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "edit", workspaceAppUri),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, ...input }, extra) => {
+      if (gatewayRouter) return routeGatewayTool(gatewayRouter, "edit_file", toolNames.edit, { workspaceId, ...input }, extra);
+      return routeStandaloneTool(executor, "edit_file", toolNames.edit, { workspaceId, ...input }, extra);
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
-      });
+      }, extra.signal, String(extra.requestId));
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -1076,7 +1200,7 @@ function createMcpServer(
     },
   );
 
-  if (config.widgets === "changes") {
+  if (config.widgets === "changes" || gatewayRouter) {
     registerAppTool(
       server,
       "show_changes",
@@ -1101,7 +1225,9 @@ function createMcpServer(
         ...toolWidgetDescriptorMeta(config, "show_changes", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, since, markReviewed }) => {
+      async ({ workspaceId, since, markReviewed }, extra) => {
+        if (gatewayRouter) return routeGatewayTool(gatewayRouter, "show_changes", "show_changes", { workspaceId, since, markReviewed }, extra);
+        return routeStandaloneTool(executor, "show_changes", "show_changes", { workspaceId, since, markReviewed }, extra);
         const startedAt = performance.now();
         const workspace = workspaces.getWorkspace(workspaceId);
         const review = await reviewCheckpoints.reviewChanges({
@@ -1165,14 +1291,16 @@ function createMcpServer(
         ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }) => {
+      async ({ workspaceId, ...input }, extra) => {
+        if (gatewayRouter) return routeGatewayTool(gatewayRouter, "grep_files", toolNames.grep, { workspaceId, ...input }, extra);
+        return routeStandaloneTool(executor, "grep_files", toolNames.grep, { workspaceId, ...input }, extra);
         const startedAt = performance.now();
         const workspace = workspaces.getWorkspace(workspaceId);
-        if (input.path) workspaces.resolvePath(workspace, input.path);
+        if (input.path) workspaces.resolvePath(workspace, input.path!);
         const response = await grepFilesTool(input, {
           cwd: workspace.root,
           root: workspace.root,
-        });
+        }, extra.signal, String(extra.requestId));
 
         if (response.isError) {
           logFailedToolResponse(config, {
@@ -1235,14 +1363,16 @@ function createMcpServer(
         ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }) => {
+      async ({ workspaceId, ...input }, extra) => {
+        if (gatewayRouter) return routeGatewayTool(gatewayRouter, "find_files", toolNames.glob, { workspaceId, ...input }, extra);
+        return routeStandaloneTool(executor, "find_files", toolNames.glob, { workspaceId, ...input }, extra);
         const startedAt = performance.now();
         const workspace = workspaces.getWorkspace(workspaceId);
-        if (input.path) workspaces.resolvePath(workspace, input.path);
+        if (input.path) workspaces.resolvePath(workspace, input.path!);
         const response = await findFilesTool(input, {
           cwd: workspace.root,
           root: workspace.root,
-        });
+        }, extra.signal, String(extra.requestId));
 
         if (response.isError) {
           logFailedToolResponse(config, {
@@ -1305,14 +1435,16 @@ function createMcpServer(
         ...toolWidgetDescriptorMeta(config, "directory", workspaceAppUri),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }) => {
+      async ({ workspaceId, ...input }, extra) => {
+        if (gatewayRouter) return routeGatewayTool(gatewayRouter, "list_directory", toolNames.ls, { workspaceId, ...input }, extra);
+        return routeStandaloneTool(executor, "list_directory", toolNames.ls, { workspaceId, ...input }, extra);
         const startedAt = performance.now();
         const workspace = workspaces.getWorkspace(workspaceId);
         workspaces.resolvePath(workspace, input.path);
         const response = await listDirectoryTool(input, {
           cwd: workspace.root,
           root: workspace.root,
-        });
+        }, extra.signal, String(extra.requestId));
 
         if (response.isError) {
           logFailedToolResponse(config, {
@@ -1383,7 +1515,9 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, workingDirectory, ...input }) => {
+    async ({ workspaceId, workingDirectory, ...input }, extra) => {
+      if (gatewayRouter) return routeGatewayTool(gatewayRouter, "run_shell", toolNames.shell, { workspaceId, workingDirectory, ...input }, extra);
+      return routeStandaloneTool(executor, "run_shell", toolNames.shell, { workspaceId, workingDirectory, ...input }, extra);
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(
@@ -1393,7 +1527,7 @@ function createMcpServer(
       const response = await runShellTool(input, {
         cwd,
         root: workspace.root,
-      });
+      }, extra.signal, String(extra.requestId));
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -1442,7 +1576,13 @@ function createMcpServer(
   return server;
 }
 
-export function createServer(config = loadConfig()): RunningServer {
+interface CreateServerOptions {
+  gatewayRouter?: GatewayExecutionRouter;
+  role?: "standalone" | "gateway";
+  healthCheck?: () => void;
+}
+
+export function createServer(config = loadConfig(), options: CreateServerOptions = {}): RunningServer {
   const allowedHosts = config.allowedHosts.includes("*")
     ? undefined
     : Array.from(new Set([config.host, ...config.allowedHosts]));
@@ -1460,9 +1600,10 @@ export function createServer(config = loadConfig()): RunningServer {
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
-  const workspaceStore = createWorkspaceStore(config.stateDir);
+  const workspaceStore = options.gatewayRouter ? undefined : createWorkspaceStore(config.stateDir);
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
+  const executor = new LocalExecutor({ config, workspaces, reviewCheckpoints });
 
   if (config.logging.trustProxy) {
     app.set("trust proxy", 1);
@@ -1523,7 +1664,23 @@ export function createServer(config = loadConfig()): RunningServer {
   );
 
   app.get("/healthz", (_req, res) => {
-    res.json({ ok: true, name: "devspace", version: DEVSPACE_VERSION });
+    try {
+      options.healthCheck?.();
+      if (options.role === "gateway") {
+        const metadata = getBuildMetadata("gateway");
+        res.json({
+          ok: true,
+          role: "gateway",
+          packageVersion: metadata.packageVersion,
+          sourceCommit: metadata.sourceCommit,
+          protocolMajor: metadata.protocolMajor,
+        });
+        return;
+      }
+      res.json({ ok: true, name: "devspace", version: DEVSPACE_VERSION });
+    } catch {
+      res.status(503).json({ ok: false, role: options.role ?? "standalone" });
+    }
   });
 
   app.all("/mcp", async (req, res) => {
@@ -1605,7 +1762,7 @@ export function createServer(config = loadConfig()): RunningServer {
           }
         };
 
-        const server = createMcpServer(config, workspaces, reviewCheckpoints);
+        const server = createMcpServer(config, workspaces, reviewCheckpoints, executor, options.gatewayRouter);
         await server.connect(transport);
       } else {
         logEvent(config.logging, "warn", "mcp_routing_error", {
@@ -1643,6 +1800,71 @@ export function createServer(config = loadConfig()): RunningServer {
   });
 
   return { app, config };
+}
+
+export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServer {
+  const localMachine = roleConfig.machines.find((machine) => machine.kind === "local");
+  const publicConfig = loadConfig({
+    ...process.env,
+    HOST: roleConfig.host,
+    PORT: String(roleConfig.port),
+    DEVSPACE_PUBLIC_BASE_URL: roleConfig.publicBaseUrl,
+    DEVSPACE_STATE_DIR: roleConfig.stateDir,
+    DEVSPACE_CONFIG_DIR: `${roleConfig.stateDir}/role-config-source`,
+    DEVSPACE_ALLOWED_ROOTS: (localMachine?.allowedRoots ?? [process.cwd()]).join(","),
+    DEVSPACE_WORKTREE_ROOT: localMachine?.worktreeRoot ?? `${roleConfig.stateDir}/unused-worktrees`,
+  });
+  publicConfig.minimalTools = false;
+  publicConfig.widgets = "full";
+  const bindings = createGatewayWorkspaceStore(roleConfig.stateDir);
+  const targets = new Map<string, ExecutionTarget>();
+  const localExecutors: LocalExecutor[] = [];
+  for (const machine of roleConfig.machines) {
+    if (machine.kind === "local") {
+      const executorConfig: ServerConfig = {
+        ...publicConfig,
+        allowedRoots: machine.allowedRoots!,
+        stateDir: machine.stateDir!,
+        worktreeRoot: machine.worktreeRoot!,
+        widgets: "changes",
+      };
+      const executor = new LocalExecutor({ config: executorConfig });
+      localExecutors.push(executor);
+      targets.set(machine.id, {
+        execute: (tool, args, context) => executor.execute(tool, args as never, context),
+      });
+      continue;
+    }
+    targets.set(machine.id, new RemoteNodeClient({
+      machineId: machine.id,
+      url: machine.url!,
+      accessClientId: envSecret(machine.accessClientIdEnv!),
+      accessClientSecret: envSecret(machine.accessClientSecretEnv!),
+      nodeToken: envSecret(machine.nodeTokenEnv!),
+    }));
+  }
+  const router = new GatewayExecutionRouter(
+    roleConfig.machines.map((machine) => ({
+      id: machine.id,
+      displayName: machine.displayName,
+      aliases: machine.aliases ?? [],
+      canonical: machine.canonical === true,
+    })),
+    targets,
+    bindings,
+  );
+  const running = createServer(publicConfig, {
+    gatewayRouter: router,
+    role: "gateway",
+    healthCheck: () => bindings.ping(),
+  });
+  return {
+    ...running,
+    close: () => {
+      for (const executor of localExecutors) executor.close();
+      bindings.close();
+    },
+  };
 }
 
 async function isMainModule(): Promise<boolean> {
