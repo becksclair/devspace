@@ -42,12 +42,17 @@ try {
   if (stageEntries.some((entry) => entry === "." || entry === ".." || entry.startsWith("/") || entry.split("/").includes(".."))) {
     throw new Error("invalid top-level stage entry");
   }
-  const tar = spawnSync("tar", ["-C", stage, "--sort=name", "--format=pax", "--pax-option=delete=atime,delete=ctime", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "--null", "--files-from=-", "-cf", "-"], { input: Buffer.from(`${stageEntries.join("\0")}\0`), stdio: ["pipe", "pipe", "pipe"], maxBuffer: 1024 * 1024 * 1024 });
+  const tar = spawnSync("tar", ["-C", stage, "--dereference", "--hard-dereference", "--sort=name", "--format=pax", "--pax-option=delete=atime,delete=ctime", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "--null", "--files-from=-", "-cf", "-"], { input: Buffer.from(`${stageEntries.join("\0")}\0`), stdio: ["pipe", "pipe", "pipe"], maxBuffer: 1024 * 1024 * 1024 });
   if (tar.status !== 0 || !tar.stdout) throw new Error(`tar creation failed: ${tar.stderr?.toString() || tar.error?.message || "unknown error"}`);
   const gzip = spawnSync("gzip", ["-n", "-c"], { input: tar.stdout, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 1024 * 1024 * 1024 });
   if (gzip.status !== 0 || !gzip.stdout) throw new Error(`gzip creation failed: ${gzip.stderr?.toString() || gzip.error?.message || "unknown error"}`);
   writeFileSync(archive, gzip.stdout);
   const members = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 }).trim().split("\n").filter(Boolean);
+  const verboseMembers = execFileSync("tar", ["-tvzf", archive], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 }).split("\n").filter(Boolean);
+  const invalidTypes = verboseMembers.filter((member) => !["-", "d"].includes(member[0]));
+  if (invalidTypes.length > 0) {
+    throw new Error(`archive contains non-file/directory members: ${invalidTypes.join("; ")}`);
+  }
   if (members.some((member) => member === "." || member.startsWith("/") || member.split("/").includes("..") || member.split("/").includes("."))) {
     throw new Error("archive contains an unsafe member");
   }
