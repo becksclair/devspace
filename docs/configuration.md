@@ -143,13 +143,13 @@ The Saga gateway configuration is:
 {
   "host": "127.0.0.1",
   "port": 7676,
-  "publicBaseUrl": "https://devspace-saga.heliasar.net",
+  "publicBaseUrl": "https://devspace-saga.heliasar.com",
   "stateDir": "/srv/services-state/devspace/gateway",
   "machines": [
     {
       "id": "asgard", "displayName": "Asgard", "aliases": ["home"],
       "canonical": true, "kind": "remote",
-      "url": "https://devspace-asgard.heliasar.net",
+      "url": "https://devspace-asgard.heliasar.com",
       "accessClientIdEnv": "DEVSPACE_ASGARD_ACCESS_CLIENT_ID",
       "accessClientSecretEnv": "DEVSPACE_ASGARD_ACCESS_CLIENT_SECRET",
       "nodeTokenEnv": "DEVSPACE_ASGARD_NODE_TOKEN"

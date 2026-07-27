@@ -2,7 +2,7 @@
 
 ## Outcome
 
-One ChatGPT developer app connects to `https://devspace-saga.heliasar.net/mcp` and can operate on both machines:
+One ChatGPT developer app connects to `https://devspace-saga.heliasar.com/mcp` and can operate on both machines:
 
 - `open_workspace({ path })` always opens on Asgard, the one canonical machine.
 - `open_workspace({ path, machine: "saga" })` explicitly opens on Saga. Exact configured aliases such as `home` and `cloud` may also be accepted.
@@ -20,7 +20,7 @@ The implementation should use the smallest topology that satisfies those rules:
        |
        | OAuth + Streamable HTTP MCP
        v
-    devspace-saga.heliasar.net
+    devspace-saga.heliasar.com
        |
        | dedicated Cloudflare Tunnel
        v
@@ -28,7 +28,7 @@ The implementation should use the smallest topology that satisfies those rules:
        |                         |
        | local executor          | HTTPS + Cloudflare Access Service Auth
        v                         v
-    Saga files/shell      devspace-asgard.heliasar.net
+    Saga files/shell      devspace-asgard.heliasar.com
                                   |
                                   | dedicated Cloudflare Tunnel
                                   v
@@ -207,9 +207,9 @@ Within protocol major 1, node/gateway changes must remain rolling-compatible bec
 
 External Cloudflare writes require explicit authorization. Create:
 
-1. A dedicated `devspace-asgard` Tunnel mapping `devspace-asgard.heliasar.net` to Asgard `http://127.0.0.1:7679`.
+1. A dedicated `devspace-asgard` Tunnel mapping `devspace-asgard.heliasar.com` to Asgard `http://127.0.0.1:7679`.
 2. A Cloudflare Access self-hosted application for that hostname with a Service Auth policy permitting only a dedicated Saga gateway service token.
-3. A dedicated `devspace-saga` Tunnel mapping `devspace-saga.heliasar.net` to Saga `http://127.0.0.1:7676`.
+3. A dedicated `devspace-saga` Tunnel mapping `devspace-saga.heliasar.com` to Saga `http://127.0.0.1:7676`.
 
 Store tunnel tokens only in protected token files. Store the Access service-token credentials and the Asgard origin bearer only in Saga's protected gateway environment; store the matching origin bearer only in Asgard's protected node environment. Use different values for tunnel, Access, origin, and OAuth credentials. Do not put Access in front of the public Saga hostname; DevSpace OAuth remains the ChatGPT authorization boundary.
 
@@ -228,7 +228,7 @@ Inspect service, tunnel, DNS, and Access state before retrying any mutation whos
 
 ### 6. Prove the complete behavior from this development machine
 
-Use the repository's Streamable HTTP test client or a pinned MCP Inspector against `https://devspace-saga.heliasar.net/mcp` and complete the normal OAuth flow.
+Use the repository's Streamable HTTP test client or a pinned MCP Inspector against `https://devspace-saga.heliasar.com/mcp` and complete the normal OAuth flow.
 
 Run this minimum matrix:
 
@@ -252,7 +252,7 @@ Any wrong-host call, silent fallback, lost gateway binding after restart, Access
 
 ### 7. Test in a parallel ChatGPT app, then cut over
 
-Creating or changing the ChatGPT app and Tailscale routes requires explicit authorization. Create a new developer-mode app targeting `https://devspace-saga.heliasar.net/mcp`; do not mutate the current Asgard app.
+Creating or changing the ChatGPT app and Tailscale routes requires explicit authorization. Create a new developer-mode app targeting `https://devspace-saga.heliasar.com/mcp`; do not mutate the current Asgard app.
 
 In a fresh ChatGPT conversation:
 
@@ -302,7 +302,7 @@ Host validation:
 
 Public validation:
 
-    curl --fail --silent --show-error https://devspace-saga.heliasar.net/healthz
+    curl --fail --silent --show-error https://devspace-saga.heliasar.com/healthz
 
 Acceptance requires all product checks to pass; an immutable Gitea artifact and successful automatic deployment of the exact same commit to Saga and Asgard through the established control seams; healthy dedicated tunnels; the routing matrix above; persistent workspace affinity across gateway restart; correct visible machine badges on every gateway-mode card; explicit Asgard failure with zero Saga fallback; standalone Asgard still available until cutover; successful direct ChatGPT use of both machines; and an unchanged set of unrelated Tailscale Funnel routes.
 
