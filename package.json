@@ -42,7 +42,7 @@
     "@clack/prompts": "^1.5.1",
     "@earendil-works/pi-coding-agent": "^0.79.4",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@pierre/diffs": "^1.2.5",
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
