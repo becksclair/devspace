@@ -32,12 +32,55 @@ npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 | --- | --- |
 | `HOST` | Local bind host. Defaults to `127.0.0.1`. |
 | `PORT` | Local port. Defaults to `7676`. |
-| `DEVSPACE_ALLOWED_ROOTS` | Comma-separated local roots that workspaces may open. |
+| `DEVSPACE_ALLOWED_ROOTS` | Legacy comma-separated roots. Every entry is read-write. Do not combine with `DEVSPACE_ROOTS`. |
+| `DEVSPACE_ROOTS` | JSON root-policy array supporting `path`, `aliases`, and `access` (`read-only` or `read-write`). |
 | `DEVSPACE_PUBLIC_BASE_URL` | Public origin for the server, without `/mcp`. |
 | `DEVSPACE_ALLOWED_HOSTS` | Optional Host header allowlist override. |
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | Owner password for OAuth approval. Must be at least 16 characters. |
 | `DEVSPACE_WORKTREE_ROOT` | Directory for managed Git worktrees. Defaults to `~/.devspace/worktrees`. |
 | `DEVSPACE_STATE_DIR` | Directory for SQLite state. Defaults to `~/.local/share/devspace`. |
+
+## Root policies and aliases
+
+Use `DEVSPACE_ROOTS` or role JSON `roots` when a machine has path aliases or read-only inspection roots:
+
+```json
+[
+  {
+    "path": "/srv/pool/projects",
+    "aliases": ["/home/ubuntu/projects"],
+    "access": "read-write"
+  },
+  {
+    "path": "/etc",
+    "access": "read-only"
+  }
+]
+```
+
+The configured path and every alias must exist. An alias must resolve to the same canonical directory as `path`. DevSpace preserves the logical alias for display and shell `PWD`, while file operations authorize the canonical target immediately before execution.
+
+A nested symlink may enter another configured root when that root grants the requested access. Undeclared canonical targets are rejected. Shell and terminal commands are not confined by root policies.
+
+## Shell, terminals, and maintenance
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEVSPACE_SHELL_PATH` | auto | Explicit Bash-compatible shell path. |
+| `DEVSPACE_SHELL_MODE` | `service` | `service` uses the service environment; `login` loads the user's login shell profile. |
+| `DEVSPACE_INFRA_SECRET_NAMES` | empty | Additional exact DevSpace-owned environment names removed from child processes. |
+| `DEVSPACE_TERMINAL_BACKEND` | `tmux` | Persistent terminal backend. |
+| `DEVSPACE_TERMINAL_RUNTIME_DIR` | `<stateDir>/terminal-runtime` | Private tmux socket and environment directory. |
+| `DEVSPACE_TERMINAL_MAX_PER_WORKSPACE` | `4` | Active terminal limit per workspace. |
+| `DEVSPACE_TERMINAL_MAX_TOTAL` | `12` | Active terminal limit per executor. |
+| `DEVSPACE_TERMINAL_IDLE_TTL_SECONDS` | `28800` | Idle lifetime for unretained terminals. |
+| `DEVSPACE_TERMINAL_USER_SYSTEMD` | `1` | Use the user systemd manager when available so the tmux server survives DevSpace restart. |
+| `DEVSPACE_MAINTENANCE_INTERVAL_SECONDS` | `3600` | Maintenance cadence. |
+| `DEVSPACE_CLOSED_SESSION_TTL_SECONDS` | `604800` | Closed workspace metadata retention. |
+| `DEVSPACE_CHECKOUT_IDLE_TTL_SECONDS` | `2592000` | Inactive checkout metadata retention. |
+| `DEVSPACE_ISOLATED_IDLE_TTL_SECONDS` | `604800` | Inactive clean managed workspace retention. Dirty work is retained. |
+
+DevSpace always removes `DEVSPACE_OAUTH_OWNER_TOKEN`, the current node bearer variable, and configured remote-node bearer names from child shell and terminal environments. It does not remove user development credentials merely because their names contain `TOKEN`, `KEY`, or `SECRET`.
 
 ## OAuth
 
@@ -155,9 +198,23 @@ The Saga gateway configuration is:
     {
       "id": "saga", "displayName": "Saga", "aliases": ["cloud"],
       "canonical": false, "kind": "local",
-      "allowedRoots": ["/home/ubuntu", "/opt/homelab", "/srv/services"],
+      "roots": [
+        {
+          "path": "/srv/pool/projects",
+          "aliases": ["/home/ubuntu/projects"],
+          "access": "read-write"
+        },
+        { "path": "/home/ubuntu", "access": "read-write" },
+        { "path": "/etc", "access": "read-only" },
+        { "path": "/var/log", "access": "read-only" }
+      ],
       "stateDir": "/srv/services-state/devspace/executor",
-      "worktreeRoot": "/srv/services-state/devspace/worktrees"
+      "worktreeRoot": "/srv/services-state/devspace/worktrees",
+      "shell": { "path": "/bin/bash", "mode": "login" },
+      "terminals": {
+        "runtimeDir": "/run/user/1000/devspace",
+        "useUserSystemd": true
+      }
     }
   ]
 }
@@ -183,3 +240,8 @@ The node environment must define `DEVSPACE_NODE_TOKEN`. Configuration loading
 fails on a missing node-token variable, non-HTTPS remote URLs, alias/ID collisions,
 multiple or missing canonical machines, non-loopback node binding, and
 overlapping gateway/executor state or worktree roots.
+
+
+## Checkout session reuse
+
+`open_workspace` reuses an active checkout session when its logical path, canonical target, and mode match. Pass `fresh: true` to force a separate checkout session and independent review baseline. Managed `worktree` and `isolated` opens are never merged. In gateway mode, checkout reuse also preserves the existing public workspace ID.

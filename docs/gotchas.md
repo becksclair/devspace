@@ -130,18 +130,15 @@ To regenerate setup:
 npx @waishnav/devspace init --force
 ```
 
-## Unknown `workspaceId`
+## Unknown Or Closed `workspaceId`
 
-`workspaceId` values are session identifiers. If the server restarts and the
-client receives an unknown workspace error, call `open_workspace` again for that
-project.
+Workspace metadata survives executor restart. A workspace ID becomes unusable when it was explicitly closed, expired by maintenance, its gateway binding was removed, or current canonical root policy no longer authorizes the stored path.
 
-Workspace session metadata is persisted, but clients should still treat
-`open_workspace` as the way to begin a fresh working session.
+Call `open_workspace` again when the returned error says the workspace is unknown or closed. Do not assume a removed managed checkout still exists.
 
 ## Workspace Path Rejected
 
-The path must be inside one of the allowed roots configured during setup.
+The logical entry path must be under a configured root or alias, and its canonical target must be under a root policy that grants the requested access.
 
 Run:
 
@@ -155,20 +152,66 @@ Then either open a project under an allowed root or rerun setup:
 npx @waishnav/devspace init --force
 ```
 
+For policy JSON, verify that every alias exists and resolves to the same canonical target as its declared root. A nested symlink into an undeclared target is rejected intentionally.
+
+## Workspace Opens Read-Only
+
+`open_workspace` reports both logical and canonical paths, mount state, file writability, and Git metadata writability. A logical path may be under a writable-looking home directory while its canonical target is mounted read-only inside the DevSpace service namespace.
+
+Use `workspace_status` after changing host mounts or permissions. When writable work is required, reopen with:
+
+```json
+{
+  "path": "~/projects/my-project",
+  "mode": "isolated"
+}
+```
+
+Isolated mode uses a Git worktree when source metadata is writable and an independent clone when it is not.
+
 ## Worktree Mode Fails
 
-Worktree mode requires:
+Explicit worktree mode requires:
 
 - Git installed
 - the path is inside a Git repository
 - the repository has at least one commit
 - the requested `baseRef` resolves to a commit
+- the source Git common directory is writable
 
-For a new repository, create the first commit or use checkout mode.
+Use `mode: "isolated"` when the source `.git` is read-only. Uncommitted source changes are reported but are not copied into either managed strategy.
 
-Uncommitted source checkout changes are not copied into the managed worktree.
-Commit, stash, or ask the model to work in checkout mode if those changes are
-needed.
+## Missing Workspace Directory
+
+DevSpace no longer creates a missing checkout silently. A typo fails. To create a directory intentionally, pass `create: true`; the target must be inside a read-write root policy.
+
+## Login Shell Does Not Find User Tools
+
+Set:
+
+```bash
+DEVSPACE_SHELL_MODE=login
+```
+
+and, when needed, an explicit `DEVSPACE_SHELL_PATH=/bin/bash`. Run `devspace doctor` to verify Bun, OpenCode, tmux, user-systemd, and sudo capability through the configured child environment.
+
+DevSpace control-plane secrets are removed from child processes. Add future infrastructure credential names to `DEVSPACE_INFRA_SECRET_NAMES`; do not add ordinary user development credentials there.
+
+## Persistent Terminal Is Service-Lifetime Only
+
+Terminal status reports whether the tmux owner is expected to survive DevSpace restart. Restart persistence requires:
+
+- `DEVSPACE_TERMINAL_USER_SYSTEMD=1`
+- a usable user systemd manager
+- valid `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` in the service environment
+
+Without those conditions, terminal sessions still survive individual MCP calls but may die with the DevSpace service.
+
+Use the terminal tools' explicit IDs rather than the default tmux socket. DevSpace uses a private configured socket.
+
+## Dirty Isolated Workspace Was Not Deleted
+
+This is intentional. `close_workspace` and maintenance remove only clean managed work. Dirty managed checkouts are retained and their exact path is reported. Inspect, commit, copy, or delete them deliberately.
 
 ## Windows Shell Commands Fail
 
@@ -213,3 +256,8 @@ DEVSPACE_WIDGETS=full
 The aggregate `show_changes` tool is only exposed with
 `DEVSPACE_WIDGETS=changes`. Plain MCP clients may ignore ChatGPT Apps widget
 metadata and only show text results.
+
+
+### Reopening a checkout returns the existing session
+
+This is deliberate workspace hygiene, not stale routing. Repeated `open_workspace` calls for the same active checkout reuse the session and public gateway ID. Use `fresh: true` when a distinct review baseline is actually required. `worktree` and `isolated` modes always create separate managed workspaces.

@@ -6,6 +6,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dirtyPaths = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root, encoding: "utf8" }).trim();
+if (dirtyPaths) {
+  throw new Error("runtime artifacts require a clean Git worktree; commit or remove all source changes before packaging");
+}
 const commit = process.argv[2] || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("source commit must be a full 40-character hexadecimal commit");
 const output = resolve(process.env.OUTPUT_DIR || join(root, ".artifacts"));

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
@@ -13,8 +13,10 @@ import {
   writeDevspaceConfig,
   type DevspaceUserConfig,
 } from "./user-config.js";
-import { expandHomePath } from "./roots.js";
+import { configuredLogicalRoots, expandHomePath, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 import { loadRoleConfig } from "./role-config.js";
+import { createShellRuntime, runConfiguredShell } from "./shell-environment.js";
+import { createWorkspaceStore } from "./workspace-store.js";
 
 type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "help";
 const require = createRequire(import.meta.url);
@@ -103,6 +105,7 @@ function listenRole(
 }
 
 function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): ServerConfig {
+  const rootPolicies = normalizeRootPolicies(config.roots ?? rootPoliciesFromStrings(config.allowedRoots ?? []));
   return {
     host: config.host,
     port: config.port,
@@ -113,7 +116,8 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
       scopes: ["devspace"],
       allowedRedirectHosts: [],
     },
-    allowedRoots: config.allowedRoots,
+    allowedRoots: configuredLogicalRoots(rootPolicies),
+    rootPolicies,
     allowedHosts: [config.host],
     publicBaseUrl: `http://${config.host}:${config.port}`,
     minimalTools: true,
@@ -126,6 +130,29 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
     skillsEnabled: true,
     skillPaths: [],
     agentDir: resolve(expandHomePath(process.env.DEVSPACE_AGENT_DIR ?? "~/.codex")),
+    shell: {
+      path: config.shell?.path,
+      mode: config.shell?.mode ?? "service",
+      environment: config.shell?.environment,
+    },
+    secretNames: Array.from(new Set([
+      config.nodeTokenEnv,
+      ...(process.env.DEVSPACE_INFRA_SECRET_NAMES ?? "").split(",").map((name) => name.trim()).filter(Boolean),
+    ])),
+    terminals: {
+      backend: config.terminals?.backend ?? "tmux",
+      runtimeDir: config.terminals?.runtimeDir ?? join(config.stateDir, "terminal-runtime"),
+      maxPerWorkspace: config.terminals?.maxPerWorkspace ?? 4,
+      maxTotal: config.terminals?.maxTotal ?? 12,
+      idleTtlSeconds: config.terminals?.idleTtlSeconds ?? 8 * 60 * 60,
+      useUserSystemd: config.terminals?.useUserSystemd ?? true,
+    },
+    maintenance: {
+      intervalSeconds: 3600,
+      closedSessionTtlSeconds: 7 * 24 * 60 * 60,
+      checkoutIdleTtlSeconds: 30 * 24 * 60 * 60,
+      isolatedIdleTtlSeconds: 7 * 24 * 60 * 60,
+    },
     logging: {
       level: "info",
       format: "json",
@@ -264,7 +291,7 @@ async function serve(): Promise<void> {
 
   const { createServer } = await import("./server.js");
   const config = loadConfig();
-  const { app } = createServer(config);
+  const { app, close } = createServer(config);
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
@@ -278,7 +305,7 @@ async function serve(): Promise<void> {
   });
 
   const shutdown = () => {
-    httpServer.close(() => process.exit(0));
+    httpServer.close(() => { close?.(); process.exit(0); });
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
@@ -301,7 +328,33 @@ async function runDoctor(): Promise<void> {
     console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
     console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
     console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
+    console.log(`Root policies: ${config.rootPolicies.map((policy) => `${policy.path} [${policy.access}]${policy.aliases.length ? ` aliases=${policy.aliases.join(",")}` : ""}`).join("; ")}`);
     console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
+    console.log(`Shell: ${config.shell.path ?? "auto"} (${config.shell.mode})`);
+    console.log(`Filtered child secret names: ${config.secretNames.join(", ")}`);
+    console.log(`Terminals: ${config.terminals.backend} runtime=${config.terminals.runtimeDir} max=${config.terminals.maxPerWorkspace}/${config.terminals.maxTotal} idle=${config.terminals.idleTtlSeconds}s user-systemd=${config.terminals.useUserSystemd}`);
+    console.log(`Maintenance: every ${config.maintenance.intervalSeconds}s closed=${config.maintenance.closedSessionTtlSeconds}s checkout=${config.maintenance.checkoutIdleTtlSeconds}s isolated=${config.maintenance.isolatedIdleTtlSeconds}s`);
+
+    const runtime = createShellRuntime(config.shell, config.secretNames);
+    try {
+      const { stdout } = await runConfiguredShell(runtime, [
+        "printf 'tmux=%s\\n' \"$(command -v tmux 2>/dev/null || true)\"",
+        "printf 'opencode=%s\\n' \"$(command -v opencode 2>/dev/null || true)\"",
+        "if systemctl --user show-environment >/dev/null 2>&1; then echo user_systemd=available; else echo user_systemd=unavailable; fi",
+        "if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then echo privilege_escalation=available; else echo privilege_escalation=unavailable; fi",
+      ].join("; "), process.cwd(), 5_000);
+      process.stdout.write(stdout);
+    } catch (error) {
+      console.log(`Shell capability probe: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const store = createWorkspaceStore(config.stateDir);
+    try {
+      const sessions = store.listSessions();
+      console.log(`Workspace sessions: ${sessions.filter((session) => session.status === "active").length} active, ${sessions.filter((session) => session.status === "closed").length} closed`);
+    } finally {
+      store.close?.();
+    }
   } catch (error) {
     console.log(`Config status: ${error instanceof Error ? error.message : String(error)}`);
   }

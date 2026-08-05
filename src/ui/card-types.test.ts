@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { machineDisplayName, type ToolResultCard } from "./card-types.js";
+import { isExpandableCard, isTerminalTool, isToolName, machineDisplayName, type ToolResultCard } from "./card-types.js";
 
 test("machineDisplayName returns the configured display name", () => {
   const card = {
@@ -9,6 +9,13 @@ test("machineDisplayName returns the configured display name", () => {
   } satisfies ToolResultCard;
 
   assert.equal(machineDisplayName(card), "Orion");
+});
+
+test("terminal tools are recognized and expandable", () => {
+  assert.equal(isToolName("terminal_read"), true);
+  assert.equal(isTerminalTool("terminal_read"), true);
+  assert.equal(isTerminalTool("run_shell"), false);
+  assert.equal(isExpandableCard({ tool: "terminal_read", terminalOutput: "hello" }), true);
 });
 
 test("machineDisplayName preserves standalone cards without a machine", () => {

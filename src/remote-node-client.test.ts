@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { RemoteNodeClient } from "./remote-node-client.js";
+import { RemoteNodeClient, remoteToolTimeoutMs } from "./remote-node-client.js";
 import { PROTOCOL_MAJOR, getBuildMetadata } from "./build-metadata.js";
 import { TOOL_CONTRACT_HASH } from "./tool-contract.js";
 
 assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://localhost", nodeToken: "t" }), /HTTPS/);
+assert.equal(remoteToolTimeoutMs("read_file", {}), 30_000);
+assert.equal(remoteToolTimeoutMs("terminal_read", {}), 30_000);
+assert.equal(remoteToolTimeoutMs("run_shell", { timeout: 90 }), 100_000);
+assert.equal(remoteToolTimeoutMs("run_shell", { timeout: 90 }, 5), 5);
 const originalFetch = globalThis.fetch; let count = 0; let lastInit: RequestInit | undefined;
 const headerValue = (name: string) => lastInit?.headers instanceof Headers
   ? lastInit.headers.get(name)

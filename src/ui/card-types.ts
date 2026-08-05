@@ -2,6 +2,8 @@ import type { App } from "@modelcontextprotocol/ext-apps";
 
 export type ToolName =
   | "open_workspace"
+  | "workspace_status"
+  | "close_workspace"
   | "read_file"
   | "write_file"
   | "edit_file"
@@ -9,6 +11,12 @@ export type ToolName =
   | "find_files"
   | "list_directory"
   | "run_shell"
+  | "terminal_start"
+  | "terminal_read"
+  | "terminal_write"
+  | "terminal_resize"
+  | "terminal_status"
+  | "terminal_close"
   | "show_changes"
   | "read"
   | "write"
@@ -29,6 +37,13 @@ export interface ToolResultCard {
   workspaceId?: string;
   path?: string;
   root?: string;
+  canonicalRoot?: string;
+  capabilities?: Record<string, unknown>;
+  worktree?: Record<string, unknown>;
+  terminal?: Record<string, unknown>;
+  terminals?: Array<Record<string, unknown>>;
+  terminalOutput?: string;
+  truncated?: boolean;
   status?: string;
   summary?: Record<string, unknown>;
   files?: Array<{
@@ -77,6 +92,8 @@ export interface ToolPayload {
 export function isToolName(value: unknown): value is ToolName {
   return (
     value === "open_workspace" ||
+    value === "workspace_status" ||
+    value === "close_workspace" ||
     value === "read_file" ||
     value === "write_file" ||
     value === "edit_file" ||
@@ -84,6 +101,12 @@ export function isToolName(value: unknown): value is ToolName {
     value === "find_files" ||
     value === "list_directory" ||
     value === "run_shell" ||
+    value === "terminal_start" ||
+    value === "terminal_read" ||
+    value === "terminal_write" ||
+    value === "terminal_resize" ||
+    value === "terminal_status" ||
+    value === "terminal_close" ||
     value === "show_changes" ||
     value === "read" ||
     value === "write" ||
@@ -111,8 +134,12 @@ export function isSearchTool(tool: ToolName): boolean {
   return tool === "grep_files" || tool === "find_files" || tool === "grep" || tool === "glob";
 }
 
+export function isTerminalTool(tool: ToolName): boolean {
+  return tool.startsWith("terminal_");
+}
+
 export function isShellTool(tool: ToolName): boolean {
-  return tool === "run_shell" || tool === "bash";
+  return tool === "run_shell" || tool === "bash" || isTerminalTool(tool);
 }
 
 export function isReviewTool(tool: ToolName): boolean {
@@ -157,6 +184,7 @@ export function isExpandableCard(card: ToolResultCard): boolean {
   }
 
   if (isReviewTool(card.tool)) return Boolean(card.files?.length || card.payload?.patch);
+  if (isTerminalTool(card.tool)) return Boolean(card.terminalOutput || card.terminals?.length || card.terminal);
 
   return Boolean(card.payload);
 }

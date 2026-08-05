@@ -11,6 +11,24 @@ const base = { role: "gateway", host: "127.0.0.1", publicBaseUrl: "https://examp
 ] };
 const loaded = loadRoleConfig(write(base)); assert.equal(loaded.role, "gateway");
 if (loaded.role === "gateway") assert.equal(loaded.publicBaseUrl, "https://example.test");
+const rootsOnly = loadRoleConfig(write({
+  ...base,
+  machines: [{
+    ...base.machines[0],
+    allowedRoots: undefined,
+    roots: [{ path: join(dir, "roots"), aliases: [], access: "read-write" }],
+    shell: { path: "/bin/bash", mode: "login", environment: { DEV_MODE: "1" } },
+  }],
+}));
+if (rootsOnly.role === "gateway") {
+  assert.equal(rootsOnly.machines[0]?.allowedRoots, undefined);
+  assert.equal(rootsOnly.machines[0]?.roots?.[0]?.access, "read-write");
+  assert.equal(rootsOnly.machines[0]?.shell?.mode, "login");
+}
+assert.throws(
+  () => loadRoleConfig(write({ ...base, machines: [{ ...base.machines[0], roots: [{ path: join(dir, "roots"), access: "read-write" }] }] })),
+  /cannot define both allowedRoots and roots/,
+);
 assert.throws(() => loadRoleConfig(write({ ...base, machines: [{ ...base.machines[0], canonical: undefined }] })), /exactly one canonical/);
 assert.throws(() => loadRoleConfig(write({ ...base, machines: [{ ...base.machines[0], canonical: true }, { ...base.machines[0], id: "other", displayName: "Other", canonical: true }] })), /exactly one canonical/);
 const reordered = loadRoleConfig(write({ ...base, machines: [
@@ -33,5 +51,21 @@ assert.throws(() => loadRoleConfig(write({ ...base, machines: [{ ...base.machine
 for (const field of ["stateDir", "worktreeRoot"]) {
   const machine = { ...base.machines[0], [field]: join(dir, "gateway-state", "nested") };
   assert.throws(() => loadRoleConfig(write({ ...base, machines: [machine] })), /must not overlap/);
+}
+const nodeRoots = loadRoleConfig(write({
+  role: "node",
+  machineId: "asgard",
+  port: 7679,
+  roots: [{ path: join(dir, "node-root"), access: "read-only" }],
+  stateDir: join(dir, "node-state"),
+  worktreeRoot: join(dir, "node-worktrees"),
+  nodeTokenEnv: "NODE_TOKEN",
+  shell: { mode: "login" },
+}), { NODE_TOKEN: "secret" });
+assert.equal(nodeRoots.role, "node");
+if (nodeRoots.role === "node") {
+  assert.equal(nodeRoots.allowedRoots, undefined);
+  assert.equal(nodeRoots.roots?.[0]?.access, "read-only");
+  assert.equal(nodeRoots.shell?.mode, "login");
 }
 assert.throws(() => envSecret("MISSING_DEVSPACE_TEST", {}), /required environment variable is missing/);

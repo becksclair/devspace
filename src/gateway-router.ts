@@ -105,9 +105,21 @@ export class GatewayExecutionRouter {
     } catch (error) {
       if (error instanceof GatewayRoutingError) throw error;
       const message = error instanceof Error ? error.message : String(error);
+      if (/Unknown workspaceId:|Workspace is not active:/.test(message)) {
+        this.bindings.delete(publicWorkspaceId);
+        throw new GatewayRoutingError(
+          "unknown_workspace",
+          `Unknown workspaceId: ${publicWorkspaceId}. Call open_workspace first.`,
+          { cause: error },
+        );
+      }
       throw new Error(message.split(binding.executorWorkspaceId).join(publicWorkspaceId));
     }
-    this.bindings.touch(publicWorkspaceId);
+    const workspaceClosed = tool === "close_workspace" && result.structuredContent?.workspace && typeof result.structuredContent.workspace === "object"
+      ? (result.structuredContent.workspace as { closed?: unknown }).closed === true
+      : false;
+    if (workspaceClosed) this.bindings.deleteByExecutor(machine.id, binding.executorWorkspaceId);
+    else this.bindings.touch(publicWorkspaceId);
     return {
       result: rewriteExecutorWorkspaceId(result, binding.executorWorkspaceId, publicWorkspaceId),
       machine: publicMachine(machine),
@@ -145,7 +157,8 @@ export class GatewayExecutionRouter {
       };
     }
 
-    const publicWorkspaceId = `gw_${randomUUID()}`;
+    const existing = this.bindings.findByExecutor(machine.id, executorWorkspaceId);
+    const publicWorkspaceId = existing?.publicWorkspaceId ?? `gw_${randomUUID()}`;
     const now = new Date().toISOString();
     const binding: PublicWorkspaceBinding = {
       publicWorkspaceId,
@@ -154,7 +167,8 @@ export class GatewayExecutionRouter {
       createdAt: now,
       lastUsedAt: now,
     };
-    this.bindings.save(binding);
+    if (existing) this.bindings.touch(publicWorkspaceId);
+    else this.bindings.save(binding);
     const rewritten = rewriteExecutorWorkspaceId(result, executorWorkspaceId, publicWorkspaceId);
     rewritten.structuredContent = {
       ...rewritten.structuredContent,

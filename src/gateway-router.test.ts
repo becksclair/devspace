@@ -15,9 +15,18 @@ class MemoryStore implements GatewayWorkspaceStore {
   readonly rows = new Map<string, PublicWorkspaceBinding>();
   save(binding: PublicWorkspaceBinding): void { this.rows.set(binding.publicWorkspaceId, binding); }
   get(id: string): PublicWorkspaceBinding | undefined { return this.rows.get(id); }
+  findByExecutor(machineId: string, executorWorkspaceId: string): PublicWorkspaceBinding | undefined {
+    return Array.from(this.rows.values()).find((row) => row.machineId === machineId && row.executorWorkspaceId === executorWorkspaceId);
+  }
   touch(id: string): void {
     const row = this.rows.get(id);
     if (row) row.lastUsedAt = new Date().toISOString();
+  }
+  delete(id: string): void { this.rows.delete(id); }
+  deleteByExecutor(machineId: string, executorWorkspaceId: string): void {
+    for (const [id, row] of this.rows) {
+      if (row.machineId === machineId && row.executorWorkspaceId === executorWorkspaceId) this.rows.delete(id);
+    }
   }
   ping(): void {}
   close(): void {}
@@ -32,7 +41,9 @@ function fakeTarget(privateId: string): ExecutionTarget & { calls: Array<{tool:s
       const workspaceId = tool === "open_workspace" ? privateId : String(args.workspaceId);
       return {
         content: [{ type: "text", text: `workspace ${workspaceId}` }],
-        structuredContent: { workspaceId, nested: [workspaceId] },
+        structuredContent: tool === "close_workspace"
+          ? { workspaceId, workspace: { closed: true }, nested: [workspaceId] }
+          : { workspaceId, nested: [workspaceId] },
       };
     },
   };
@@ -66,13 +77,32 @@ await router.execute("read_file", { workspaceId: sagaOpen.publicWorkspaceId, pat
 assert.equal(saga.calls.length, 2);
 assert.equal(asgard.calls.length, 1);
 assert.equal(saga.calls[1]?.args.workspaceId, "private-saga");
+await router.execute("close_workspace", { workspaceId: sagaOpen.publicWorkspaceId }, options);
+assert.equal(saga.calls[2]?.tool, "close_workspace");
+assert.equal(store.get(sagaOpen.publicWorkspaceId), undefined);
+await assert.rejects(
+  router.execute("workspace_status", { workspaceId: sagaOpen.publicWorkspaceId }, options),
+  (error: unknown) => error instanceof GatewayRoutingError && error.code === "unknown_workspace",
+);
 
 await assert.rejects(
   router.execute("open_workspace", { path: "/x", machine: "unknown" }, options),
   (error: unknown) => error instanceof GatewayRoutingError && error.code === "unknown_machine",
 );
 assert.equal(asgard.calls.length, 1);
-assert.equal(saga.calls.length, 2);
+assert.equal(saga.calls.length, 3);
+
+const reuseTarget = fakeTarget("private-reused");
+const reuseStore = new MemoryStore();
+const reuseRouter = new GatewayExecutionRouter(
+  [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+  new Map([["saga", reuseTarget]]),
+  reuseStore,
+);
+const reuseFirst = await reuseRouter.execute("open_workspace", { path: "/same" }, options);
+const reuseSecond = await reuseRouter.execute("open_workspace", { path: "/same" }, options);
+assert.equal(reuseSecond.publicWorkspaceId, reuseFirst.publicWorkspaceId);
+assert.equal(reuseStore.rows.size, 1);
 
 const unavailableRouter = new GatewayExecutionRouter(
   [
@@ -86,7 +116,28 @@ await assert.rejects(
   unavailableRouter.execute("open_workspace", { path: "/x" }, options),
   (error: unknown) => error instanceof GatewayRoutingError && error.code === "target_unavailable",
 );
-assert.equal(saga.calls.length, 2, "canonical failure must never fall back to Saga");
+assert.equal(saga.calls.length, 3, "canonical failure must never fall back to Saga");
+
+const prunedStore = new MemoryStore();
+const prunedTarget: ExecutionTarget = {
+  async execute(tool, args): Promise<ExecutorResult> {
+    if (tool === "open_workspace") {
+      return { content: [{ type: "text", text: "opened private-pruned" }], structuredContent: { workspaceId: "private-pruned" } };
+    }
+    throw new Error(`Unknown workspaceId: ${String(args.workspaceId)}. Call open_workspace first.`);
+  },
+};
+const prunedRouter = new GatewayExecutionRouter(
+  [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+  new Map([["saga", prunedTarget]]),
+  prunedStore,
+);
+const prunedOpen = await prunedRouter.execute("open_workspace", { path: "/pruned" }, options);
+await assert.rejects(
+  prunedRouter.execute("workspace_status", { workspaceId: prunedOpen.publicWorkspaceId }, options),
+  (error: unknown) => error instanceof GatewayRoutingError && error.code === "unknown_workspace",
+);
+assert.equal(prunedStore.get(prunedOpen.publicWorkspaceId), undefined);
 
 // A reconstructed router must honor the persisted machine affinity and hide the
 // executor's private workspace ID on the next operation.

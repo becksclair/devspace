@@ -12,6 +12,7 @@ import {
   isReviewTool,
   isSearchTool,
   isShellTool,
+  isTerminalTool,
   isToolName,
   isToolResultCard,
   machineDisplayName,
@@ -229,8 +230,14 @@ async function renderPayloadIfNeeded(): Promise<void> {
     return;
   }
 
-  if (card.tool === "open_workspace") {
+  if (card.tool === "open_workspace" || card.tool === "workspace_status") {
     renderPrePayload(target, workspacePayloadText(card), "open_workspace");
+    return;
+  }
+
+  if (isTerminalTool(card.tool)) {
+    const terminalText = terminalPayloadText(card);
+    renderPrePayload(target, terminalText || "No terminal details available.", card.tool);
     return;
   }
 
@@ -360,6 +367,11 @@ function renderSummaryBadge(card: ToolResultCard): HTMLElement {
     return group;
   }
 
+  if (isTerminalTool(card.tool)) {
+    const terminal = card.terminal ?? card.terminals?.[0];
+    return element("span", { className: "badge", text: String(terminal?.status ?? "terminal") });
+  }
+
   if (isShellTool(card.tool)) {
     return element("span", { className: "badge", text: `ran · ${String(summary.lines ?? 0)} lines` });
   }
@@ -375,7 +387,6 @@ function renderReviewCard(card: ToolResultCard, display: ToolDisplay): void {
   unmountPayload();
 
   const files = card.files ?? [];
-  const summary = card.summary ?? {};
   const visibleFiles = reviewFilesExpanded ? files : files.slice(0, 3);
   const hiddenCount = Math.max(0, files.length - visibleFiles.length);
   const main = element("main", { className: "shell" });
@@ -448,9 +459,23 @@ function workspacePayloadText(card: ToolResultCard): string {
   const agentsFiles = card.agentsFiles ?? [];
   const availableAgentsFiles = card.availableAgentsFiles ?? [];
   const skills = card.skills ?? [];
+  const capabilities = card.capabilities as {
+    fileAccess?: string;
+    mountReadOnly?: boolean;
+    warnings?: string[];
+    git?: { branch?: string; head?: string; dirty?: boolean; strategy?: string };
+    runtime?: { shellPath?: string; shellMode?: string; tmux?: boolean; opencode?: string; userSystemd?: boolean; privilegeEscalation?: string };
+  } | undefined;
+  const worktree = card.worktree as { strategy?: string; sourceCanonicalRoot?: string; baseSha?: string; dirtySource?: boolean } | undefined;
   const lines = [
+    ...(capabilities?.warnings ?? []).map((warning) => `Warning: ${warning}`),
     card.workspaceId ? `Workspace: ${card.workspaceId}` : undefined,
     card.root ? `Root: ${card.root}` : undefined,
+    card.canonicalRoot ? `Canonical root: ${card.canonicalRoot}` : undefined,
+    capabilities?.fileAccess ? `Access: ${capabilities.fileAccess}${capabilities.mountReadOnly ? " (read-only mount)" : ""}` : undefined,
+    capabilities?.git ? `Git: ${capabilities.git.branch ?? "detached"} ${capabilities.git.head ?? ""}${capabilities.git.dirty ? " dirty" : " clean"}` : undefined,
+    worktree?.strategy ? `Managed strategy: ${worktree.strategy}; source=${worktree.sourceCanonicalRoot ?? "unknown"}; base=${worktree.baseSha ?? "unknown"}${worktree.dirtySource ? "; source dirty" : ""}` : undefined,
+    capabilities?.runtime ? `Runtime: ${capabilities.runtime.shellPath ?? "shell"} (${capabilities.runtime.shellMode ?? "service"}), tmux ${capabilities.runtime.tmux ? "available" : "unavailable"}, user-systemd ${capabilities.runtime.userSystemd ? "available" : "unavailable"}, privilege ${capabilities.runtime.privilegeEscalation ?? "unknown"}` : undefined,
     skills.length > 0
       ? `Skills: ${skills.map((skill) => skill.name ?? skill.path ?? "unnamed").join(", ")}`
       : "Skills: none",
@@ -463,6 +488,20 @@ function workspacePayloadText(card: ToolResultCard): string {
   ].filter((line): line is string => typeof line === "string");
 
   return lines.join("\n");
+}
+
+function terminalPayloadText(card: ToolResultCard): string {
+  const terminals = card.terminals ?? (card.terminal ? [card.terminal] : []);
+  const lines = terminals.map((terminal) => {
+    const id = String(terminal.terminalId ?? "terminal");
+    const status = String(terminal.status ?? "unknown");
+    const geometry = `${String(terminal.cols ?? "?")}x${String(terminal.rows ?? "?")}`;
+    const persistence = terminal.persistentAcrossDevspaceRestart ? "restart-persistent" : "service-lifetime";
+    return `${id} ${status} ${geometry} ${persistence}\n${String(terminal.commandSummary ?? "")}`.trim();
+  });
+  if (card.terminalOutput) lines.push(`\n${card.terminalOutput}`);
+  if (card.truncated) lines.push("\n[Terminal output truncated]");
+  return lines.join("\n\n");
 }
 
 function formatAgentsFilesForPayload(
@@ -483,6 +522,10 @@ function getToolDisplay(card: ToolResultCard): ToolDisplay {
   switch (card.tool) {
     case "open_workspace":
       return { icon: folderIcon(), title: "Workspace", label, tone: "workspace" };
+    case "workspace_status":
+      return { icon: folderIcon(), title: "Workspace Status", label, tone: "workspace" };
+    case "close_workspace":
+      return { icon: folderIcon(), title: "Close Workspace", label, tone: "workspace" };
     case "read_file":
     case "read":
       return { icon: fileIcon(), title: "Read File", label, tone: "read" };
@@ -504,12 +547,28 @@ function getToolDisplay(card: ToolResultCard): ToolDisplay {
     case "run_shell":
     case "bash":
       return { icon: terminalIcon(), title: "Bash", label, tone: "shell" };
+    case "terminal_start":
+      return { icon: terminalIcon(), title: "Start Terminal", label, tone: "shell" };
+    case "terminal_read":
+      return { icon: terminalIcon(), title: "Read Terminal", label, tone: "shell" };
+    case "terminal_write":
+      return { icon: terminalIcon(), title: "Write Terminal", label, tone: "shell" };
+    case "terminal_resize":
+      return { icon: terminalIcon(), title: "Resize Terminal", label, tone: "shell" };
+    case "terminal_status":
+      return { icon: terminalIcon(), title: "Terminal Status", label, tone: "shell" };
+    case "terminal_close":
+      return { icon: terminalIcon(), title: "Close Terminal", label, tone: "shell" };
     case "show_changes":
       return { icon: reviewIcon(), title: "Show Changes", label, tone: "review" };
   }
 }
 
 function getToolLabel(card: ToolResultCard): string {
+  if (isTerminalTool(card.tool)) {
+    const terminal = card.terminal ?? card.terminals?.[0];
+    return String(terminal?.commandSummary ?? terminal?.terminalId ?? card.tool);
+  }
   if (isShellTool(card.tool)) {
     return String(card.summary?.command ?? card.path ?? card.tool);
   }

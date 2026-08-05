@@ -24,6 +24,20 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "full" }).minimalTools
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "0" }).minimalTools, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "1" }).minimalTools, true);
 assert.equal(loadConfig(baseEnv).skillsEnabled, true);
+assert.equal(loadConfig(baseEnv).rootPolicies[0]?.access, "read-write");
+assert.equal(loadConfig(baseEnv).rootPolicies[0]?.canonicalPath, process.cwd());
+assert.equal(loadConfig(baseEnv).shell.mode, "service");
+assert.equal(loadConfig(baseEnv).terminals.backend, "tmux");
+assert.equal(loadConfig(baseEnv).terminals.maxPerWorkspace, 4);
+assert.equal(loadConfig(baseEnv).maintenance.intervalSeconds, 3600);
+assert.deepEqual(loadConfig(baseEnv).secretNames, ["DEVSPACE_OAUTH_OWNER_TOKEN"]);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SHELL_MODE: "login" }).shell.mode, "login");
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TERMINAL_MAX_TOTAL: "7" }).terminals.maxTotal, 7);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_ISOLATED_IDLE_TTL_SECONDS: "123" }).maintenance.isolatedIdleTtlSeconds, 123);
+assert.deepEqual(
+  loadConfig({ ...baseEnv, DEVSPACE_INFRA_SECRET_NAMES: "DEVSPACE_NODE_A,DEVSPACE_NODE_B" }).secretNames,
+  ["DEVSPACE_OAUTH_OWNER_TOKEN", "DEVSPACE_NODE_A", "DEVSPACE_NODE_B"],
+);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "0" }).skillsEnabled, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "1" }).skillsEnabled, true);
 
@@ -46,6 +60,14 @@ assert.throws(
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_TOOL_NAMING: "invalid" }),
   /Invalid DEVSPACE_TOOL_NAMING: invalid/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_SHELL_MODE: "interactive" }),
+  /Invalid DEVSPACE_SHELL_MODE: interactive/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_ROOTS: JSON.stringify([{ path: process.cwd(), access: "read-write" }]) }),
+  /cannot mix policy roots with legacy allowedRoots/,
 );
 
 assert.deepEqual(loadConfig(baseEnv).logging, {
@@ -125,6 +147,14 @@ assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: "0" }),
   /Invalid DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: 0/,
 );
+
+const { DEVSPACE_ALLOWED_ROOTS: _legacyRoots, ...rootPolicyEnv } = baseEnv;
+const policyConfig = loadConfig({
+  ...rootPolicyEnv,
+  DEVSPACE_ROOTS: JSON.stringify([{ path: process.cwd(), access: "read-only" }]),
+});
+assert.equal(policyConfig.rootPolicies[0]?.access, "read-only");
+assert.deepEqual(policyConfig.allowedRoots, [process.cwd()]);
 
 assert.equal(loadConfig(baseEnv).publicBaseUrl, "http://127.0.0.1:7676");
 assert.deepEqual(loadConfig(baseEnv).allowedHosts, ["localhost", "127.0.0.1", "::1"]);

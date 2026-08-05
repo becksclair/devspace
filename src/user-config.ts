@@ -8,11 +8,28 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
+import type { RootPolicy } from "./roots.js";
 
 export interface DevspaceUserConfig {
   host?: string;
   port?: number;
   allowedRoots?: string[];
+  roots?: RootPolicy[];
+  shell?: { path?: string; mode?: "service" | "login"; environment?: Record<string, string> };
+  terminals?: {
+    backend?: "tmux";
+    runtimeDir?: string;
+    maxPerWorkspace?: number;
+    maxTotal?: number;
+    idleTtlSeconds?: number;
+    useUserSystemd?: boolean;
+  };
+  maintenance?: {
+    intervalSeconds?: number;
+    closedSessionTtlSeconds?: number;
+    checkoutIdleTtlSeconds?: number;
+    isolatedIdleTtlSeconds?: number;
+  };
   publicBaseUrl?: string | null;
   allowedHosts?: string[];
   stateDir?: string;

@@ -8,6 +8,7 @@ import type { ServerConfig } from "./config.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
 import { createServer } from "./server.js";
 import { DEVSPACE_VERSION } from "./version.js";
+import { normalizeRootPolicies } from "./roots.js";
 
 const stateDir = await mkdtemp(join(tmpdir(), "devspace-mcp-routing-test-"));
 const accessToken = "test-access-token";
@@ -24,6 +25,7 @@ const config = {
     allowedRedirectHosts: [],
   },
   allowedRoots: [process.cwd()],
+  rootPolicies: normalizeRootPolicies([{ path: process.cwd(), access: "read-write" }]),
   allowedHosts: ["127.0.0.1"],
   publicBaseUrl,
   minimalTools: true,
@@ -34,6 +36,22 @@ const config = {
   skillsEnabled: false,
   skillPaths: [],
   agentDir: stateDir,
+  shell: { mode: "service" },
+  secretNames: ["DEVSPACE_OAUTH_OWNER_TOKEN"],
+  terminals: {
+    backend: "tmux",
+    runtimeDir: join(stateDir, "terminal-runtime"),
+    maxPerWorkspace: 2,
+    maxTotal: 4,
+    idleTtlSeconds: 3600,
+    useUserSystemd: false,
+  },
+  maintenance: {
+    intervalSeconds: 3600,
+    closedSessionTtlSeconds: 604800,
+    checkoutIdleTtlSeconds: 2592000,
+    isolatedIdleTtlSeconds: 604800,
+  },
   logging: {
     level: "silent",
     format: "json",
@@ -107,6 +125,28 @@ try {
 
   const scalarResponse = await postMcp(endpoint, { ...initializeRequest, id: 4 });
   const scalarSessionId = await assertInitialized(scalarResponse, 4);
+  const initializedResponse = await postMcp(
+    endpoint,
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    scalarSessionId,
+  );
+  assert.ok(initializedResponse.status === 200 || initializedResponse.status === 202);
+  const toolsResponse = await postMcp(
+    endpoint,
+    { jsonrpc: "2.0", id: 5, method: "tools/list", params: {} },
+    scalarSessionId,
+  );
+  assert.equal(toolsResponse.status, 200);
+  const toolsPayload = parseSsePayload(await toolsResponse.text()) as {
+    result?: { tools?: Array<{ name?: string }> };
+  };
+  const toolNames = new Set(toolsPayload.result?.tools?.map((tool) => tool.name));
+  for (const name of [
+    "workspace_status", "close_workspace",
+    "terminal_start", "terminal_read", "terminal_write", "terminal_resize", "terminal_status", "terminal_close",
+  ]) {
+    assert.equal(toolNames.has(name), true, `${name} should be exposed over MCP`);
+  }
   await closeSession(endpoint, scalarSessionId);
 } finally {
   await new Promise<void>((resolve, reject) => {
@@ -115,16 +155,23 @@ try {
   await rm(stateDir, { recursive: true, force: true });
 }
 
-function postMcp(endpoint: string, body: unknown): Promise<Response> {
+function postMcp(endpoint: string, body: unknown, sessionId?: string): Promise<Response> {
   return fetch(endpoint, {
     method: "POST",
     headers: {
       accept: "application/json, text/event-stream",
       authorization: `Bearer ${accessToken}`,
       "content-type": "application/json",
+      ...(sessionId ? { "mcp-protocol-version": protocolVersion, "mcp-session-id": sessionId } : {}),
     },
     body: JSON.stringify(body),
   });
+}
+
+function parseSsePayload(responseText: string): unknown {
+  const dataLine = responseText.split("\n").find((line) => line.startsWith("data: "));
+  if (!dataLine) throw new Error(`SSE response contained no data line: ${responseText}`);
+  return JSON.parse(dataLine.slice("data: ".length));
 }
 
 async function assertInitialized(response: Response, expectedId: number): Promise<string> {
@@ -134,9 +181,7 @@ async function assertInitialized(response: Response, expectedId: number): Promis
   assert.ok(sessionId);
 
   const responseText = await response.text();
-  const dataLine = responseText.split("\n").find((line) => line.startsWith("data: "));
-  assert.ok(dataLine);
-  const payload = JSON.parse(dataLine.slice("data: ".length)) as {
+  const payload = parseSsePayload(responseText) as {
     id?: number;
     result?: { serverInfo?: { name?: string; version?: string } };
   };

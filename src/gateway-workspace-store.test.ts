@@ -26,8 +26,11 @@ try {
     createdAt,
     lastUsedAt: createdAt,
   });
+  assert.equal(reopened.findByExecutor("asgard", "ws_private")?.publicWorkspaceId, "ws_public");
   reopened.touch("ws_public");
   assert.notEqual(reopened.get("ws_public")?.lastUsedAt, createdAt);
+  reopened.deleteByExecutor("asgard", "ws_private");
+  assert.equal(reopened.get("ws_public"), undefined);
   reopened.ping();
   reopened.close();
 } finally {

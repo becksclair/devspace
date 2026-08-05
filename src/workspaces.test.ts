@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { loadConfig } from "./config.js";
 import { GitWorktreeError } from "./git-worktrees.js";
-import { SqliteWorkspaceStore } from "./workspace-store.js";
+import { SqliteWorkspaceStore, type WorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
 const execFileAsync = promisify(execFile);
@@ -29,9 +29,17 @@ try {
     PORT: "1",
   });
   const registry = new WorkspaceRegistry(config);
-  const { workspace, agentsFiles, availableAgentsFiles } = await registry.openWorkspace(root);
+  const { workspace, capabilities, agentsFiles, availableAgentsFiles } = await registry.openWorkspace(root);
+  const reused = await registry.openWorkspace(root);
+  const fresh = await registry.openWorkspace({ path: root, fresh: true });
 
+  assert.equal(reused.workspace.id, workspace.id);
+  assert.notEqual(fresh.workspace.id, workspace.id);
   assert.equal(workspace.mode, "checkout");
+  assert.equal(workspace.canonicalRoot, root);
+  assert.equal(capabilities.logicalRoot, root);
+  assert.equal(capabilities.canonicalRoot, root);
+  assert.equal(capabilities.fileAccess, "read-write");
   assert.deepEqual(
     agentsFiles.map((file) => file.content),
     ["global instructions\n", "root instructions\n"],
@@ -41,8 +49,35 @@ try {
     [join(root, "nested", "AGENTS.md")],
   );
 
+  if (platform() !== "win32") {
+    const instructionProject = join(root, "instruction-project");
+    const externalInstructions = join(root, "external-instructions");
+    await mkdir(instructionProject);
+    await mkdir(externalInstructions);
+    await writeFile(join(externalInstructions, "AGENTS.md"), "must not auto-load\n");
+    await symlink(join(externalInstructions, "AGENTS.md"), join(instructionProject, "AGENTS.md"));
+    const instructionConfig = loadConfig({
+      DEVSPACE_CONFIG_DIR: join(root, "instruction-config"),
+      DEVSPACE_ROOTS: JSON.stringify([
+        { path: instructionProject, access: "read-write" },
+        { path: externalInstructions, access: "read-only" },
+      ]),
+      DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "instruction-worktrees"),
+      DEVSPACE_AGENT_DIR: join(root, "missing-agent"),
+      DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+      DEVSPACE_LOG_LEVEL: "silent",
+      PORT: "1",
+    });
+    const instructionOpen = await new WorkspaceRegistry(instructionConfig).openWorkspace(instructionProject);
+    assert.equal(instructionOpen.agentsFiles.some((file) => file.content.includes("must not auto-load")), false);
+  }
+
   const missingWorkspaceRoot = join(root, "missing", "workspace");
-  const missingWorkspace = await registry.openWorkspace(missingWorkspaceRoot);
+  await assert.rejects(
+    () => registry.openWorkspace(missingWorkspaceRoot),
+    /Pass create=true/,
+  );
+  const missingWorkspace = await registry.openWorkspace({ path: missingWorkspaceRoot, create: true });
   assert.equal(missingWorkspace.workspace.root, missingWorkspaceRoot);
   assert.equal(missingWorkspace.workspace.mode, "checkout");
   assert.equal((await stat(missingWorkspaceRoot)).isDirectory(), true);
@@ -82,6 +117,71 @@ try {
   const worktreeReadmePath = registry.resolvePath(worktreeWorkspace.workspace, "README.md");
   assert.equal(worktreeReadmePath.startsWith(worktreeWorkspace.workspace.root), true);
 
+  const failingManagedRoot = join(root, ".devspace", "failing-managed");
+  const failingConfig = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(root, "failing-config"),
+    DEVSPACE_ALLOWED_ROOTS: root,
+    DEVSPACE_WORKTREE_ROOT: failingManagedRoot,
+    DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    DEVSPACE_LOG_LEVEL: "silent",
+    PORT: "1",
+  });
+  const failingStore: WorkspaceStore = {
+    createSession: () => { throw new Error("forced workspace persistence failure"); },
+    getSession: () => undefined,
+    touchSession: () => undefined,
+    closeSession: () => undefined,
+    listSessions: () => [],
+    deleteSession: () => undefined,
+    checkpoint: () => undefined,
+  };
+  await assert.rejects(
+    () => new WorkspaceRegistry(failingConfig, failingStore).openWorkspace({ path: gitRoot, mode: "isolated" }),
+    /forced workspace persistence failure/,
+  );
+  assert.deepEqual(await readdir(failingManagedRoot), []);
+  const registeredWorktrees = (await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: gitRoot })).stdout;
+  assert.equal(registeredWorktrees.includes(failingManagedRoot), false);
+
+  const isolatedWorktree = await registry.openWorkspace({ path: gitRoot, mode: "isolated" });
+  assert.equal(isolatedWorktree.workspace.mode, "isolated");
+  assert.equal(isolatedWorktree.workspace.worktree?.strategy, "worktree");
+  assert.equal(isolatedWorktree.workspace.worktree?.sourceCanonicalRoot, gitRoot);
+
+  const readOnlyConfig = loadConfig({
+    DEVSPACE_ROOTS: JSON.stringify([{ path: root, access: "read-only" }]),
+    DEVSPACE_WORKTREE_ROOT: join(tmpdir(), `devspace-readonly-isolated-${process.pid}`),
+    DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    PORT: "1",
+  });
+  const readOnlyRegistry = new WorkspaceRegistry(readOnlyConfig);
+  await assert.rejects(
+    () => readOnlyRegistry.openWorkspace({ path: gitRoot, mode: "worktree" }),
+    /outside permitted write roots/,
+  );
+  const readOnlyIsolated = await readOnlyRegistry.openWorkspace({ path: gitRoot, mode: "isolated" });
+  assert.equal(readOnlyIsolated.workspace.worktree?.strategy, "clone");
+  await rm(readOnlyConfig.worktreeRoot, { recursive: true, force: true });
+
+  await chmod(join(gitRoot, ".git"), 0o555);
+  let isolatedClone;
+  try {
+    isolatedClone = await registry.openWorkspace({ path: gitRoot, mode: "isolated" });
+  } finally {
+    await chmod(join(gitRoot, ".git"), 0o755);
+  }
+  assert.equal(isolatedClone.workspace.mode, "isolated");
+  assert.equal(isolatedClone.workspace.worktree?.strategy, "clone");
+  assert.equal(isolatedClone.workspace.worktree?.sourceCanonicalRoot, gitRoot);
+  await assert.rejects(
+    () => execFileAsync("git", ["remote", "get-url", "origin"], { cwd: isolatedClone.workspace.root }),
+  );
+  await assert.rejects(() => access(join(isolatedClone.workspace.root, "dirty.txt")));
+  await writeFile(join(isolatedClone.workspace.root, "clone-write.txt"), "writable\n");
+  assert.equal((await stat(join(isolatedClone.workspace.root, ".git"))).isDirectory(), true);
+
   const stateDir = join(root, ".state");
   const firstStore = new SqliteWorkspaceStore(stateDir);
   const persistentRegistry = new WorkspaceRegistry(config, firstStore);
@@ -90,6 +190,15 @@ try {
     path: gitRoot,
     mode: "worktree",
   });
+  await chmod(join(gitRoot, ".git"), 0o555);
+  let persistentIsolated;
+  let tamperedIsolated;
+  try {
+    persistentIsolated = await persistentRegistry.openWorkspace({ path: gitRoot, mode: "isolated" });
+    tamperedIsolated = await persistentRegistry.openWorkspace({ path: gitRoot, mode: "isolated" });
+  } finally {
+    await chmod(join(gitRoot, ".git"), 0o755);
+  }
   firstStore.close();
 
   const secondStore = new SqliteWorkspaceStore(stateDir);
@@ -103,6 +212,22 @@ try {
   assert.equal(restoredWorktree.sourceRoot, gitRoot);
   assert.equal(restoredWorktree.root, persistentWorktree.workspace.root);
   assert.equal(restoredWorktree.worktree?.managed, true);
+
+  const restoredIsolated = restoredRegistry.getWorkspace(persistentIsolated.workspace.id);
+  assert.equal(restoredIsolated.mode, "isolated");
+  assert.equal(restoredIsolated.worktree?.strategy, "clone");
+  assert.equal(restoredIsolated.worktree?.sourceCanonicalRoot, gitRoot);
+
+  const tamperedPath = tamperedIsolated.workspace.root;
+  const movedTamperedPath = `${tamperedPath}-moved`;
+  await rename(tamperedPath, movedTamperedPath);
+  await mkdir(tamperedPath);
+  assert.throws(
+    () => restoredRegistry.getWorkspace(tamperedIsolated.workspace.id),
+    /filesystem identity changed/,
+  );
+  await rm(tamperedPath, { recursive: true, force: true });
+  await rm(movedTamperedPath, { recursive: true, force: true });
   secondStore.close();
 
   if (platform() !== "win32") {
@@ -120,6 +245,18 @@ try {
       mode: "worktree",
     });
     assert.equal(aliasWorkspace.workspace.sourceRoot, join(aliasRoot, "git-project"));
+
+    const policyAliasConfig = loadConfig({
+      DEVSPACE_ROOTS: JSON.stringify([{ path: root, aliases: [aliasRoot], access: "read-write" }]),
+      DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "policy-alias-worktrees"),
+      DEVSPACE_AGENT_DIR: agentDir,
+      DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+      PORT: "1",
+    });
+    const policyAliasWorkspace = await new WorkspaceRegistry(policyAliasConfig).openWorkspace(join(aliasRoot, "git-project"));
+    assert.equal(policyAliasWorkspace.workspace.root, join(aliasRoot, "git-project"));
+    assert.equal(policyAliasWorkspace.workspace.canonicalRoot, gitRoot);
+    assert.equal(policyAliasWorkspace.capabilities.logicalRoot, join(aliasRoot, "git-project"));
   }
 } finally {
   await rm(root, { recursive: true, force: true });

@@ -78,7 +78,7 @@ export class RemoteNodeClient implements ExecutionTarget {
           { ok: true; machineId: string; result: ExecutorResult } | { ok: false; error?: { code?: string; message?: string } }
         >(response, this.maxBodyBytes());
         return { response, envelope };
-      }));
+      }, remoteToolTimeoutMs(tool, args, this.config.timeoutMs)));
     } catch (error) {
       throw normalizeTargetError(error, options.signal, "Remote node call failed");
     }
@@ -120,14 +120,21 @@ export class RemoteNodeClient implements ExecutionTarget {
     }
   }
 
-  private async withTimeout<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    const timeoutSignal = AbortSignal.timeout(this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  private async withTimeout<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>, timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS): Promise<T> {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     return operation(AbortSignal.any([signal, timeoutSignal]));
   }
 
   private maxBodyBytes(): number {
     return this.config.maxBodyBytes ?? MAX_BODY_BYTES;
   }
+}
+
+export function remoteToolTimeoutMs(tool: ToolName, args: Record<string, unknown>, overrideMs?: number): number {
+  if (overrideMs !== undefined) return overrideMs;
+  if (tool !== "run_shell") return DEFAULT_TIMEOUT_MS;
+  const requestedSeconds = typeof args.timeout === "number" && Number.isFinite(args.timeout) ? args.timeout : 30;
+  return Math.min(Math.max(requestedSeconds, 1), 300) * 1000 + 10_000;
 }
 
 function normalizeTargetError(error: unknown, callerSignal: AbortSignal, message: string): unknown {

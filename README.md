@@ -93,18 +93,22 @@ DevSpace gives ChatGPT tools to:
 - read, write, and edit files inside the opened workspace
 - search code and inspect directories
 - run shell commands for tests, builds, git, and package scripts
-- use isolated Git worktrees for parallel coding sessions
+- report logical/canonical paths, real writability, Git state, shell tools, user-systemd, and privilege capabilities when a workspace opens
+- preserve configured path aliases while authorizing canonical filesystem targets
+- use explicit Git worktrees or automatic `isolated` workspaces that fall back to independent clones when source Git metadata is read-only
+- run persistent tmux-backed terminals for OpenCode, debuggers, REPLs, and other long interactive work
+- close workspaces explicitly, cleaning safe managed state while retaining dirty isolated work
 - follow project instructions from `AGENTS.md` and `CLAUDE.md`
 - discover local agent skills from your skill folders
 - show tool cards and optional change summaries in ChatGPT Apps-compatible hosts
 
 ## Mental Model
 
-DevSpace is remote access to selected local folders.
+DevSpace is remote access to selected local folders and, when enabled by host policy, a persistent engineering terminal.
 
-You decide which roots are allowed. The MCP client still has powerful local
-capabilities inside an opened workspace, including shell execution. Treat a
-connected client like a trusted coding partner with access to your machine.
+File tools use configured root policies with canonical-target authorization. A friendly alias such as `~/projects -> /srv/pool/projects` remains usable, while a nested symlink to an undeclared target is rejected. Roots may be read-only or read-write.
+
+Shell and terminal tools are deliberately broader than file tools: they can do anything available to the DevSpace service account and may be root-capable on a trusted-host deployment. DevSpace strips its own OAuth and node-bearer credentials from child environments, but it is not a sandbox around shell execution. Treat a connected client like a trusted coding partner with access to your machine.
 
 For a normal ChatGPT coding session:
 
@@ -113,6 +117,8 @@ For a normal ChatGPT coding session:
 3. Connect the MCP client to your public `/mcp` URL.
 4. Approve the connection with the Owner password.
 5. Ask ChatGPT to open a project inside one of your allowed roots.
+6. Read the returned capability warnings. Use `mode: "isolated"` when the source checkout is read-only. Active checkout opens are reused; pass `fresh: true` only for an intentionally separate session and review baseline.
+7. Use persistent terminal tools for long interactive processes, then `close_workspace` when the workstream is complete.
 
 ## Platform Support
 

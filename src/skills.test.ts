@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { loadConfig } from "./config.js";
@@ -105,6 +105,24 @@ try {
       ?.isSkillFile,
     false,
   );
+
+  const staleSkill = {
+    ...projectSkill,
+    filePath: join(root, "missing-skill", "SKILL.md"),
+    baseDir: join(root, "missing-skill"),
+  };
+  assert.equal(
+    resolveSkillReadPath([staleSkill, projectSkill], new Set(), projectSkill.filePath)?.skill.name,
+    "project-skill",
+  );
+
+  if (platform() !== "win32") {
+    const outside = join(root, "outside-reference.md");
+    const linked = join(projectSkill.baseDir, "outside-link.md");
+    await writeFile(outside, "outside\n");
+    await symlink(outside, linked);
+    assert.equal(resolveSkillReadPath(loaded.skills, new Set([projectSkill.baseDir]), linked), undefined);
+  }
 } finally {
   await rm(root, { recursive: true, force: true });
 }

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import { publicWorkspaceBindings } from "./db/schema.js";
 
@@ -13,7 +13,10 @@ export interface PublicWorkspaceBinding {
 export interface GatewayWorkspaceStore {
   save(binding: PublicWorkspaceBinding): void;
   get(publicWorkspaceId: string): PublicWorkspaceBinding | undefined;
+  findByExecutor(machineId: string, executorWorkspaceId: string): PublicWorkspaceBinding | undefined;
   touch(publicWorkspaceId: string): void;
+  delete(publicWorkspaceId: string): void;
+  deleteByExecutor(machineId: string, executorWorkspaceId: string): void;
   ping(): void;
   close(): void;
 }
@@ -40,12 +43,35 @@ export class SqliteGatewayWorkspaceStore implements GatewayWorkspaceStore {
     return row;
   }
 
+  findByExecutor(machineId: string, executorWorkspaceId: string): PublicWorkspaceBinding | undefined {
+    return this.database.db
+      .select()
+      .from(publicWorkspaceBindings)
+      .where(and(
+        eq(publicWorkspaceBindings.machineId, machineId),
+        eq(publicWorkspaceBindings.executorWorkspaceId, executorWorkspaceId),
+      ))
+      .orderBy(desc(publicWorkspaceBindings.lastUsedAt))
+      .get();
+  }
+
   touch(publicWorkspaceId: string): void {
     this.database.db
       .update(publicWorkspaceBindings)
       .set({ lastUsedAt: new Date().toISOString() })
       .where(eq(publicWorkspaceBindings.publicWorkspaceId, publicWorkspaceId))
       .run();
+  }
+
+  delete(publicWorkspaceId: string): void {
+    this.database.db.delete(publicWorkspaceBindings).where(eq(publicWorkspaceBindings.publicWorkspaceId, publicWorkspaceId)).run();
+  }
+
+  deleteByExecutor(machineId: string, executorWorkspaceId: string): void {
+    this.database.db.delete(publicWorkspaceBindings).where(and(
+      eq(publicWorkspaceBindings.machineId, machineId),
+      eq(publicWorkspaceBindings.executorWorkspaceId, executorWorkspaceId),
+    )).run();
   }
 
   ping(): void {
@@ -68,6 +94,8 @@ export class SqliteGatewayWorkspaceStore implements GatewayWorkspaceStore {
 
       create index if not exists public_workspace_bindings_machine_idx
         on public_workspace_bindings(machine_id, last_used_at desc);
+      create index if not exists public_workspace_bindings_executor_idx
+        on public_workspace_bindings(machine_id, executor_workspace_id, last_used_at desc);
     `);
   }
 }

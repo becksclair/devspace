@@ -7,7 +7,7 @@ process.env.NODE_SERVER_TEST_TOKEN = "secret-token";
 const calls: Array<{ tool: string; signal: AbortSignal }> = [];
 const executor = { async execute(tool: string, _args: unknown, context: { requestId: string; signal: AbortSignal }) { calls.push({ tool, signal: context.signal }); if (context.requestId === "slow") await new Promise<void>((resolve) => context.signal.addEventListener("abort", () => resolve(), { once: true })); return { ok: true }; } };
 const config = { role: "node" as const, host: "127.0.0.1" as const, port: 0, machineId: "m1", allowedRoots: [process.cwd()], stateDir: process.cwd(), worktreeRoot: process.cwd(), nodeTokenEnv: "NODE_SERVER_TEST_TOKEN" };
-const { app, metadata } = createNodeServer(config, executor, { allowedTools: ["read_file"] });
+const { app } = createNodeServer(config, executor, { allowedTools: ["read_file"] });
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>((resolve) => server.once("listening", () => resolve()));
 const address = server.address(); assert.ok(address && typeof address !== "string");

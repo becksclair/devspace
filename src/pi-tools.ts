@@ -16,7 +16,7 @@ import {
   type WriteToolInput,
   type AgentToolResult,
 } from "@earendil-works/pi-coding-agent";
-import { resolveAllowedPath } from "./roots.js";
+import { createDevspaceShellSpawnHook, type ShellRuntime } from "./shell-environment.js";
 
 type McpContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 export type ToolResponse<TDetails = unknown> = {
@@ -30,6 +30,7 @@ interface ToolContext {
   cwd: string;
   root: string;
   readRoots?: string[];
+  shellRuntime?: ShellRuntime;
 }
 
 function toMcpContent(result: AgentToolResult<unknown>): McpContent[] {
@@ -54,7 +55,7 @@ function formatToolError(error: unknown): McpContent[] {
 async function runTool<TInput, TDetails = unknown>(
   execute: (input: TInput, requestId: string, signal?: AbortSignal) => Promise<AgentToolResult<TDetails>>,
   input: TInput,
-  context: ToolContext,
+  _context: ToolContext,
   signal?: AbortSignal,
   requestId = "devspace",
 ): Promise<ToolResponse<TDetails>> {
@@ -70,7 +71,7 @@ async function runTool<TInput, TDetails = unknown>(
 }
 
 export async function readFileTool(input: ReadToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse> {
-  const path = resolveAllowedPath(input.path, context.cwd, context.readRoots ?? [context.root]);
+  const path = input.path;
   const tool = createReadTool(context.cwd);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), {
@@ -81,7 +82,7 @@ export async function readFileTool(input: ReadToolInput, context: ToolContext, s
 }
 
 export async function writeFileTool(input: WriteToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse> {
-  const path = resolveAllowedPath(input.path, context.cwd, [context.root]);
+  const path = input.path;
   const tool = createWriteTool(context.cwd);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), {
@@ -91,7 +92,7 @@ export async function writeFileTool(input: WriteToolInput, context: ToolContext,
 }
 
 export async function editFileTool(input: EditToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse<EditToolDetails>> {
-  const path = resolveAllowedPath(input.path, context.cwd, [context.root]);
+  const path = input.path;
   const tool = createEditTool(context.cwd);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), {
@@ -101,28 +102,28 @@ export async function editFileTool(input: EditToolInput, context: ToolContext, s
 }
 
 export async function grepFilesTool(input: GrepToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse> {
-  if (input.path) resolveAllowedPath(input.path, context.cwd, [context.root]);
   const tool = createGrepTool(context.cwd);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), input, context, signal, requestId);
 }
 
 export async function findFilesTool(input: FindToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse> {
-  if (input.path) resolveAllowedPath(input.path, context.cwd, [context.root]);
   const tool = createFindTool(context.cwd);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), input, context, signal, requestId);
 }
 
 export async function listDirectoryTool(input: LsToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse> {
-  if (input.path) resolveAllowedPath(input.path, context.cwd, [context.root]);
   const tool = createLsTool(context.cwd);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), input, context, signal, requestId);
 }
 
 export async function runShellTool(input: BashToolInput, context: ToolContext, signal?: AbortSignal, requestId = "devspace"): Promise<ToolResponse> {
-  const tool = createBashTool(context.cwd);
+  const tool = createBashTool(context.cwd, context.shellRuntime ? {
+    shellPath: context.shellRuntime.shellPath,
+    spawnHook: createDevspaceShellSpawnHook(context.shellRuntime),
+  } : undefined);
   const timeout = input.timeout === undefined ? 30 : Math.min(input.timeout, 300);
 
   return runTool((params, requestId, signal) => tool.execute(requestId, params, signal), {

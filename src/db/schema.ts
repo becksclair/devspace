@@ -5,9 +5,16 @@ export const workspaceSessions = sqliteTable(
   {
     id: text("id").primaryKey(),
     root: text("root").notNull(),
+    canonicalRoot: text("canonical_root"),
+    rootPolicyId: text("root_policy_id"),
     status: text("status").notNull().default("active"),
     mode: text("mode").notNull().default("checkout"),
     sourceRoot: text("source_root"),
+    sourceCanonicalRoot: text("source_canonical_root"),
+    strategy: text("strategy"),
+    sourceDirty: text("source_dirty").notNull().default("false"),
+    managedDevice: text("managed_device"),
+    managedInode: text("managed_inode"),
     baseRef: text("base_ref"),
     baseSha: text("base_sha"),
     managed: text("managed").notNull().default("false"),
@@ -35,6 +42,28 @@ export const loadedAgentFiles = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.workspaceSessionId, table.path] }),
     index("loaded_agent_files_path_idx").on(table.path),
+  ],
+);
+
+export const terminalSessions = sqliteTable(
+  "terminal_sessions",
+  {
+    id: text("id").primaryKey(),
+    workspaceSessionId: text("workspace_session_id").notNull(),
+    backendSessionName: text("backend_session_name").notNull(),
+    commandSummary: text("command_summary").notNull(),
+    workingDirectory: text("working_directory").notNull(),
+    status: text("status").notNull().default("active"),
+    cols: integer("cols").notNull(),
+    rows: integer("rows").notNull(),
+    retainOnWorkspaceClose: text("retain_on_workspace_close").notNull().default("false"),
+    createdAt: text("created_at").notNull(),
+    lastUsedAt: text("last_used_at").notNull(),
+    closedAt: text("closed_at"),
+  },
+  (table) => [
+    index("terminal_sessions_workspace_idx").on(table.workspaceSessionId, table.lastUsedAt),
+    index("terminal_sessions_status_idx").on(table.status, table.lastUsedAt),
   ],
 );
 
@@ -78,6 +107,8 @@ export type WorkspaceSessionRow = typeof workspaceSessions.$inferSelect;
 export type NewWorkspaceSessionRow = typeof workspaceSessions.$inferInsert;
 export type LoadedAgentFileRow = typeof loadedAgentFiles.$inferSelect;
 export type NewLoadedAgentFileRow = typeof loadedAgentFiles.$inferInsert;
+export type TerminalSessionRow = typeof terminalSessions.$inferSelect;
+export type NewTerminalSessionRow = typeof terminalSessions.$inferInsert;
 export type OAuthClientRow = typeof oauthClients.$inferSelect;
 export type OAuthTokenRow = typeof oauthTokens.$inferSelect;
 export type PublicWorkspaceBindingRow = typeof publicWorkspaceBindings.$inferSelect;
