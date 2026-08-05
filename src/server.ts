@@ -579,7 +579,14 @@ function contentSecurityPolicy(config: ServerConfig, options: { frameAncestors?:
   const directives = [
     ["default-src", "'none'"],
     ["base-uri", "'self'"],
-    ["form-action", "'self'"],
+    // The approval page must be submittable from embedded webviews (ChatGPT
+    // Apps, etc.) whose effective origin differs from the public base URL.
+    // 'self' + host-source still gets blocked in those contexts, and
+    // default-src 'none' would block forms entirely if form-action were
+    // omitted — so allow form submission outright. The single form is the
+    // owner-password approval; the OAuth flow itself is protected by the
+    // owner token, PKCE, and resource checks.
+    ["form-action", "*"],
     ["object-src", "'none'"],
     ["script-src", "'self'", "'wasm-unsafe-eval'"],
     ["style-src", "'self'", "'unsafe-inline'"],
