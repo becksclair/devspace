@@ -14,6 +14,11 @@ jobs:
     container: node:24-bookworm@sha256:${{ vars.NODE24_BOOKWORM_AMD64_DIGEST }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install test system dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends tmux
+          rm -rf /var/lib/apt/lists/*
       - name: Validate and build
         run: |
           npm ci
