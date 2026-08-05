@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.0 - 2026-08-05
+
+- Bump version to 1.0.2
+- feat: add multi-machine gateway
+- fix: use DevSpace package workflow variables
+- fix: verify runtime artifact checksum from archive directory
+- fix: use POSIX digest comparison in artifact workflow
+- docs: use existing Cloudflare zone
+- refactor: use node token for remote machines
+- fix: package runtime without link members
+- fix: allow OAuth approval form submission from any origin
+- feat!: add trusted-host engineering cockpit
+
+<!-- devspace-release: version=2.0.0 commit=546b0e143cef0de100f67f51550fef865e2f9c01 -->
 ## 1.0.2 - 2026-07-17
 
 - docs: add founder philosophy to readme
