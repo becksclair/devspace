@@ -34,6 +34,19 @@ assert.notEqual(
   }),
 );
 
+
+const workspaceOpenMetadata = toolWidgetDescriptorMeta(
+  { widgets: "workspace" },
+  "workspace_open",
+  workspaceAppUri,
+)._meta;
+assert.equal(workspaceOpenMetadata["openai/outputTemplate"], workspaceAppUri);
+assert.equal(workspaceOpenMetadata.ui?.resourceUri, workspaceAppUri);
+assert.deepEqual(workspaceOpenMetadata.ui?.visibility, ["model"]);
+assert.deepEqual(toolWidgetDescriptorMeta({ widgets: "workspace" }, "workspace", workspaceAppUri), { _meta: {} });
+assert.deepEqual(toolWidgetDescriptorMeta({ widgets: "workspace" }, "shell", workspaceAppUri), { _meta: {} });
+assert.deepEqual(toolWidgetDescriptorMeta({ widgets: "workspace" }, "show_changes", workspaceAppUri), { _meta: {} });
+
 assert.deepEqual(toolWidgetDescriptorMeta({ widgets: "off" }, "search"), {
   _meta: {},
 });

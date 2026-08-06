@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { GatewayWorkspaceStore, PublicWorkspaceBinding } from "./gateway-workspace-store.js";
 import type { ToolName } from "./tool-contract.js";
 import type { ToolResponse } from "./pi-tools.js";
+import {
+  workspaceActivityDetail,
+  workspaceActivityLabel,
+  type NewWorkspaceActivityEvent,
+  type WorkspaceActivityEvent,
+  type WorkspaceActivityPage,
+} from "./workspace-activity.js";
 
 export interface GatewayMachine {
   id: string;
@@ -44,10 +51,17 @@ export class TargetUnavailableError extends Error {
   }
 }
 
+const ACTIVITY_RETENTION_AFTER_CLOSE_MS = 60_000;
+
 export class GatewayExecutionRouter {
   private readonly machinesById = new Map<string, GatewayMachine>();
   private readonly names = new Map<string, GatewayMachine>();
   private readonly canonical: GatewayMachine;
+  private readonly activityWaiters = new Map<string, Set<() => void>>();
+  private readonly activityEvents = new Map<string, WorkspaceActivityEvent[]>();
+  private readonly activityNextSeq = new Map<string, number>();
+  private readonly activityOperationTotals = new Map<string, number>();
+  private readonly activityCleanupTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     machines: GatewayMachine[],
@@ -96,6 +110,21 @@ export class GatewayExecutionRouter {
       );
     }
     const target = this.targetFor(machine);
+    const operationId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
+    const label = workspaceActivityLabel(tool, args);
+    this.appendActivity({
+      workspaceId: publicWorkspaceId,
+      operationId,
+      tool,
+      machine: publicMachine(machine),
+      status: "running",
+      label,
+      startedAt,
+      createdAt: startedAt,
+    });
+
     let result: ExecutorResult;
     try {
       result = await this.invoke(target, machine, tool, {
@@ -103,10 +132,23 @@ export class GatewayExecutionRouter {
         workspaceId: binding.executorWorkspaceId,
       }, options);
     } catch (error) {
+      this.appendActivity({
+        workspaceId: publicWorkspaceId,
+        operationId,
+        tool,
+        machine: publicMachine(machine),
+        status: "error",
+        label,
+        detail: "failed",
+        startedAt,
+        durationMs: Date.now() - startedMs,
+        createdAt: new Date().toISOString(),
+      });
       if (error instanceof GatewayRoutingError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (/Unknown workspaceId:|Workspace is not active:/.test(message)) {
         this.bindings.delete(publicWorkspaceId);
+        this.scheduleActivityCleanup(publicWorkspaceId);
         throw new GatewayRoutingError(
           "unknown_workspace",
           `Unknown workspaceId: ${publicWorkspaceId}. Call open_workspace first.`,
@@ -115,15 +157,128 @@ export class GatewayExecutionRouter {
       }
       throw new Error(message.split(binding.executorWorkspaceId).join(publicWorkspaceId));
     }
+
+    const rewrittenResult = rewriteExecutorWorkspaceId(result, binding.executorWorkspaceId, publicWorkspaceId);
+    this.appendActivity({
+      workspaceId: publicWorkspaceId,
+      operationId,
+      tool,
+      machine: publicMachine(machine),
+      status: result.isError ? "error" : "success",
+      label,
+      detail: workspaceActivityDetail(tool, rewrittenResult),
+      startedAt,
+      durationMs: Date.now() - startedMs,
+      createdAt: new Date().toISOString(),
+    });
+
     const workspaceClosed = tool === "close_workspace" && result.structuredContent?.workspace && typeof result.structuredContent.workspace === "object"
       ? (result.structuredContent.workspace as { closed?: unknown }).closed === true
       : false;
-    if (workspaceClosed) this.bindings.deleteByExecutor(machine.id, binding.executorWorkspaceId);
-    else this.bindings.touch(publicWorkspaceId);
+    if (workspaceClosed) {
+      this.bindings.deleteByExecutor(machine.id, binding.executorWorkspaceId);
+      this.scheduleActivityCleanup(publicWorkspaceId);
+    } else {
+      this.bindings.touch(publicWorkspaceId);
+    }
     return {
-      result: rewriteExecutorWorkspaceId(result, binding.executorWorkspaceId, publicWorkspaceId),
+      result: rewrittenResult,
       machine: publicMachine(machine),
       publicWorkspaceId,
+    };
+  }
+
+  close(): void {
+    for (const timer of this.activityCleanupTimers.values()) clearTimeout(timer);
+    this.activityCleanupTimers.clear();
+    for (const waiters of this.activityWaiters.values()) {
+      for (const wake of Array.from(waiters)) wake();
+    }
+    this.activityWaiters.clear();
+    this.activityEvents.clear();
+    this.activityNextSeq.clear();
+    this.activityOperationTotals.clear();
+  }
+
+  async waitForActivity(
+    publicWorkspaceId: string,
+    afterSeq: number,
+    limit: number,
+    waitMs: number,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceActivityPage> {
+    let page = this.listActivity(publicWorkspaceId, afterSeq, limit);
+    if (page.events.length > 0 || page.latestSeq < afterSeq || waitMs <= 0 || signal?.aborted) return page;
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const waiters = this.activityWaiters.get(publicWorkspaceId) ?? new Set<() => void>();
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        waiters.delete(finish);
+        if (waiters.size === 0) this.activityWaiters.delete(publicWorkspaceId);
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.max(0, Math.min(30_000, waitMs)));
+      waiters.add(finish);
+      this.activityWaiters.set(publicWorkspaceId, waiters);
+      signal?.addEventListener("abort", finish, { once: true });
+      if (this.listActivity(publicWorkspaceId, afterSeq, 1).events.length > 0) queueMicrotask(finish);
+    });
+
+    page = this.listActivity(publicWorkspaceId, afterSeq, limit);
+    return page;
+  }
+
+  private appendActivity(event: NewWorkspaceActivityEvent): void {
+    const seq = this.activityNextSeq.get(event.workspaceId) ?? 1;
+    const events = this.activityEvents.get(event.workspaceId) ?? [];
+    events.push({ ...event, seq });
+    if (events.length > 400) events.splice(0, events.length - 400);
+    this.activityEvents.set(event.workspaceId, events);
+    this.activityNextSeq.set(event.workspaceId, seq + 1);
+    if (event.status === "running") {
+      this.activityOperationTotals.set(
+        event.workspaceId,
+        (this.activityOperationTotals.get(event.workspaceId) ?? 0) + 1,
+      );
+    }
+
+    const waiters = this.activityWaiters.get(event.workspaceId);
+    if (!waiters) return;
+    for (const wake of Array.from(waiters)) wake();
+  }
+
+  private scheduleActivityCleanup(publicWorkspaceId: string): void {
+    const existing = this.activityCleanupTimers.get(publicWorkspaceId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.activityCleanupTimers.delete(publicWorkspaceId);
+      this.activityEvents.delete(publicWorkspaceId);
+      this.activityNextSeq.delete(publicWorkspaceId);
+      this.activityOperationTotals.delete(publicWorkspaceId);
+      const waiters = this.activityWaiters.get(publicWorkspaceId);
+      if (!waiters) return;
+      for (const wake of Array.from(waiters)) wake();
+    }, ACTIVITY_RETENTION_AFTER_CLOSE_MS);
+    timer.unref();
+    this.activityCleanupTimers.set(publicWorkspaceId, timer);
+  }
+
+  private listActivity(publicWorkspaceId: string, afterSeq: number, limit: number): WorkspaceActivityPage {
+    const events = this.activityEvents.get(publicWorkspaceId) ?? [];
+    const boundedLimit = Math.max(1, Math.min(200, Math.trunc(limit)));
+    const normalizedAfterSeq = Math.max(0, Math.trunc(afterSeq));
+    const selected = normalizedAfterSeq === 0
+      ? events.slice(-boundedLimit)
+      : events.filter((event) => event.seq > normalizedAfterSeq).slice(0, boundedLimit);
+    return {
+      events: selected,
+      latestSeq: events.at(-1)?.seq ?? 0,
+      totalOperations: this.activityOperationTotals.get(publicWorkspaceId) ?? 0,
     };
   }
 

@@ -122,8 +122,9 @@ MCP clients discover metadata from:
 
 | Value | Behavior |
 | --- | --- |
-| `full` | Default. Widget UI is attached to exposed workspace, file, edit, and shell tools. |
-| `changes` | Enables the aggregate `show_changes` tool and attaches widget UI to `open_workspace` and `show_changes`. |
+| `full` | Default for standalone servers. Widget UI is attached to exposed workspace, file, edit, and shell tools. |
+| `workspace` | Gateway default when `DEVSPACE_WIDGETS` is unset. Renders one live `open_workspace` card and folds later workspace activity into that card without per-tool widgets. Gateway operators may explicitly select another mode for debugging; standalone servers reject this mode. |
+| `changes` | Enables the aggregate `show_changes` tool and attaches widget UI to workspace lifecycle tools and `show_changes`. |
 | `off` | Disables widget UI. |
 
 ## Skills

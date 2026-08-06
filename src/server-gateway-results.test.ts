@@ -38,3 +38,16 @@ assert.ok("_meta" in failed);
 assert.deepEqual(failed._meta.card.machine, { id: "saga", displayName: "Saga" });
 assert.equal(failed._meta.card.workspaceId, "gw_public");
 assert.equal(JSON.stringify(failed).includes("private"), false);
+
+const shell = gatewayPublicResult({
+  machine: { id: "saga", displayName: "Saga" },
+  publicWorkspaceId: "gw_public",
+  result: {
+    content: [{ type: "text", text: "one\ntwo" }],
+  },
+}, "run_shell", "bash", {
+  workspaceId: "gw_public",
+  command: "printf 'one'\n  && printf 'two'",
+});
+assert.equal(shell._meta.card.summary.command, "printf 'one' && printf 'two'");
+assert.equal(shell._meta.card.summary.lines, 2);

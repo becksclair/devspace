@@ -13,6 +13,7 @@ const baseEnv = {
 
 assert.equal(loadConfig(baseEnv).widgets, "full");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "changes" }).widgets, "changes");
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "workspace" }).widgets, "workspace");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "full" }).widgets, "full");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "off" }).widgets, "off");
 assert.equal(loadConfig(baseEnv).toolNaming, "short");

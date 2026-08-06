@@ -77,13 +77,53 @@ await router.execute("read_file", { workspaceId: sagaOpen.publicWorkspaceId, pat
 assert.equal(saga.calls.length, 2);
 assert.equal(asgard.calls.length, 1);
 assert.equal(saga.calls[1]?.args.workspaceId, "private-saga");
+const readActivity = await router.waitForActivity(sagaOpen.publicWorkspaceId, 0, 20, 0);
+assert.equal(readActivity.totalOperations, 1);
+assert.deepEqual(readActivity.events.map((event) => [event.tool, event.status, event.label]), [
+  ["read_file", "running", "x"],
+  ["read_file", "success", "x"],
+]);
+assert.equal(readActivity.events[1]?.detail, "1 line");
 await router.execute("close_workspace", { workspaceId: sagaOpen.publicWorkspaceId }, options);
 assert.equal(saga.calls[2]?.tool, "close_workspace");
 assert.equal(store.get(sagaOpen.publicWorkspaceId), undefined);
+const closedActivity = await router.waitForActivity(sagaOpen.publicWorkspaceId, 0, 20, 0);
+assert.equal(closedActivity.totalOperations, 2);
+assert.equal(closedActivity.events.at(-1)?.tool, "close_workspace");
+assert.equal(closedActivity.events.at(-1)?.status, "success");
 await assert.rejects(
   router.execute("workspace_status", { workspaceId: sagaOpen.publicWorkspaceId }, options),
   (error: unknown) => error instanceof GatewayRoutingError && error.code === "unknown_workspace",
 );
+
+const retainedStore = new MemoryStore();
+const retainedTarget: ExecutionTarget = {
+  async execute(tool, args): Promise<ExecutorResult> {
+    if (tool === "open_workspace") {
+      return {
+        content: [{ type: "text", text: "opened" }],
+        structuredContent: { workspaceId: "private-retained" },
+      };
+    }
+    if (tool === "close_workspace") {
+      return {
+        content: [{ type: "text", text: "workspace remains open" }],
+        structuredContent: { workspace: { closed: false, reason: "retained terminal" } },
+      };
+    }
+    return { content: [{ type: "text", text: String(args.workspaceId ?? "") }] };
+  },
+};
+const retainedRouter = new GatewayExecutionRouter(
+  [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+  new Map([["saga", retainedTarget]]),
+  retainedStore,
+);
+const retainedOpen = await retainedRouter.execute("open_workspace", { path: "/retained" }, options);
+await retainedRouter.execute("close_workspace", { workspaceId: retainedOpen.publicWorkspaceId }, options);
+assert.ok(retainedStore.get(retainedOpen.publicWorkspaceId), "a refused close must preserve the public binding");
+const retainedActivity = await retainedRouter.waitForActivity(retainedOpen.publicWorkspaceId, 0, 20, 0);
+assert.equal(retainedActivity.events.at(-1)?.detail, "remains open · retained terminal");
 
 await assert.rejects(
   router.execute("open_workspace", { path: "/x", machine: "unknown" }, options),
@@ -103,6 +143,40 @@ const reuseFirst = await reuseRouter.execute("open_workspace", { path: "/same" }
 const reuseSecond = await reuseRouter.execute("open_workspace", { path: "/same" }, options);
 assert.equal(reuseSecond.publicWorkspaceId, reuseFirst.publicWorkspaceId);
 assert.equal(reuseStore.rows.size, 1);
+
+const liveTarget = fakeTarget("private-live");
+const liveStore = new MemoryStore();
+const liveRouter = new GatewayExecutionRouter(
+  [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+  new Map([["saga", liveTarget]]),
+  liveStore,
+);
+const liveOpen = await liveRouter.execute("open_workspace", { path: "/live" }, options);
+const liveWait = liveRouter.waitForActivity(liveOpen.publicWorkspaceId, 0, 20, 1_000);
+const liveRead = liveRouter.execute("read_file", { workspaceId: liveOpen.publicWorkspaceId, path: "live.txt" }, options);
+const livePage = await liveWait;
+assert.equal(livePage.events[0]?.tool, "read_file");
+assert.equal(livePage.events[0]?.status, "running");
+await liveRead;
+
+const boundedTarget = fakeTarget("private-bounded");
+const boundedStore = new MemoryStore();
+const boundedRouter = new GatewayExecutionRouter(
+  [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+  new Map([["saga", boundedTarget]]),
+  boundedStore,
+);
+const boundedOpen = await boundedRouter.execute("open_workspace", { path: "/bounded" }, options);
+for (let index = 0; index < 205; index += 1) {
+  await boundedRouter.execute(
+    "read_file",
+    { workspaceId: boundedOpen.publicWorkspaceId, path: `file-${index}.txt` },
+    options,
+  );
+}
+const boundedPage = await boundedRouter.waitForActivity(boundedOpen.publicWorkspaceId, 0, 200, 0);
+assert.equal(boundedPage.events.length, 200, "activity pages stay bounded");
+assert.equal(boundedPage.totalOperations, 205, "operation count remains monotonic after old events are pruned");
 
 const unavailableRouter = new GatewayExecutionRouter(
   [

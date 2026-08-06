@@ -97,6 +97,7 @@ export function workspaceAppResourceUri(
 }
 
 type ToolWidgetKind =
+  | "workspace_open"
   | "workspace"
   | "read"
   | "write"
@@ -110,8 +111,8 @@ interface ToolDefinitionMeta extends Record<string, unknown> {
   "openai/outputTemplate"?: string;
   "ui/resourceUri"?: string;
   ui?: {
-    resourceUri: string;
-    visibility: ["model"];
+    resourceUri?: string;
+    visibility: Array<"model" | "app">;
   };
 }
 
@@ -124,7 +125,9 @@ function shouldAttachWidget(mode: WidgetMode, kind: ToolWidgetKind): boolean {
     case "off":
       return false;
     case "changes":
-      return kind === "workspace" || kind === "show_changes";
+      return kind === "workspace_open" || kind === "workspace" || kind === "show_changes";
+    case "workspace":
+      return kind === "workspace_open";
     case "full":
       return true;
   }
@@ -145,6 +148,14 @@ export function toolWidgetDescriptorMeta(
         resourceUri,
         visibility: ["model"],
       },
+    },
+  };
+}
+
+function appOnlyToolDescriptorMeta(): ToolWidgetDescriptorMeta {
+  return {
+    _meta: {
+      ui: { visibility: ["app"] },
     },
   };
 }
@@ -421,6 +432,11 @@ function textSummary(content: ToolContent[]): {
   };
 }
 
+function compactSummary(value: string, maxLength = 180): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1)}…`;
+}
+
 function assetBaseUrl(config: ServerConfig): string {
   return `${config.publicBaseUrl.replace(/\/+$/, "")}/mcp-app-assets`;
 }
@@ -621,7 +637,11 @@ function publicExecutorResult(
     : {};
   const summary = canonicalTool === "show_changes"
     ? ((executorStructured.summary as Record<string, unknown> | undefined) ?? {})
-    : textSummary(content);
+    : {
+        ...textSummary(content),
+        ...(canonicalTool === "run_shell" && typeof args.command === "string" ? { command: compactSummary(args.command) } : {}),
+        ...((canonicalTool === "grep_files" || canonicalTool === "find_files") && typeof args.pattern === "string" ? { pattern: compactSummary(args.pattern) } : {}),
+      };
   const card = {
     workspaceId: routed.publicWorkspaceId,
     machine: routed.machine,
@@ -685,10 +705,10 @@ function createMcpServer(
   if (workspaceAppManifestEntry && workspaceAppUri) {
     registerAppResource(
       server,
-      "DevSpace Diff Card",
+      "DevSpace Workspace Card",
       workspaceAppUri,
       {
-        description: "Interactive card for viewing DevSpace file diffs.",
+        description: "Interactive card for DevSpace workspace activity and file diffs.",
         _meta: {
           ui: {
             csp: appCsp(config),
@@ -779,7 +799,7 @@ function createMcpServer(
         instruction: z.string(),
         machine: z.object({ id: z.string(), displayName: z.string() }).optional(),
       },
-      ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
+      ...toolWidgetDescriptorMeta(config, "workspace_open", workspaceAppUri),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ path, mode, baseRef, create, fresh, machine }, extra) => {
@@ -796,6 +816,55 @@ function createMcpServer(
       return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, extra);
     },
   );
+
+  if (gatewayRouter && config.widgets === "workspace") {
+    registerAppTool(
+      server,
+      "workspace_activity",
+      {
+        title: "Workspace activity",
+        description: "App-only incremental activity feed for the live DevSpace workspace card.",
+        inputSchema: {
+          workspaceId: z.string(),
+          afterSeq: z.number().int().min(0).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+          waitMs: z.number().int().min(0).max(30_000).optional(),
+        },
+        outputSchema: {
+          events: z.array(z.object({
+            seq: z.number().int().positive(),
+            workspaceId: z.string(),
+            operationId: z.string(),
+            tool: z.string(),
+            machine: z.object({ id: z.string(), displayName: z.string() }),
+            status: z.enum(["running", "success", "error"]),
+            label: z.string(),
+            detail: z.string().optional(),
+            startedAt: z.string(),
+            durationMs: z.number().int().nonnegative().optional(),
+            createdAt: z.string(),
+          })),
+          latestSeq: z.number().int().nonnegative(),
+          totalOperations: z.number().int().nonnegative(),
+        },
+        ...appOnlyToolDescriptorMeta(),
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async ({ workspaceId, afterSeq, limit, waitMs }, extra) => {
+        const page = await gatewayRouter.waitForActivity(
+          workspaceId,
+          afterSeq ?? 0,
+          limit ?? 100,
+          waitMs ?? 20_000,
+          extra.signal,
+        );
+        return {
+          content: [{ type: "text", text: `${page.events.length} workspace activity events` }],
+          structuredContent: page,
+        };
+      },
+    );
+  }
 
   registerAppTool(
     server,
@@ -1224,6 +1293,9 @@ interface CreateServerOptions {
 }
 
 export function createServer(config = loadConfig(), options: CreateServerOptions = {}): RunningServer {
+  if (config.widgets === "workspace" && !options.gatewayRouter) {
+    throw new Error("DEVSPACE_WIDGETS=workspace is only supported in gateway mode");
+  }
   const allowedHosts = config.allowedHosts.includes("*")
     ? undefined
     : Array.from(new Set([config.host, ...config.allowedHosts]));
@@ -1465,7 +1537,7 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
     DEVSPACE_WORKTREE_ROOT: localMachine?.worktreeRoot ?? `${roleConfig.stateDir}/unused-worktrees`,
   });
   publicConfig.minimalTools = false;
-  publicConfig.widgets = "full";
+  publicConfig.widgets = process.env.DEVSPACE_WIDGETS === undefined ? "workspace" : publicConfig.widgets;
   const bindings = createGatewayWorkspaceStore(roleConfig.stateDir);
   const targets = new Map<string, ExecutionTarget>();
   const localExecutors: LocalExecutor[] = [];
@@ -1529,6 +1601,7 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
     ...running,
     close: () => {
       running.close?.();
+      router.close();
       for (const executor of localExecutors) executor.close();
       bindings.close();
     },

@@ -32,6 +32,26 @@ interface ToolDisplay {
   tone: string;
 }
 
+interface WorkspaceActivityEvent {
+  seq: number;
+  workspaceId: string;
+  operationId: string;
+  tool: ToolName;
+  machine: { id: string; displayName: string };
+  status: "running" | "success" | "error";
+  label: string;
+  detail?: string;
+  startedAt: string;
+  durationMs?: number;
+  createdAt: string;
+}
+
+interface WorkspaceActivityPage {
+  events: WorkspaceActivityEvent[];
+  latestSeq: number;
+  totalOperations: number;
+}
+
 interface MountedPayload {
   update(options: {
     card: ToolResultCard;
@@ -52,6 +72,14 @@ let reviewFilesExpanded = false;
 let errorMessage: string | null = null;
 let currentPayload: MountedPayload | null = null;
 let currentPayloadContainer: HTMLElement | null = null;
+let activityEvents = new Map<string, WorkspaceActivityEvent>();
+let activitySeq = 0;
+let activityTotalOperations = 0;
+let activityFeedEnabled = false;
+let activityExpanded = false;
+let activityPollGeneration = 0;
+let activityPolling = false;
+let activityError: string | null = null;
 
 const maybeAppRoot = document.querySelector<HTMLElement>("#app");
 
@@ -92,7 +120,9 @@ async function boot(): Promise<void> {
     expanded = false;
     reviewFilesExpanded = false;
     errorMessage = null;
+    if (tool === "open_workspace") resetActivityFeed();
     render();
+    if (tool === "open_workspace") void startActivityPolling();
   };
 
   app.onhostcontextchanged = (ctx) => {
@@ -105,6 +135,8 @@ async function boot(): Promise<void> {
   };
 
   app.onteardown = async () => {
+    activityPollGeneration += 1;
+    activityPolling = false;
     unmountPayload();
     return {};
   };
@@ -115,6 +147,7 @@ async function boot(): Promise<void> {
     if (initialContext) hostContext = initialContext;
     applyHostContext();
     connected = true;
+    if (card?.tool === "open_workspace") void startActivityPolling();
   } catch (connectError) {
     connectionError = connectError instanceof Error
       ? connectError.message
@@ -157,6 +190,11 @@ function render(): void {
     return;
   }
 
+  if (card.tool === "open_workspace" && activityFeedEnabled) {
+    renderWorkspaceActivityCard(card);
+    return;
+  }
+
   const display = getToolDisplay(card);
   if (isReviewTool(card.tool)) {
     renderReviewCard(card, display);
@@ -166,8 +204,9 @@ function render(): void {
   const expandable = isExpandableCard(card);
   const main = element("main", { className: "shell" });
   const section = element("section", { className: `tool-card ${display.tone}` });
+  const machineBadge = renderMachineBadge(card);
   const button = element("button", {
-    className: "tool-header",
+    className: machineBadge ? "tool-header has-machine" : "tool-header",
     type: "button",
     ariaExpanded: String(expanded),
     disabled: !expandable,
@@ -190,17 +229,15 @@ function render(): void {
     text: display.label,
     title: display.label,
   });
-  toolMain.append(title);
-  const machineBadge = renderMachineBadge(card);
-  if (machineBadge) toolMain.append(machineBadge);
-  toolMain.append(label);
+  toolMain.append(title, label);
 
   button.append(
     icon,
     toolMain,
     renderSummaryBadge(card),
-    renderChevron(expanded, expandable),
   );
+  if (machineBadge) button.append(machineBadge);
+  button.append(renderChevron(expanded, expandable));
   section.append(button);
 
   if (expanded) {
@@ -212,6 +249,197 @@ function render(): void {
   main.append(section);
   appRoot.replaceChildren(main);
   renderPayloadIfNeeded();
+}
+
+function renderWorkspaceActivityCard(workspace: ToolResultCard): void {
+  const main = element("main", { className: "shell" });
+  const section = element("section", { className: "tool-card workspace activity-card" });
+  const expandable = isExpandableCard(workspace);
+  const machineBadge = renderMachineBadge(workspace);
+  const header = element("button", {
+    className: machineBadge
+      ? "tool-header workspace-activity-header has-machine"
+      : "tool-header workspace-activity-header",
+    type: "button",
+    ariaExpanded: String(expanded),
+    disabled: !expandable,
+  });
+  if (expandable) {
+    header.addEventListener("click", () => {
+      expanded = !expanded;
+      render();
+    });
+  }
+
+  const icon = element("span", { className: "tool-icon", ariaHidden: "true" });
+  icon.innerHTML = folderIcon();
+  const toolMain = element("span", { className: "tool-main" });
+  const root = workspace.root ?? workspace.canonicalRoot ?? "Workspace";
+  toolMain.append(
+    element("span", { className: "tool-title", text: "DevSpace" }),
+    element("span", { className: "tool-label", text: root, title: root }),
+  );
+  const countText = activityTotalOperations === 0
+    ? "ready"
+    : `${activityTotalOperations} ${activityTotalOperations === 1 ? "operation" : "operations"}`;
+  header.append(icon, toolMain, element("span", { className: "badge", text: countText }));
+  if (machineBadge) header.append(machineBadge);
+  header.append(renderChevron(expanded, expandable));
+  section.append(header);
+
+  const feed = element("div", { className: "activity-feed" });
+  const operations = Array.from(activityEvents.values()).sort((left, right) => {
+    const byStart = Date.parse(left.startedAt) - Date.parse(right.startedAt);
+    return byStart !== 0 ? byStart : left.seq - right.seq;
+  });
+  const visible = activityExpanded ? operations : operations.slice(-7);
+  if (visible.length === 0) {
+    feed.append(element("div", { className: "activity-empty", text: "Ready. Workspace activity will appear here." }));
+  } else {
+    for (const event of visible) feed.append(renderActivityRow(event));
+  }
+  section.append(feed);
+
+  const hiddenCount = Math.max(0, operations.length - visible.length);
+  if (hiddenCount > 0 || (activityExpanded && operations.length > 7)) {
+    const footer = element("div", { className: "activity-footer" });
+    const toggle = element("button", {
+      className: "review-action",
+      type: "button",
+      text: activityExpanded ? "Show latest" : `Show ${hiddenCount} earlier`,
+    });
+    toggle.addEventListener("click", () => {
+      activityExpanded = !activityExpanded;
+      render();
+    });
+    footer.append(toggle);
+    section.append(footer);
+  }
+
+  if (activityError) {
+    section.append(element("div", { className: "activity-error", text: activityError }));
+  }
+
+  if (expanded) {
+    const body = element("div", { className: "tool-body" });
+    currentPayloadContainer = body;
+    section.append(body);
+  }
+
+  main.append(section);
+  appRoot.replaceChildren(main);
+  renderPayloadIfNeeded();
+}
+
+function renderActivityRow(event: WorkspaceActivityEvent): HTMLElement {
+  const row = element("div", { className: `activity-row ${event.status}` });
+  const status = element("span", {
+    className: "activity-status",
+    text: event.status === "running" ? "●" : event.status === "success" ? "✓" : "×",
+  });
+  status.setAttribute("aria-label", event.status);
+  const main = element("span", { className: "activity-main" });
+  main.append(
+    element("span", { className: "activity-tool", text: toolTitle(event.tool) }),
+    element("span", { className: "activity-label", text: event.label, title: event.label }),
+  );
+  const details = [event.detail, formatDuration(event.durationMs)].filter(Boolean).join(" · ");
+  row.append(status, main, element("span", { className: "activity-detail", text: details }));
+  return row;
+}
+
+function resetActivityFeed(): void {
+  activityPollGeneration += 1;
+  activityEvents = new Map();
+  activitySeq = 0;
+  activityTotalOperations = 0;
+  activityFeedEnabled = false;
+  activityExpanded = false;
+  activityPolling = false;
+  activityError = null;
+}
+
+async function startActivityPolling(): Promise<void> {
+  if (!app || !connected || activityPolling || card?.tool !== "open_workspace" || !card.workspaceId) return;
+  const workspaceId = card.workspaceId;
+  const generation = ++activityPollGeneration;
+  activityPolling = true;
+
+  while (generation === activityPollGeneration && card?.tool === "open_workspace" && card.workspaceId === workspaceId) {
+    try {
+      const result = await app.callServerTool(
+        {
+          name: "workspace_activity",
+          arguments: { workspaceId, afterSeq: activitySeq, limit: 200, waitMs: activityFeedEnabled ? 20_000 : 0 },
+        },
+        { timeout: 25_000 },
+      );
+      if (generation !== activityPollGeneration) break;
+      const page = getStructuredContent<WorkspaceActivityPage>(result);
+      if (result.isError || !isWorkspaceActivityPage(page)) {
+        throw new Error("Workspace activity feed is unavailable.");
+      }
+
+      activityFeedEnabled = true;
+      activityError = null;
+      if (page.latestSeq < activitySeq) {
+        activityEvents.clear();
+        activitySeq = 0;
+      }
+      activityTotalOperations = page.totalOperations;
+      for (const event of page.events) {
+        const existing = activityEvents.get(event.operationId);
+        if (!existing || event.seq >= existing.seq) activityEvents.set(event.operationId, event);
+      }
+      if (activityEvents.size > 200) {
+        const oldest = Array.from(activityEvents.values())
+          .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+          .slice(0, activityEvents.size - 200);
+        for (const event of oldest) activityEvents.delete(event.operationId);
+      }
+      activitySeq = page.events.at(-1)?.seq ?? page.latestSeq;
+      render();
+
+      const closed = page.events.some(
+        (event) => event.tool === "close_workspace" && event.status === "success" && event.detail === "closed",
+      );
+      if (closed) break;
+    } catch (activityFailure) {
+      if (generation !== activityPollGeneration) break;
+      if (!activityFeedEnabled) break;
+      activityError = activityFailure instanceof Error ? activityFailure.message : String(activityFailure);
+      render();
+      await delay(2_000);
+    }
+  }
+
+  if (generation === activityPollGeneration) activityPolling = false;
+}
+
+function isWorkspaceActivityPage(value: unknown): value is WorkspaceActivityPage {
+  if (!value || typeof value !== "object") return false;
+  const page = value as Partial<WorkspaceActivityPage>;
+  if (!Array.isArray(page.events) || typeof page.latestSeq !== "number" || typeof page.totalOperations !== "number") return false;
+  return page.events.every((event) => {
+    if (!event || typeof event !== "object") return false;
+    const candidate = event as Partial<WorkspaceActivityEvent>;
+    return typeof candidate.seq === "number"
+      && typeof candidate.operationId === "string"
+      && isToolName(candidate.tool)
+      && (candidate.status === "running" || candidate.status === "success" || candidate.status === "error")
+      && typeof candidate.label === "string";
+  });
+}
+
+function formatDuration(durationMs: number | undefined): string | undefined {
+  if (durationMs === undefined) return undefined;
+  if (durationMs < 1_000) return `${durationMs}ms`;
+  if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(1)}s`;
+  return `${Math.round(durationMs / 1_000)}s`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function renderEmpty(message: string, tone: "muted" | "error" = "muted"): void {
@@ -391,16 +619,20 @@ function renderReviewCard(card: ToolResultCard, display: ToolDisplay): void {
   const hiddenCount = Math.max(0, files.length - visibleFiles.length);
   const main = element("main", { className: "shell" });
   const section = element("section", { className: "tool-card review" });
-  const header = element("div", { className: "review-header" });
+  const machineBadge = renderMachineBadge(card);
+  const header = element("div", {
+    className: machineBadge ? "review-header has-machine" : "review-header",
+  });
   const icon = element("span", { className: "tool-icon", ariaHidden: "true" });
   icon.innerHTML = display.icon;
   const titleGroup = element("div", { className: "review-title-group" });
 
-  titleGroup.append(element("span", { className: "tool-title", text: display.title }));
-  const machineBadge = renderMachineBadge(card);
-  if (machineBadge) titleGroup.append(machineBadge);
-  titleGroup.append(element("span", { className: "tool-label", text: display.label, title: display.label }));
+  titleGroup.append(
+    element("span", { className: "tool-title", text: display.title }),
+    element("span", { className: "tool-label", text: display.label, title: display.label }),
+  );
   header.append(icon, titleGroup, renderSummaryBadge(card));
+  if (machineBadge) header.append(machineBadge);
 
   const body = element("div", { className: "review-summary" });
   currentPayloadContainer = body;
@@ -516,6 +748,35 @@ function formatAgentsFilesForPayload(
     .join("\n\n");
 }
 
+function toolTitle(tool: ToolName): string {
+  switch (tool) {
+    case "open_workspace": return "Workspace";
+    case "workspace_status": return "Workspace Status";
+    case "close_workspace": return "Close Workspace";
+    case "read_file":
+    case "read": return "Read";
+    case "write_file":
+    case "write": return "Write";
+    case "edit_file":
+    case "edit": return "Edit";
+    case "grep_files":
+    case "grep": return "Grep";
+    case "find_files":
+    case "glob": return "Glob";
+    case "list_directory":
+    case "ls": return "List";
+    case "run_shell":
+    case "bash": return "Bash";
+    case "terminal_start": return "Start Terminal";
+    case "terminal_read": return "Read Terminal";
+    case "terminal_write": return "Write Terminal";
+    case "terminal_resize": return "Resize Terminal";
+    case "terminal_status": return "Terminal Status";
+    case "terminal_close": return "Close Terminal";
+    case "show_changes": return "Changes";
+  }
+}
+
 function getToolDisplay(card: ToolResultCard): ToolDisplay {
   const label = getToolLabel(card);
 
@@ -565,6 +826,8 @@ function getToolDisplay(card: ToolResultCard): ToolDisplay {
 }
 
 function getToolLabel(card: ToolResultCard): string {
+  if (card.tool === "workspace_status") return card.root ?? "capabilities and Git state";
+  if (card.tool === "close_workspace") return card.root ?? "workspace session";
   if (isTerminalTool(card.tool)) {
     const terminal = card.terminal ?? card.terminals?.[0];
     return String(terminal?.commandSummary ?? terminal?.terminalId ?? card.tool);

@@ -13,7 +13,7 @@ import type { OAuthConfig } from "./oauth-provider.js";
 import { loadDevspaceFiles } from "./user-config.js";
 
 export type ToolNamingMode = "legacy" | "short";
-export type WidgetMode = "off" | "changes" | "full";
+export type WidgetMode = "off" | "changes" | "workspace" | "full";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -231,7 +231,7 @@ function parseTerminalBackend(value: string | undefined): TerminalConfig["backen
 
 function parseWidgetMode(value: string | undefined): WidgetMode {
   if (!value || value === "full") return "full";
-  if (value === "off" || value === "changes") return value;
+  if (value === "off" || value === "changes" || value === "workspace") return value;
 
   throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
 }
