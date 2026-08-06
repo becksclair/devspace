@@ -19,21 +19,31 @@ jobs:
           apt-get update
           apt-get install --yes --no-install-recommends tmux
           rm -rf /var/lib/apt/lists/*
-      - name: Validate and build
+          chown -R node:node "$GITHUB_WORKSPACE"
+      - name: Validate and build as unprivileged user
         run: |
-          npm ci
-          npm test
-          npm run typecheck
-          npm run build:check
+          runuser --user node -- bash -lc '
+            set -Eeuo pipefail
+            cd "$GITHUB_WORKSPACE"
+            npm ci
+            npm test
+            npm run typecheck
+            npm run build:check
+          '
       - name: Package deterministic artifact
         id: package
         run: |
-          export OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts"
-          npm run package:runtime-artifact -- "$GITHUB_SHA"
+          runuser --user node -- bash -lc '
+            set -Eeuo pipefail
+            cd "$GITHUB_WORKSPACE"
+            export OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts"
+            npm run package:runtime-artifact -- "$GITHUB_SHA"
+            archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
+            OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts-repeat" npm run package:runtime-artifact -- "$GITHUB_SHA"
+            cmp "$archive" ".artifacts-repeat/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
+            (cd "$(dirname "$archive")" && sha256sum --check "$(basename "$archive").sha256")
+          '
           archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
-          OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts-repeat" npm run package:runtime-artifact -- "$GITHUB_SHA"
-          cmp "$archive" ".artifacts-repeat/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
-          (cd "$(dirname "$archive")" && sha256sum --check "$(basename "$archive").sha256")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "digest=$(cut -d' ' -f1 "$archive.sha256")" >> "$GITHUB_OUTPUT"
       - name: Publish immutable Generic Package
