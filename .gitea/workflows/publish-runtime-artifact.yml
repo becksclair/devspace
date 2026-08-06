@@ -49,6 +49,7 @@ jobs:
           archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - name: Publish immutable Generic Package
+        shell: bash
         env:
           PACKAGE_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
         run: |
@@ -68,6 +69,7 @@ jobs:
           done
       - name: Read back and verify published artifact
         id: published
+        shell: bash
         env:
           PACKAGE_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
         run: |
@@ -83,6 +85,7 @@ jobs:
           digest=$(awk '{print $1}' ".artifacts/${archive}.sha256")
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
       - name: Dispatch exact artifact deployment
+        shell: bash
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
           GITEA_REPOSITORY: ${{ github.repository }}
