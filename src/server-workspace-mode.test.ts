@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "./config.js";
 import {
   GatewayExecutionRouter,
@@ -37,6 +38,7 @@ class MemoryStore implements GatewayWorkspaceStore {
 }
 
 const stateDir = mkdtempSync(join(tmpdir(), "devspace-workspace-mode-test-"));
+const removeUiFixture = installUiFixture();
 const accessToken = "test-workspace-mode-token";
 const publicBaseUrl = "http://127.0.0.1:7676";
 const protocolVersion = "2025-03-26";
@@ -215,6 +217,43 @@ try {
   await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
   running.close?.();
   rmSync(stateDir, { recursive: true, force: true });
+  removeUiFixture();
+}
+
+function installUiFixture(): () => void {
+  const distDir = join(fileURLToPath(new URL("../", import.meta.url)), "dist");
+  const uiDir = join(distDir, "ui");
+  const viteDir = join(uiDir, ".vite");
+  const assetsDir = join(uiDir, "assets");
+  const manifestPath = join(viteDir, "manifest.json");
+  const assetPath = join(assetsDir, "workspace-app-test.js");
+  if (existsSync(manifestPath)) return () => {};
+
+  const existed = {
+    dist: existsSync(distDir),
+    ui: existsSync(uiDir),
+    vite: existsSync(viteDir),
+    assets: existsSync(assetsDir),
+    asset: existsSync(assetPath),
+  };
+  mkdirSync(viteDir, { recursive: true });
+  mkdirSync(assetsDir, { recursive: true });
+  writeFileSync(assetPath, "export {};\n");
+  writeFileSync(manifestPath, JSON.stringify({
+    "workspace-app.html": {
+      file: "assets/workspace-app-test.js",
+      isEntry: true,
+    },
+  }));
+
+  return () => {
+    rmSync(manifestPath, { force: true });
+    if (!existed.asset) rmSync(assetPath, { force: true });
+    if (!existed.vite) rmSync(viteDir, { recursive: true, force: true });
+    if (!existed.assets) rmSync(assetsDir, { recursive: true, force: true });
+    if (!existed.ui) rmSync(uiDir, { recursive: true, force: true });
+    if (!existed.dist) rmSync(distDir, { recursive: true, force: true });
+  };
 }
 
 async function rpc(endpoint: string, sessionId: string, id: number, method: string, params: unknown): Promise<any> {
