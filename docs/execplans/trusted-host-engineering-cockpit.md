@@ -561,7 +561,7 @@ The work is complete when:
 
 ## Implementation outcome — 5 August 2026
 
-The DevSpace application half is complete in the writable Saga checkout at `/home/ubuntu/devspace-trusted-host-plan`. The implementation is intentionally uncommitted and has not been deployed. The companion `saga-homelab` plan, systemd sandbox relaxation, live configuration update, artifact publication, and service restart remain outside this repository and are still pending.
+This section records the state on 5 August 2026. That implementation was subsequently merged into the canonical Saga checkout at `/home/ubuntu/projects/devspace`, published, and deployed. The temporary `/home/ubuntu/devspace-trusted-host-plan` checkout was removed on 6 August 2026 after its HEAD was proven to be an ancestor of current `main` with no unique commits.
 
 Delivered behavior includes:
 

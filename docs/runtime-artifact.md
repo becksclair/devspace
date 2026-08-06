@@ -7,13 +7,13 @@ and `artifact.json`. GNU tar and gzip metadata are normalized so repeated runs
 for the same committed inputs are byte-identical.
 
 The publish workflow uploads the archive as an immutable Gitea Generic Package
-versioned by the full source commit and verifies a read-back digest. Deployment
-is a separate dispatch-only workflow. Automatic dispatch is disabled unless the
-repository variable `DEVSPACE_AUTO_DEPLOY_ENABLED` is exactly `true`; enable it
-only after the Saga Ops disconnect/serialization canary and first manual deploy
-pass. The deploy workflow calls only `sudo /usr/local/bin/devspace-deployctl
-submit <commit> sha256:<digest>` and `status <commit>`. Installation and service
-mutation remain controller-owned.
+versioned by the full source commit and verifies a read-back digest. It stops
+there: the application repository does not currently dispatch or perform
+runtime deployment. The former Asgard-hosted `devspace-deployctl` workflow was
+retired after the central homelab artifact lane removed its DevSpace-specific
+activation and rollback semantics. A replacement rollout strategy must remain a
+separate operational concern rather than being inferred from artifact
+publication.
 
 `artifact.json` is canonical one-line JSON with schema
 `saga-service-artifact/v1`, service ID `devspace`, the full source commit,
@@ -32,8 +32,8 @@ The Saga app root is `/opt/saga-services/devspace`; the Asgard user app root is
 The Saga gateway listens on `127.0.0.1:7676`, serves `/healthz`, OAuth, MCP at
 `/mcp`, and widgets. The Asgard node listens on `127.0.0.1:7679` and exposes only
 authenticated `/internal/v1/hello` and `/internal/v1/call`. Both commands handle
-SIGTERM by stopping their HTTP listener before exit. Deployments restart only
-`devspace.service` and `devspace-asgard-node.service`, never tunnel units.
+SIGTERM by stopping their HTTP listener before exit. Artifact publication does
+not restart either runtime service or any tunnel unit.
 
 The versioned node call envelope is
 `{ protocolMajor, toolContractHash, machineId, requestId, tool, arguments }`.

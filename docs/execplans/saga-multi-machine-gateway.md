@@ -1,5 +1,13 @@
 # Build the lean Saga multi-machine DevSpace gateway
 
+> Historical implementation plan. The product/topology work remains useful
+> evidence, but the Asgard-hosted `devspace-deployctl` orchestration,
+> DevSpace-specific `artifact_service` safe-replacement mode, deployment
+> workflow, and automatic deploy design described below were retired on
+> 2026-08-06. Do not use those deployment sections as current operational
+> instructions. Artifact publication remains active; a replacement rollout
+> strategy is intentionally unspecified here.
+
 ## Outcome
 
 One ChatGPT developer app connects to `https://devspace-saga.heliasar.com/mcp` and can operate on both machines:

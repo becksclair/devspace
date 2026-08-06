@@ -45,7 +45,6 @@ jobs:
           '
           archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "digest=$(cut -d' ' -f1 "$archive.sha256")" >> "$GITHUB_OUTPUT"
       - name: Publish immutable Generic Package
         env:
           GITEA_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
@@ -63,14 +62,3 @@ jobs:
           sha256sum /tmp/readback.tar.gz | cut -d' ' -f1 > /tmp/readback.sha256
           cut -d' ' -f1 "${{ steps.package.outputs.archive }}.sha256" > /tmp/published.sha256
           cmp /tmp/readback.sha256 /tmp/published.sha256
-      - name: Dispatch gated deployment
-        if: ${{ vars.DEVSPACE_AUTO_DEPLOY_ENABLED == 'true' }}
-        env:
-          GITEA_TOKEN: ${{ secrets.DEVSPACE_DEPLOY_DISPATCH_TOKEN }}
-        run: |
-          test -n "$GITEA_TOKEN"
-          curl --fail --silent --show-error \
-            -H "Authorization: token $GITEA_TOKEN" \
-            -H 'Content-Type: application/json' \
-            --data '{"ref":"main","inputs":{"source_commit":"${{ github.sha }}","archive_sha256":"${{ steps.package.outputs.digest }}"}}' \
-            "${GITEA_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-runtime-artifact.yml/dispatches"
