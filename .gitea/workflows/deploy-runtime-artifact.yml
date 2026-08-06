@@ -1,0 +1,69 @@
+name: Deploy runtime artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full immutable source commit
+        required: true
+        type: string
+      archive_sha256:
+        description: Published artifact SHA-256
+        required: true
+        type: string
+
+permissions:
+  contents: none
+
+concurrency:
+  group: devspace-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: saga-deploy
+    timeout-minutes: 20
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+      DEPLOY_HOST: saga.stegosaurus-aeolian.ts.net
+    steps:
+      - name: Submit registered deployment and wait for result
+        env:
+          SAGA_DEPLOY_SSH_KEY: ${{ secrets.SAGA_DEPLOY_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test -n "$SAGA_DEPLOY_SSH_KEY" || { echo 'SAGA_DEPLOY_SSH_KEY secret is required' >&2; exit 1; }
+
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SAGA_DEPLOY_SSH_KEY" > "$ssh_dir/key"
+          chmod 0600 "$ssh_dir/key"
+          printf '%s %s %s\n' "$DEPLOY_HOST" 'ssh-ed25519' \
+            'AAAAC3NzaC1lZDI1NTE5AAAAIN4/VeniWdaH34IwmOQB/+GhH8jbZ/5FTjtTRV/A+XGu' > "$ssh_dir/known_hosts"
+          chmod 0600 "$ssh_dir/known_hosts"
+
+          ssh_args=(
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$ssh_dir/known_hosts" -o ConnectTimeout=10
+            -i "$ssh_dir/key" "homelab-deploy@${DEPLOY_HOST}"
+          )
+          submit=$(ssh "${ssh_args[@]}" "submit ${SOURCE_COMMIT} sha256:${ARCHIVE_SHA256}")
+          job_id=$(printf '%s\n' "$submit" | sed -n 's/.*"job_id":"\([a-z0-9._-]*\)".*/\1/p')
+          [[ "$job_id" =~ ^devspace-[0-9a-f]{12}-[0-9a-f]{8}$ ]] || { echo 'deployment controller returned an invalid job id' >&2; exit 1; }
+          printf 'deployment job: %s\n' "$job_id"
+
+          for attempt in $(seq 1 180); do
+            status=$(ssh "${ssh_args[@]}" "status ${job_id}")
+            state=$(printf '%s\n' "$status" | sed -n 's/.*"state":"\([a-z]*\)".*/\1/p')
+            case "$state" in
+              succeeded) printf '%s\n' "$status"; exit 0 ;;
+              failed) printf '%s\n' "$status" >&2; exit 1 ;;
+              queued|running) sleep 5 ;;
+              *) echo 'deployment controller returned an invalid state' >&2; exit 1 ;;
+            esac
+          done
+          echo 'deployment did not finish within fifteen minutes' >&2
+          exit 1

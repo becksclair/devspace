@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
 jobs:
   publish:
     runs-on: asgard-build-1
@@ -47,18 +50,50 @@ jobs:
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - name: Publish immutable Generic Package
         env:
-          GITEA_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
+          PACKAGE_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
         run: |
-          test -n "$GITEA_TOKEN"
+          set -Eeuo pipefail
+          test -n "$PACKAGE_TOKEN"
+          archive="devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
           base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
-          curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" --upload-file "${{ steps.package.outputs.archive }}" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
-          curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" --upload-file "${{ steps.package.outputs.archive }}.sha256" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz.sha256"
-      - name: Read back and verify digest
+          for file in "$archive" "${archive}.sha256"; do
+            status=$(curl --silent --show-error -H "Authorization: token $PACKAGE_TOKEN" \
+              --output /tmp/existing-package-object --write-out '%{http_code}' "$base/$file")
+            case "$status" in
+              200) cmp -- ".artifacts/$file" /tmp/existing-package-object ;;
+              404) curl --fail --silent --show-error -H "Authorization: token $PACKAGE_TOKEN" \
+                --upload-file ".artifacts/$file" "$base/$file" ;;
+              *) echo "unexpected package preflight status for $file: $status" >&2; exit 1 ;;
+            esac
+          done
+      - name: Read back and verify published artifact
+        id: published
         env:
-          GITEA_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
+          PACKAGE_TOKEN: ${{ secrets.DEVSPACE_PACKAGE_TOKEN }}
         run: |
+          set -Eeuo pipefail
+          archive="devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
           base="${GITEA_SERVER_URL}/api/packages/${GITEA_OWNER}/generic/devspace/${GITHUB_SHA}"
-          curl --fail --silent --show-error -H "Authorization: token $GITEA_TOKEN" "$base/devspace-linux-amd64-${GITHUB_SHA}.tar.gz" -o /tmp/readback.tar.gz
-          sha256sum /tmp/readback.tar.gz | cut -d' ' -f1 > /tmp/readback.sha256
-          cut -d' ' -f1 "${{ steps.package.outputs.archive }}.sha256" > /tmp/published.sha256
-          cmp /tmp/readback.sha256 /tmp/published.sha256
+          mkdir -p /tmp/devspace-published
+          curl --fail --silent --show-error -H "Authorization: token $PACKAGE_TOKEN" "$base/$archive" -o "/tmp/devspace-published/$archive"
+          curl --fail --silent --show-error -H "Authorization: token $PACKAGE_TOKEN" "$base/${archive}.sha256" -o "/tmp/devspace-published/${archive}.sha256"
+          cmp -- ".artifacts/$archive" "/tmp/devspace-published/$archive"
+          cmp -- ".artifacts/${archive}.sha256" "/tmp/devspace-published/${archive}.sha256"
+          (cd /tmp/devspace-published && sha256sum --check "${archive}.sha256")
+          digest=$(awk '{print $1}' ".artifacts/${archive}.sha256")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Dispatch exact artifact deployment
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GITEA_REPOSITORY: ${{ github.repository }}
+          ARCHIVE_SHA256: ${{ steps.published.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$GITEA_TOKEN"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          curl --fail --silent --show-error \
+            --header "Authorization: token ${GITEA_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data '{"ref":"main","inputs":{"source_commit":"'"${GITHUB_SHA}"'","archive_sha256":"'"${ARCHIVE_SHA256}"'"}}' \
+            "${GITEA_SERVER_URL}/api/v1/repos/${GITEA_REPOSITORY}/actions/workflows/deploy-runtime-artifact.yml/dispatches"
