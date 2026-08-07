@@ -14,6 +14,7 @@ import { loadDevspaceFiles } from "./user-config.js";
 
 export type ToolNamingMode = "legacy" | "short";
 export type WidgetMode = "off" | "changes" | "workspace" | "full";
+export type AnnotationProfile = "standard" | "trusted-owner";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -28,6 +29,7 @@ export interface ServerConfig {
   minimalTools: boolean;
   toolNaming: ToolNamingMode;
   widgets: WidgetMode;
+  annotationProfile: AnnotationProfile;
   stateDir: string;
   worktreeRoot: string;
   skillsEnabled: boolean;
@@ -212,6 +214,13 @@ function parseToolNaming(value: string | undefined): ToolNamingMode {
   throw new Error(`Invalid DEVSPACE_TOOL_NAMING: ${value}`);
 }
 
+function parseAnnotationProfile(value: string | undefined): AnnotationProfile {
+  if (!value || value === "standard") return "standard";
+  if (value === "trusted-owner") return "trusted-owner";
+
+  throw new Error(`Invalid DEVSPACE_ANNOTATION_PROFILE: ${value}`);
+}
+
 function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
   return {
     level: parseLogLevel(env.DEVSPACE_LOG_LEVEL),
@@ -310,6 +319,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     minimalTools: parseMinimalTools(env),
     toolNaming: parseToolNaming(env.DEVSPACE_TOOL_NAMING),
     widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
+    annotationProfile: parseAnnotationProfile(env.DEVSPACE_ANNOTATION_PROFILE ?? files.config.annotationProfile),
     stateDir,
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),

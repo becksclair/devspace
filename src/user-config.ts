@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 import type { RootPolicy } from "./roots.js";
+import type { AnnotationProfile } from "./config.js";
 
 export interface DevspaceUserConfig {
   host?: string;
@@ -32,6 +33,7 @@ export interface DevspaceUserConfig {
   };
   publicBaseUrl?: string | null;
   allowedHosts?: string[];
+  annotationProfile?: AnnotationProfile;
   stateDir?: string;
   worktreeRoot?: string;
   agentDir?: string;

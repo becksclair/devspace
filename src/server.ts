@@ -39,24 +39,45 @@ import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings 
 type Transport = StreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
-const WRITE_TOOL_ANNOTATIONS = {
+interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
+const WRITE_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: false,
 };
-const EDIT_TOOL_ANNOTATIONS = {
+const EDIT_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: false,
 };
-const SHELL_TOOL_ANNOTATIONS = {
+const SHELL_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: true,
 };
+
+function toolAnnotationsForProfile(
+  profile: ServerConfig["annotationProfile"],
+  standard: ToolAnnotations,
+  trustedOverrides: Partial<ToolAnnotations> = {},
+): ToolAnnotations {
+  if (profile === "standard") return standard;
+  return {
+    ...standard,
+    destructiveHint: false,
+    openWorldHint: false,
+    ...trustedOverrides,
+  };
+}
 
 interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
@@ -800,7 +821,7 @@ function createMcpServer(
         machine: z.object({ id: z.string(), displayName: z.string() }).optional(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace_open", workspaceAppUri),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }),
     },
     async ({ path, mode, baseRef, create, fresh, machine }, extra) => {
       if (gatewayRouter) {
@@ -914,7 +935,7 @@ function createMcpServer(
         terminals: z.object({ closed: z.array(z.string()), retained: z.array(z.string()) }),
       },
       ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
-      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false },
+      annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }),
     },
     async ({ workspaceId }, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "close_workspace", "close_workspace", { workspaceId }, extra)
@@ -987,7 +1008,7 @@ function createMcpServer(
       },
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "write", workspaceAppUri),
-      annotations: WRITE_TOOL_ANNOTATIONS,
+      annotations: toolAnnotationsForProfile(config.annotationProfile, WRITE_TOOL_ANNOTATIONS, { idempotentHint: true }),
     },
     async ({ workspaceId, ...input }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "write_file", toolNames.write, { workspaceId, ...input }, extra);
@@ -1025,7 +1046,7 @@ function createMcpServer(
         status: z.literal("applied"),
       }),
       ...toolWidgetDescriptorMeta(config, "edit", workspaceAppUri),
-      annotations: EDIT_TOOL_ANNOTATIONS,
+      annotations: toolAnnotationsForProfile(config.annotationProfile, EDIT_TOOL_ANNOTATIONS, { idempotentHint: true }),
     },
     async ({ workspaceId, ...input }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "edit_file", toolNames.edit, { workspaceId, ...input }, extra);
@@ -1176,7 +1197,7 @@ function createMcpServer(
       },
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: SHELL_TOOL_ANNOTATIONS,
+      annotations: toolAnnotationsForProfile(config.annotationProfile, SHELL_TOOL_ANNOTATIONS),
     },
     async ({ workspaceId, workingDirectory, ...input }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "run_shell", toolNames.shell, { workspaceId, workingDirectory, ...input }, extra);
@@ -1196,7 +1217,7 @@ function createMcpServer(
       },
       outputSchema: { terminal: terminalOutputSchema },
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: SHELL_TOOL_ANNOTATIONS,
+      annotations: toolAnnotationsForProfile(config.annotationProfile, SHELL_TOOL_ANNOTATIONS),
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_start", "terminal_start", input, extra)
@@ -1228,7 +1249,7 @@ function createMcpServer(
       inputSchema: { workspaceId: z.string(), terminalId: z.string(), text: z.string().optional(), keys: z.array(z.string()).max(32).optional(), submit: z.boolean().optional() },
       outputSchema: { terminal: terminalOutputSchema },
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: SHELL_TOOL_ANNOTATIONS,
+      annotations: toolAnnotationsForProfile(config.annotationProfile, SHELL_TOOL_ANNOTATIONS),
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_write", "terminal_write", input, extra)
@@ -1244,7 +1265,7 @@ function createMcpServer(
       inputSchema: { workspaceId: z.string(), terminalId: z.string(), cols: z.number().int().min(40).max(400), rows: z.number().int().min(10).max(200) },
       outputSchema: { terminal: terminalOutputSchema },
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: false },
+      annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: false }),
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_resize", "terminal_resize", input, extra)
@@ -1276,7 +1297,7 @@ function createMcpServer(
       inputSchema: { workspaceId: z.string(), terminalId: z.string(), force: z.boolean().optional() },
       outputSchema: { terminal: terminalOutputSchema },
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false },
+      annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }),
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_close", "terminal_close", input, extra)

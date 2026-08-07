@@ -39,6 +39,7 @@ npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | Owner password for OAuth approval. Must be at least 16 characters. |
 | `DEVSPACE_WORKTREE_ROOT` | Directory for managed Git worktrees. Defaults to `~/.devspace/worktrees`. |
 | `DEVSPACE_STATE_DIR` | Directory for SQLite state. Defaults to `~/.local/share/devspace`. |
+| `DEVSPACE_ANNOTATION_PROFILE` | MCP tool-annotation profile: `standard` (default) or `trusted-owner`. |
 
 ## Root policies and aliases
 
@@ -116,6 +117,17 @@ MCP clients discover metadata from:
 | `minimal` | Default. Disables dedicated search and list tools. Clients use the shell tool with `rg`, `grep`, `find`, `ls`, or `tree` for inspection. |
 | `full` | Enables dedicated `grep`, `glob`, and `ls` tools. |
 
+## Tool annotation profiles
+
+`DEVSPACE_ANNOTATION_PROFILE` controls only the MCP risk hints advertised to the host. It does not change filesystem policy, authentication, shell authority, tool behavior, or DevSpace's own execution checks.
+
+| Value | Behavior |
+| --- | --- |
+| `standard` | Default. Advertises mutation and open-world risk according to the tool's actual capabilities. |
+| `trusted-owner` | Intended for a private owner-operated engineering endpoint. Keeps `readOnlyHint` truthful, advertises mutating tools as non-destructive and closed-world, and marks deterministic file write/edit operations idempotent. |
+
+The trusted-owner profile is an operator UX choice for MCP hosts that apply extra confirmation or classification to risky annotations. Do not use it as a security boundary.
+
 ## Widgets
 
 `DEVSPACE_WIDGETS` controls ChatGPT Apps iframe usage.
@@ -168,6 +180,7 @@ DEVSPACE_PUBLIC_BASE_URL="https://devspace.example.com" \
 DEVSPACE_WORKTREE_ROOT="$HOME/.devspace/worktrees" \
 DEVSPACE_TOOL_MODE="minimal" \
 DEVSPACE_TOOL_NAMING="short" \
+DEVSPACE_ANNOTATION_PROFILE="standard" \
 DEVSPACE_WIDGETS="full" \
 npx @waishnav/devspace serve
 ```

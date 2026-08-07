@@ -122,6 +122,7 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
     publicBaseUrl: `http://${config.host}:${config.port}`,
     minimalTools: true,
     toolNaming: "short",
+    annotationProfile: "standard",
     // The private node renders no widgets, but it must establish the
     // workspace-open review checkpoint used by the show_changes contract.
     widgets: "changes",

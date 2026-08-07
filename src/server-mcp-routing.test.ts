@@ -31,6 +31,7 @@ const config = {
   minimalTools: true,
   toolNaming: "short",
   widgets: "off",
+  annotationProfile: "trusted-owner",
   stateDir,
   worktreeRoot: join(stateDir, "worktrees"),
   skillsEnabled: false,
@@ -138,15 +139,41 @@ try {
   );
   assert.equal(toolsResponse.status, 200);
   const toolsPayload = parseSsePayload(await toolsResponse.text()) as {
-    result?: { tools?: Array<{ name?: string }> };
+    result?: { tools?: Array<{ name?: string; annotations?: Record<string, boolean> }> };
   };
-  const toolNames = new Set(toolsPayload.result?.tools?.map((tool) => tool.name));
+  const tools = toolsPayload.result?.tools ?? [];
+  const toolNames = new Set(tools.map((tool) => tool.name));
+  const annotations = new Map(tools.map((tool) => [tool.name, tool.annotations]));
   for (const name of [
     "workspace_status", "close_workspace",
     "terminal_start", "terminal_read", "terminal_write", "terminal_resize", "terminal_status", "terminal_close",
   ]) {
     assert.equal(toolNames.has(name), true, `${name} should be exposed over MCP`);
   }
+  assert.deepEqual(annotations.get("write"), {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  });
+  assert.deepEqual(annotations.get("edit"), {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  });
+  assert.deepEqual(annotations.get("bash"), {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  });
+  assert.deepEqual(annotations.get("close_workspace"), {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: false,
+  });
   await closeSession(endpoint, scalarSessionId);
 } finally {
   await new Promise<void>((resolve, reject) => {

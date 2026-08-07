@@ -19,6 +19,9 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "off" }).widgets, "off")
 assert.equal(loadConfig(baseEnv).toolNaming, "short");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_NAMING: "short" }).toolNaming, "short");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_NAMING: "legacy" }).toolNaming, "legacy");
+assert.equal(loadConfig(baseEnv).annotationProfile, "standard");
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_ANNOTATION_PROFILE: "standard" }).annotationProfile, "standard");
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_ANNOTATION_PROFILE: "trusted-owner" }).annotationProfile, "trusted-owner");
 assert.equal(loadConfig(baseEnv).minimalTools, true);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "minimal" }).minimalTools, true);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "full" }).minimalTools, false);
@@ -61,6 +64,10 @@ assert.throws(
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_TOOL_NAMING: "invalid" }),
   /Invalid DEVSPACE_TOOL_NAMING: invalid/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_ANNOTATION_PROFILE: "invalid" }),
+  /Invalid DEVSPACE_ANNOTATION_PROFILE: invalid/,
 );
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_SHELL_MODE: "interactive" }),
@@ -180,6 +187,7 @@ writeFileSync(
     port: 8787,
     allowedRoots: [process.cwd()],
     publicBaseUrl: "https://devspace.example.com",
+    annotationProfile: "trusted-owner",
   }),
 );
 writeFileSync(
@@ -193,6 +201,7 @@ const fileConfig = loadConfig({ DEVSPACE_CONFIG_DIR: configDir });
 assert.equal(fileConfig.port, 8787);
 assert.equal(fileConfig.oauth.ownerToken, "persisted-owner-token-long-enough");
 assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
+assert.equal(fileConfig.annotationProfile, "trusted-owner");
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

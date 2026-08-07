@@ -60,6 +60,7 @@ const config = {
   minimalTools: false,
   toolNaming: "short",
   widgets: "workspace",
+  annotationProfile: "standard",
   stateDir,
   worktreeRoot: join(stateDir, "worktrees"),
   skillsEnabled: false,
