@@ -19,7 +19,7 @@ The completed system must provide all of the following:
 - Opening a misspelled path no longer silently creates a new directory. Directory creation requires an explicit `create: true` request.
 - A new `isolated` workspace mode always produces a writable independent checkout. It uses a managed worktree when the source Git metadata is writable and a managed clone when it is not.
 - Review checkpoints live under DevSpace state instead of writing `refs/devspace/*` and snapshot objects into the user's repository.
-- Shell calls may use the user's login environment so Bun, OpenCode, mise, user-installed tools, and user-systemd work without command-specific `bash -lc` wrappers.
+- Shell calls expose common user-installed tools through a deterministic executor `PATH`; login-shell semantics remain available explicitly for commands that genuinely depend on profile startup.
 - DevSpace infrastructure credentials are stripped from child shell and terminal environments even on a trusted, root-capable host.
 - Persistent interactive terminal sessions are first-class MCP tools. The initial backend is tmux with an explicit socket under DevSpace state and optional user-systemd ownership so sessions may outlive an MCP request and a DevSpace restart.
 - Long remote shell calls honor the requested shell timeout plus bounded transport grace instead of being killed by the gateway's current fixed 30-second node timeout.
@@ -233,11 +233,11 @@ interface ShellConfig {
 }
 ```
 
-Expose it through standalone environment variables and role JSON. The trusted Saga profile uses login mode. A generic installation may keep service mode.
+Expose it through standalone environment variables and role JSON. Service mode is the normal deterministic executor mode; login mode is an explicit opt-in for profile-dependent commands.
 
-In login mode, launch commands through the configured shell as a login shell, preserving the workspace's logical path as `PWD`. Do not require callers to wrap every command in `bash -lc`.
+In service mode, build a stable executor `PATH` from conventional user executable locations, configured runtime-manager homes, and the inherited service `PATH` without sourcing shell startup files. In login mode, launch commands through the configured shell as a login shell, preserving the workspace's logical path as `PWD`. Do not require callers to wrap individual commands in `bash -lc`.
 
-Build the child environment once per executor startup from the intended user login environment, then overlay safe service variables and configured additions. Before every shell or terminal launch, remove DevSpace control-plane secrets by exact configured names:
+Build the child environment once per executor startup, then overlay configured additions and remove DevSpace control-plane secrets by exact configured names before shell or terminal launch:
 
 - `DEVSPACE_OAUTH_OWNER_TOKEN`;
 - the node role's configured `nodeTokenEnv`;
@@ -248,7 +248,8 @@ Do not broadly remove every variable containing `TOKEN`, `KEY`, or `SECRET`; tru
 
 Return only variable names, never values, in diagnostics. Add tests proving that:
 
-- login mode resolves a binary installed through Bun or mise while service mode does not invent one;
+- service mode resolves binaries from conventional user locations such as Bun, Cargo, `~/.local/bin`, and mise shims without sourcing a login profile;
+- login mode still sources the login profile when explicitly selected;
 - child `PATH`, `HOME`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, and logical `PWD` are correct;
 - OAuth and node bearer names are absent from child processes;
 - ordinary user development variables survive;

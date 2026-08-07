@@ -86,11 +86,11 @@ DevSpace does not delete every variable containing `TOKEN`, `KEY`, or `SECRET`. 
 
 Diagnostics report filtered variable names, never values.
 
-## Login shell mode
+## Shell modes and executor PATH
 
-Trusted hosts may use login shell mode so user-installed tools and runtime managers are available. This loads the user's shell profile and therefore inherits the user's intended development environment after DevSpace control-plane secrets are removed.
+Service mode does not source the user's shell profile. DevSpace instead builds a deterministic executor `PATH` from conventional user tool locations, configured runtime-manager homes, and the service environment it inherited. This keeps bounded commands predictable while still exposing tools installed under locations such as `~/.local/bin`, `~/bin`, Bun, Cargo, and mise shims.
 
-Use service mode for a more hermetic child environment.
+Login mode remains an explicit semantic choice for commands that genuinely require the user's login-shell profile. It may modify the executor environment further through `.bash_profile` or equivalent startup files after DevSpace control-plane secrets are removed.
 
 ## OAuth and network exposure
 

@@ -185,15 +185,11 @@ Use `mode: "isolated"` when the source `.git` is read-only. Uncommitted source c
 
 DevSpace no longer creates a missing checkout silently. A typo fails. To create a directory intentionally, pass `create: true`; the target must be inside a read-write root policy.
 
-## Login Shell Does Not Find User Tools
+## User Tool Is Missing From Bounded Bash
 
-Set:
+Service-mode execution intentionally does not source `.bashrc`, `.profile`, or `.bash_profile`. DevSpace augments the inherited service `PATH` with conventional user executable locations including `~/.local/bin`, `~/bin`, Bun, Cargo, and mise shims, while honoring configured `BUN_INSTALL`, `CARGO_HOME`, `MISE_DATA_DIR`, `XDG_DATA_HOME`, and `PNPM_HOME` values.
 
-```bash
-DEVSPACE_SHELL_MODE=login
-```
-
-and, when needed, an explicit `DEVSPACE_SHELL_PATH=/bin/bash`. Run `devspace doctor` to verify Bun, OpenCode, tmux, user-systemd, and sudo capability through the configured child environment.
+Run `devspace doctor` to inspect the resolved executor `PATH` and verify Bun, OpenCode, tmux, user-systemd, and sudo capability. If a tool genuinely depends on login-shell startup semantics rather than merely living in a user bin directory, opt into `DEVSPACE_SHELL_MODE=login` instead of wrapping individual bounded commands in `bash -lc`.
 
 DevSpace control-plane secrets are removed from child processes. Add future infrastructure credential names to `DEVSPACE_INFRA_SECRET_NAMES`; do not add ordinary user development credentials there.
 

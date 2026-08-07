@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
@@ -340,10 +340,16 @@ async function runDoctor(): Promise<void> {
     console.log(`Maintenance: every ${config.maintenance.intervalSeconds}s closed=${config.maintenance.closedSessionTtlSeconds}s checkout=${config.maintenance.checkoutIdleTtlSeconds}s isolated=${config.maintenance.isolatedIdleTtlSeconds}s`);
 
     const runtime = createShellRuntime(config.shell, config.secretNames);
+    console.log(`Executor PATH: ${(runtime.environment.PATH ?? "").split(delimiter).filter(Boolean).join(delimiter)}`);
     try {
       const { stdout } = await runConfiguredShell(runtime, [
         "printf 'tmux=%s\\n' \"$(command -v tmux 2>/dev/null || true)\"",
         "printf 'opencode=%s\\n' \"$(command -v opencode 2>/dev/null || true)\"",
+        "printf 'cargo=%s\\n' \"$(command -v cargo 2>/dev/null || true)\"",
+        "printf 'uv=%s\\n' \"$(command -v uv 2>/dev/null || true)\"",
+        "printf 'bun=%s\\n' \"$(command -v bun 2>/dev/null || true)\"",
+        "printf 'npm=%s\\n' \"$(command -v npm 2>/dev/null || true)\"",
+        "printf 'mise=%s\\n' \"$(command -v mise 2>/dev/null || true)\"",
         "if systemctl --user show-environment >/dev/null 2>&1; then echo user_systemd=available; else echo user_systemd=unavailable; fi",
         "if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then echo privilege_escalation=available; else echo privilege_escalation=unavailable; fi",
       ].join("; "), process.cwd(), 5_000);

@@ -68,7 +68,7 @@ A nested symlink may enter another configured root when that root grants the req
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DEVSPACE_SHELL_PATH` | auto | Explicit Bash-compatible shell path. |
-| `DEVSPACE_SHELL_MODE` | `service` | `service` uses the service environment; `login` loads the user's login shell profile. |
+| `DEVSPACE_SHELL_MODE` | `service` | `service` uses the inherited non-login executor environment with an augmented user-tool `PATH`; `login` additionally loads the user's login shell profile. |
 | `DEVSPACE_INFRA_SECRET_NAMES` | empty | Additional exact DevSpace-owned environment names removed from child processes. |
 | `DEVSPACE_TERMINAL_BACKEND` | `tmux` | Persistent terminal backend. |
 | `DEVSPACE_TERMINAL_RUNTIME_DIR` | `<stateDir>/terminal-runtime` | Private tmux socket and environment directory. |

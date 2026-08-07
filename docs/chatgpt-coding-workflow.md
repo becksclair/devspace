@@ -109,7 +109,7 @@ Read an advertised `SKILL.md` before using the skill. Skill reads receive the sa
 
 Use structured read/edit/write/search tools when they fit the job. Use the shell tool for bounded non-interactive commands such as quick tests/builds, package-manager operations, Git, environment checks, and system inspection. Prefer persistent terminals for installers, substantial builds, upgrades, long test suites, interactive programs, or anything that should survive an MCP/network interruption.
 
-Shell mode can be `service` or `login`. Trusted hosts normally use login mode so Bun, mise, OpenCode, user-systemd, and other user-installed tools are available without wrapping every command in `bash -lc`.
+Shell mode can be `service` or `login`. Service mode is the normal predictable non-login executor: DevSpace augments the inherited `PATH` with conventional user-tool locations so Bun, mise, OpenCode, Cargo, uv, npm, and similar tools work without sourcing shell startup files. Use login mode only when a command genuinely depends on login-shell profile semantics.
 
 DevSpace strips its own OAuth and configured node-bearer environment variables from child shells and terminals. Ordinary user development variables remain available.
 

@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { getShellConfig, type BashSpawnHook } from "@earendil-works/pi-coding-agent";
 import type { ShellConfig } from "./config.js";
@@ -26,6 +28,10 @@ export function createShellRuntime(
     ...baseEnvironment,
     ...(config.environment ?? {}),
   };
+  environment.PATH = mergePathEntries(
+    userExecutablePaths(environment),
+    environment.PATH,
+  ).join(delimiter);
   const filteredSecretNames = Array.from(new Set(secretNames.map((name) => name.trim()).filter(Boolean))).sort();
   for (const name of filteredSecretNames) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid DevSpace infrastructure secret name: ${name}`);
@@ -71,6 +77,42 @@ export async function runConfiguredShell(
 export function prepareShellCommand(runtime: ShellRuntime, command: string): string {
   if (runtime.filteredSecretNames.length === 0) return command;
   return `unset ${runtime.filteredSecretNames.join(" ")} || exit 126; ${command}`;
+}
+
+type PathGroup = string | readonly (string | undefined)[] | undefined;
+
+export function mergePathEntries(...groups: PathGroup[]): string[] {
+  const entries: string[] = [];
+  const seen = new Set<string>();
+
+  for (const group of groups) {
+    const values = typeof group === "string" ? group.split(delimiter) : group ?? [];
+    for (const value of values) {
+      const entry = value?.trim();
+      if (!entry || seen.has(entry)) continue;
+      seen.add(entry);
+      entries.push(entry);
+    }
+  }
+
+  return entries;
+}
+
+export function userExecutablePaths(environment: NodeJS.ProcessEnv): string[] {
+  const home = environment.HOME?.trim() || environment.USERPROFILE?.trim() || homedir();
+  const xdgDataHome = environment.XDG_DATA_HOME?.trim() || join(home, ".local", "share");
+  const bunHome = environment.BUN_INSTALL?.trim() || join(home, ".bun");
+  const cargoHome = environment.CARGO_HOME?.trim() || join(home, ".cargo");
+  const miseDataDir = environment.MISE_DATA_DIR?.trim() || join(xdgDataHome, "mise");
+
+  return mergePathEntries([
+    join(home, ".local", "bin"),
+    join(home, "bin"),
+    join(bunHome, "bin"),
+    join(cargoHome, "bin"),
+    join(miseDataDir, "shims"),
+    environment.PNPM_HOME,
+  ]);
 }
 
 function shellQuote(value: string): string {
