@@ -35,6 +35,7 @@ export interface ServerConfig {
   skillsEnabled: boolean;
   skillPaths: string[];
   agentDir: string;
+  globalInstructionsFile: string;
   logging: LoggingConfig;
   shell: ShellConfig;
   secretNames: string[];
@@ -290,6 +291,10 @@ function defaultAgentDir(): string {
   return join(homedir(), ".codex");
 }
 
+function defaultGlobalInstructionsFile(): string {
+  return join(homedir(), ".devspace", "AGENTS.md");
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const files = loadDevspaceFiles(env);
   const host = env.HOST ?? files.config.host ?? "127.0.0.1";
@@ -325,6 +330,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
+    globalInstructionsFile: resolve(expandHomePath(
+      env.DEVSPACE_GLOBAL_INSTRUCTIONS_FILE ?? files.config.globalInstructionsFile ?? defaultGlobalInstructionsFile(),
+    )),
     logging: parseLoggingConfig(env),
     shell: {
       path: env.DEVSPACE_SHELL_PATH ?? files.config.shell?.path,

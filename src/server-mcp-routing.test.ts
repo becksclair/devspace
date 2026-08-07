@@ -37,6 +37,7 @@ const config = {
   skillsEnabled: false,
   skillPaths: [],
   agentDir: stateDir,
+  globalInstructionsFile: join(stateDir, "AGENTS.md"),
   shell: { mode: "service" },
   secretNames: ["DEVSPACE_OAUTH_OWNER_TOKEN"],
   terminals: {

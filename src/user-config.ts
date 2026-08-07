@@ -37,6 +37,7 @@ export interface DevspaceUserConfig {
   stateDir?: string;
   worktreeRoot?: string;
   agentDir?: string;
+  globalInstructionsFile?: string;
 }
 
 export interface DevspaceAuthConfig {

@@ -139,12 +139,13 @@ The trusted-owner profile is an operator UX choice for MCP hosts that apply extr
 | `changes` | Enables the aggregate `show_changes` tool and attaches widget UI to workspace lifecycle tools and `show_changes`. |
 | `off` | Disables widget UI. |
 
-## Skills
+## Instructions and skills
 
 | Variable | Purpose |
 | --- | --- |
+| `DEVSPACE_GLOBAL_INSTRUCTIONS_FILE` | Optional global DevSpace instruction file. Defaults to `~/.devspace/AGENTS.md`; absence is allowed. Loaded before project instructions on every workspace open and returned to the connected MCP client, so it must not contain secrets. |
 | `DEVSPACE_SKILLS` | Set to `0` to hide skills. Enabled by default. |
-| `DEVSPACE_AGENT_DIR` | Defaults to `~/.codex`. |
+| `DEVSPACE_AGENT_DIR` | Skill/resource agent directory, defaulting to `~/.codex`. It is not used as DevSpace global instruction context. |
 | `DEVSPACE_SKILL_PATHS` | Optional comma-separated skill directories. |
 
 Example:

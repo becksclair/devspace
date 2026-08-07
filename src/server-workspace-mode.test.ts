@@ -66,6 +66,7 @@ const config = {
   skillsEnabled: false,
   skillPaths: [],
   agentDir: stateDir,
+  globalInstructionsFile: join(stateDir, "AGENTS.md"),
   logging: {
     level: "silent",
     format: "json",

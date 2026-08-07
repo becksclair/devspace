@@ -26,6 +26,7 @@ const config = loadConfig({
   DEVSPACE_STATE_DIR: state,
   DEVSPACE_WORKTREE_ROOT: join(root, "managed"),
   DEVSPACE_AGENT_DIR: join(root, "agent"),
+  DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: join(root, "missing-global-instructions.md"),
   DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
   DEVSPACE_TERMINAL_USER_SYSTEMD: "0",
   DEVSPACE_TERMINAL_IDLE_TTL_SECONDS: "1",

@@ -236,6 +236,10 @@ npx @waishnav/devspace doctor
 
 Confirm Bash is detected.
 
+## Wrong Global Instructions Are Loaded
+
+DevSpace global instructions come only from `DEVSPACE_GLOBAL_INSTRUCTIONS_FILE`, which defaults to `~/.devspace/AGENTS.md`. `DEVSPACE_AGENT_DIR` does not contribute global `AGENTS.md` context; it remains a skill/resource directory. A missing global instruction file is valid and simply adds no global context.
+
 ## Skills Do Not Appear
 
 Skills are enabled by default. Check:
@@ -246,7 +250,7 @@ DEVSPACE_SKILLS=1 npx @waishnav/devspace serve
 
 DevSpace looks in:
 
-- `DEVSPACE_AGENT_DIR`, defaulting to `~/.codex`
+- `DEVSPACE_AGENT_DIR`, defaulting to `~/.codex`, for skills/resources only
 - project `.pi/skills`
 - `DEVSPACE_SKILL_PATHS`
 

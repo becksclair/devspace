@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, opendir, realpath, rm, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { MaintenanceConfig, ServerConfig } from "./config.js";
 import { createManagedIsolatedWorkspace, createManagedWorktree, type ManagedWorktree } from "./git-worktrees.js";
 import {
@@ -424,10 +423,10 @@ export class WorkspaceRegistry {
   }
 
   private async hydrateWorkspaceContext(workspace: Workspace): Promise<WorkspaceContext> {
-    const [capabilities, agentsFiles, availableAgentsFiles] = await Promise.all([
+    const agentsFiles = this.loadInitialAgentsFiles(workspace);
+    const [capabilities, availableAgentsFiles] = await Promise.all([
       this.probeCapabilities(workspace),
-      Promise.resolve(this.loadInitialAgentsFiles(workspace)),
-      this.findAvailableAgentsFiles(workspace),
+      this.findAvailableAgentsFiles(workspace, agentsFiles),
     ]);
     return { workspace, capabilities, agentsFiles, availableAgentsFiles };
   }
@@ -541,40 +540,48 @@ export class WorkspaceRegistry {
   }
 
   private loadInitialAgentsFiles(workspace: Workspace): LoadedAgentsFile[] {
-    const agentDir = resolve(this.config.agentDir);
-    let canonicalAgentDir: string | undefined;
-    try {
-      canonicalAgentDir = canonicalTarget(agentDir);
-    } catch {
-      canonicalAgentDir = undefined;
+    const files: LoadedAgentsFile[] = [];
+    const seenCanonicalPaths = new Set<string>();
+    const globalInstructions = loadExactContextFile(this.config.globalInstructionsFile);
+    if (globalInstructions) {
+      try {
+        seenCanonicalPaths.add(canonicalTarget(globalInstructions.path));
+      } catch {
+        // The exact configured file was already read successfully; keep it even if canonicalization races.
+      }
+      files.push(globalInstructions);
     }
-    return loadProjectContextFiles({ cwd: workspace.root, agentDir })
-      .filter((file) => {
-        const path = resolve(file.path);
-        try {
-          const canonicalPath = canonicalTarget(path);
-          if (canonicalAgentDir && isPathInsideRoot(canonicalPath, canonicalAgentDir)) return true;
-          return dirname(path) === workspace.root && isPathInsideRoot(canonicalPath, workspace.canonicalRoot);
-        } catch {
-          return false;
-        }
-      })
-      .map((file) => ({ path: resolve(file.path), content: file.content }));
+
+    const projectInstructions = loadProjectContextFile(workspace.root, workspace.canonicalRoot);
+    if (projectInstructions) {
+      const canonicalPath = canonicalTarget(projectInstructions.path);
+      if (!seenCanonicalPaths.has(canonicalPath)) files.push(projectInstructions);
+    }
+    return files;
   }
 
-  private async findAvailableAgentsFiles(workspace: Workspace): Promise<AvailableAgentsFile[]> {
-    const loadedPaths = new Set(this.loadInitialAgentsFiles(workspace).map((file) => resolve(file.path)));
+  private async findAvailableAgentsFiles(
+    workspace: Workspace,
+    loadedFiles: LoadedAgentsFile[],
+  ): Promise<AvailableAgentsFile[]> {
+    const loadedPaths = new Set(loadedFiles.map((file) => resolve(file.path)));
     const discovered: AvailableAgentsFile[] = [];
+    const agentDir = resolve(this.config.agentDir);
+    const skipAgentDir = !isPathInsideRoot(workspace.root, agentDir);
 
-    await walkWorkspace(workspace.root, async (path, entry) => {
-      if (!entry.isFile() || !CONTEXT_FILE_NAMES.has(entry.name) || loadedPaths.has(path)) return;
-      try {
-        this.resolveWorkspaceTarget(workspace, path, "read");
-        discovered.push({ path });
-      } catch {
-        // Ignore context files whose canonical target is not authorized.
-      }
-    });
+    await walkWorkspace(
+      workspace.root,
+      async (path, entry) => {
+        if (!entry.isFile() || !CONTEXT_FILE_NAMES.has(entry.name) || loadedPaths.has(path)) return;
+        try {
+          this.resolveWorkspaceTarget(workspace, path, "read");
+          discovered.push({ path });
+        } catch {
+          // Ignore context files whose canonical target is not authorized.
+        }
+      },
+      (path) => skipAgentDir && isPathInsideRoot(path, agentDir),
+    );
 
     return discovered.sort((a, b) => a.path.localeCompare(b.path));
   }
@@ -685,7 +692,36 @@ async function managedPathIdentity(path: string): Promise<{ canonicalRoot: strin
   return { canonicalRoot, device: stats.dev.toString(), inode: stats.ino.toString() };
 }
 
-const CONTEXT_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+const CONTEXT_FILE_CANDIDATES = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"] as const;
+const CONTEXT_FILE_NAMES = new Set<string>(CONTEXT_FILE_CANDIDATES);
+
+function loadExactContextFile(path: string): LoadedAgentsFile | undefined {
+  const absolutePath = resolve(path);
+  if (!existsSync(absolutePath)) return undefined;
+  try {
+    const canonicalPath = canonicalTarget(absolutePath);
+    if (!statSync(canonicalPath).isFile()) return undefined;
+    return { path: absolutePath, content: readFileSync(canonicalPath, "utf8") };
+  } catch {
+    return undefined;
+  }
+}
+
+function loadProjectContextFile(directory: string, canonicalRoot: string): LoadedAgentsFile | undefined {
+  for (const filename of CONTEXT_FILE_CANDIDATES) {
+    const absolutePath = resolve(directory, filename);
+    if (!existsSync(absolutePath)) continue;
+    try {
+      const canonicalPath = canonicalTarget(absolutePath);
+      if (!isPathInsideRoot(canonicalPath, canonicalRoot) || !statSync(canonicalPath).isFile()) continue;
+      return { path: absolutePath, content: readFileSync(canonicalPath, "utf8") };
+    } catch {
+      // Try the next supported project instruction filename.
+    }
+  }
+  return undefined;
+}
+
 const SKIPPED_CONTEXT_DIRS = new Set([".git", ".hg", ".svn", ".devspace", "node_modules", "dist", "build", ".next", ".turbo", ".cache"]);
 
 export function formatAgentsPath(path: string, workspaceRoot: string | undefined): string {
@@ -700,6 +736,7 @@ export function formatAgentsPath(path: string, workspaceRoot: string | undefined
 async function walkWorkspace(
   directory: string,
   visit: (path: string, entry: { name: string; isFile(): boolean; isDirectory(): boolean }) => Promise<void> | void,
+  skipDirectory?: (path: string) => boolean,
 ): Promise<void> {
   let entries;
   try {
@@ -711,7 +748,9 @@ async function walkWorkspace(
   for await (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIPPED_CONTEXT_DIRS.has(entry.name)) await walkWorkspace(path, visit);
+      if (!SKIPPED_CONTEXT_DIRS.has(entry.name) && !skipDirectory?.(path)) {
+        await walkWorkspace(path, visit, skipDirectory);
+      }
       continue;
     }
     await visit(path, entry);

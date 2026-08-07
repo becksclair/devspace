@@ -187,7 +187,7 @@ export class LocalExecutor {
       `Canonical root: ${workspace.canonicalRoot}`,
       `Mode: ${workspace.mode}`,
       `Access: ${capabilities.fileAccess}`,
-      loadedAgentsFiles.length ? `Loaded project instructions: ${loadedAgentsFiles.map((file) => file.path).join(", ")}` : undefined,
+      loadedAgentsFiles.length ? `Loaded global/project instructions: ${loadedAgentsFiles.map((file) => file.path).join(", ")}` : undefined,
       availableAgentsFileOutputs.length ? `Available nested instructions: ${availableAgentsFileOutputs.map((file) => file.path).join(", ")}` : undefined,
       skills.length ? `Available skills: ${skills.map((skill) => skill.name).join(", ")}` : undefined,
       instruction,
@@ -387,7 +387,7 @@ export class LocalExecutor {
   }
 
   private workspaceInstruction(): string {
-    const base = "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for the same folder unless the workspaceId stops working, you switch folders or modes, or the user asks. Follow loaded project instructions and read relevant nested instruction files before working there.";
+    const base = "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for the same folder unless the workspaceId stops working, you switch folders or modes, or the user asks. Follow loaded global and project instructions, and read relevant nested instruction files before working there.";
     return this.skillsEnabled ? `${base} Read an advertised SKILL.md before using that skill.` : base;
   }
 }

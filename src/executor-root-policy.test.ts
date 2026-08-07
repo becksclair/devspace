@@ -29,6 +29,7 @@ try {
     DEVSPACE_STATE_DIR: stateDir,
     DEVSPACE_WORKTREE_ROOT: join(root, "worktrees"),
     DEVSPACE_AGENT_DIR: join(root, "agent"),
+    DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: join(root, "missing-global-instructions.md"),
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",
   });

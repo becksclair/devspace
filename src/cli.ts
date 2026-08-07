@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
 import { join, resolve } from "node:path";
@@ -131,6 +132,7 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
     skillsEnabled: true,
     skillPaths: [],
     agentDir: resolve(expandHomePath(process.env.DEVSPACE_AGENT_DIR ?? "~/.codex")),
+    globalInstructionsFile: resolve(expandHomePath(process.env.DEVSPACE_GLOBAL_INSTRUCTIONS_FILE ?? "~/.devspace/AGENTS.md")),
     shell: {
       path: config.shell?.path,
       mode: config.shell?.mode ?? "service",
@@ -330,6 +332,7 @@ async function runDoctor(): Promise<void> {
     console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
     console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`Root policies: ${config.rootPolicies.map((policy) => `${policy.path} [${policy.access}]${policy.aliases.length ? ` aliases=${policy.aliases.join(",")}` : ""}`).join("; ")}`);
+    console.log(`Global instructions: ${config.globalInstructionsFile} (${existsSync(config.globalInstructionsFile) ? "present" : "missing"})`);
     console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
     console.log(`Shell: ${config.shell.path ?? "auto"} (${config.shell.mode})`);
     console.log(`Filtered child secret names: ${config.secretNames.join(", ")}`);

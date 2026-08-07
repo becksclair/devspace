@@ -14,8 +14,11 @@ const root = await mkdtemp(join(tmpdir(), "devspace-workspace-test-"));
 
 try {
   const agentDir = join(root, ".pi", "agent");
+  const globalInstructionsFile = join(root, ".devspace", "AGENTS.md");
   await mkdir(agentDir, { recursive: true });
-  await writeFile(join(agentDir, "AGENTS.md"), "global instructions\n");
+  await mkdir(join(root, ".devspace"), { recursive: true });
+  await writeFile(join(agentDir, "AGENTS.md"), "legacy agent-dir instructions must not load\n");
+  await writeFile(globalInstructionsFile, "global instructions\n");
   await writeFile(join(root, "AGENTS.md"), "root instructions\n");
   await mkdir(join(root, "nested"));
   await writeFile(join(root, "nested", "AGENTS.md"), "nested instructions\n");
@@ -25,6 +28,7 @@ try {
     DEVSPACE_ALLOWED_ROOTS: root,
     DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "worktrees"),
     DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: globalInstructionsFile,
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",
   });
@@ -44,10 +48,32 @@ try {
     agentsFiles.map((file) => file.content),
     ["global instructions\n", "root instructions\n"],
   );
+  assert.equal(agentsFiles.some((file) => file.content.includes("legacy agent-dir")), false);
   assert.deepEqual(
     availableAgentsFiles.map((file) => file.path),
     [join(root, "nested", "AGENTS.md")],
   );
+  const globalDirectoryOpen = await registry.openWorkspace(join(root, ".devspace"));
+  assert.equal(
+    globalDirectoryOpen.agentsFiles.filter((file) => file.content === "global instructions\n").length,
+    1,
+    "the global file is not duplicated when it is also the project root instruction file",
+  );
+
+  const noGlobalProject = join(root, "no-global-project");
+  await mkdir(noGlobalProject);
+  const noGlobalConfig = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(root, "no-global-config"),
+    DEVSPACE_ALLOWED_ROOTS: root,
+    DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "no-global-worktrees"),
+    DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: join(root, "missing-global-AGENTS.md"),
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    DEVSPACE_LOG_LEVEL: "silent",
+    PORT: "1",
+  });
+  const noGlobalOpen = await new WorkspaceRegistry(noGlobalConfig).openWorkspace(noGlobalProject);
+  assert.deepEqual(noGlobalOpen.agentsFiles, [], "a missing global instruction file is valid and adds no context");
 
   if (platform() !== "win32") {
     const instructionProject = join(root, "instruction-project");
@@ -64,6 +90,7 @@ try {
       ]),
       DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "instruction-worktrees"),
       DEVSPACE_AGENT_DIR: join(root, "missing-agent"),
+      DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: globalInstructionsFile,
       DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
       DEVSPACE_LOG_LEVEL: "silent",
       PORT: "1",
@@ -123,6 +150,7 @@ try {
     DEVSPACE_ALLOWED_ROOTS: root,
     DEVSPACE_WORKTREE_ROOT: failingManagedRoot,
     DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: globalInstructionsFile,
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     DEVSPACE_LOG_LEVEL: "silent",
     PORT: "1",
@@ -153,6 +181,7 @@ try {
     DEVSPACE_ROOTS: JSON.stringify([{ path: root, access: "read-only" }]),
     DEVSPACE_WORKTREE_ROOT: join(tmpdir(), `devspace-readonly-isolated-${process.pid}`),
     DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: globalInstructionsFile,
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",
   });
@@ -237,6 +266,7 @@ try {
       DEVSPACE_ALLOWED_ROOTS: aliasRoot,
       DEVSPACE_WORKTREE_ROOT: join(aliasRoot, ".devspace", "alias-worktrees"),
       DEVSPACE_AGENT_DIR: agentDir,
+      DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: globalInstructionsFile,
       DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
       PORT: "1",
     });
@@ -250,6 +280,7 @@ try {
       DEVSPACE_ROOTS: JSON.stringify([{ path: root, aliases: [aliasRoot], access: "read-write" }]),
       DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "policy-alias-worktrees"),
       DEVSPACE_AGENT_DIR: agentDir,
+      DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: globalInstructionsFile,
       DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
       PORT: "1",
     });

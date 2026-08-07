@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 
@@ -28,6 +28,11 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "full" }).minimalTools
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "0" }).minimalTools, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "1" }).minimalTools, true);
 assert.equal(loadConfig(baseEnv).skillsEnabled, true);
+assert.equal(loadConfig(baseEnv).globalInstructionsFile, join(homedir(), ".devspace", "AGENTS.md"));
+assert.equal(
+  loadConfig({ ...baseEnv, DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: "~/custom-devspace-agents.md" }).globalInstructionsFile,
+  join(homedir(), "custom-devspace-agents.md"),
+);
 assert.equal(loadConfig(baseEnv).rootPolicies[0]?.access, "read-write");
 assert.equal(loadConfig(baseEnv).rootPolicies[0]?.canonicalPath, process.cwd());
 assert.equal(loadConfig(baseEnv).shell.mode, "service");
@@ -188,6 +193,7 @@ writeFileSync(
     allowedRoots: [process.cwd()],
     publicBaseUrl: "https://devspace.example.com",
     annotationProfile: "trusted-owner",
+    globalInstructionsFile: "~/persisted-devspace-agents.md",
   }),
 );
 writeFileSync(
@@ -202,6 +208,7 @@ assert.equal(fileConfig.port, 8787);
 assert.equal(fileConfig.oauth.ownerToken, "persisted-owner-token-long-enough");
 assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
 assert.equal(fileConfig.annotationProfile, "trusted-owner");
+assert.equal(fileConfig.globalInstructionsFile, join(homedir(), "persisted-devspace-agents.md"));
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

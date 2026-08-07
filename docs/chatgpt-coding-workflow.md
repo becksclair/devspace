@@ -86,20 +86,20 @@ DevSpace preserves the logical alias for display and shell `PWD`, while file ope
 
 A project symlink may enter another configured root if that root grants the requested access. A link into an undeclared target is rejected by file tools. Shell and terminal commands are not confined by file-root policy.
 
-## Project instructions and skills
+## Global, project, and nested instructions
 
-When a workspace opens, DevSpace loads root-level instruction files:
+When a workspace opens, DevSpace first loads the configured global instruction file, defaulting to `~/.devspace/AGENTS.md` when that file exists. It then loads the first matching root-level project instruction file:
 
 - `AGENTS.md`
 - `AGENTS.MD`
 - `CLAUDE.md`
 - `CLAUDE.MD`
 
-Nested instruction files are returned as `availableAgentsFiles`. Read the relevant file before working under that directory.
+The global file is DevSpace-owned context and is independent of `DEVSPACE_AGENT_DIR`. Project instructions therefore override or specialize the global operating guidance naturally through their later, more specific context. Nested instruction files are returned as `availableAgentsFiles`; read the relevant file before working under that directory.
 
 Skills are enabled by default and discovered from:
 
-- `DEVSPACE_AGENT_DIR`, defaulting to `~/.codex`
+- `DEVSPACE_AGENT_DIR`, defaulting to `~/.codex`, for skill discovery only
 - project `.pi/skills`
 - optional paths from `DEVSPACE_SKILL_PATHS`
 
