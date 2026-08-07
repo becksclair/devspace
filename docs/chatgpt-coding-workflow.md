@@ -107,7 +107,7 @@ Read an advertised `SKILL.md` before using the skill. Skill reads receive the sa
 
 ## File and shell tools
 
-Use structured read/edit/write/search tools when they fit the job. The shell tool is appropriate for tests, builds, package managers, Git, environment checks, and other terminal work.
+Use structured read/edit/write/search tools when they fit the job. Use the shell tool for bounded non-interactive commands such as quick tests/builds, package-manager operations, Git, environment checks, and system inspection. Prefer persistent terminals for installers, substantial builds, upgrades, long test suites, interactive programs, or anything that should survive an MCP/network interruption.
 
 Shell mode can be `service` or `login`. Trusted hosts normally use login mode so Bun, mise, OpenCode, user-systemd, and other user-installed tools are available without wrapping every command in `bash -lc`.
 
@@ -117,7 +117,7 @@ The shell is not confined by workspace root policy and may be root-capable accor
 
 ## Persistent terminals
 
-Use persistent terminal tools for interactive or request-longer-than-MCP work:
+Use persistent terminal tools for interactive work and for any process whose lifetime should not be coupled to one MCP request. This is the preferred path for installers, substantial builds, upgrades, long test suites, and remote work over unreliable links:
 
 1. `terminal_start`
 2. `terminal_write`
@@ -138,6 +138,10 @@ Example:
 ```
 
 Terminal IDs are opaque and bound to one workspace and machine. DevSpace uses an explicit private tmux socket rather than the default `/tmp` socket. When the user systemd manager is usable and enabled, the tmux owner can survive a DevSpace restart; otherwise the terminal reports service-lifetime persistence.
+
+Remote gateway/node calls also support transport-resumable execution when both sides advertise that capability. Each remote execute call gets a gateway-generated operation UUID because MCP JSON-RPC IDs are session-scoped and may repeat. The gateway may reattach after a transient Saga-to-node tunnel failure by replaying that exact operation UUID and node instance ID, while the node executes the operation UUID at most once. If the node itself restarted during uncertainty, the stale instance ID fails closed instead of replaying into the new process. Completed outcomes remain replayable for a bounded window and then degrade to lightweight deduplication tombstones so late uncertain retries are rejected rather than re-executed. Upstream MCP caller cancellation and the remote execution deadline both trigger best-effort cancellation. Older gateway/node pairs keep the legacy one-shot, disconnect-cancels semantics during rolling upgrades.
+
+That request-ID replay is transport resilience, not process persistence across a node restart. Use `terminal_start` when the process itself must outlive the MCP request or unreliable connectivity.
 
 Text is sent literally, control keys are separate, captures are bounded, and terminal escape sequences are rendered as text rather than trusted HTML.
 

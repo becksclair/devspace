@@ -139,10 +139,11 @@ try {
   );
   assert.equal(toolsResponse.status, 200);
   const toolsPayload = parseSsePayload(await toolsResponse.text()) as {
-    result?: { tools?: Array<{ name?: string; annotations?: Record<string, boolean> }> };
+    result?: { tools?: Array<{ name?: string; description?: string; annotations?: Record<string, boolean> }> };
   };
   const tools = toolsPayload.result?.tools ?? [];
   const toolNames = new Set(tools.map((tool) => tool.name));
+  const descriptions = new Map(tools.map((tool) => [tool.name, tool.description ?? ""]));
   const annotations = new Map(tools.map((tool) => [tool.name, tool.annotations]));
   for (const name of [
     "workspace_status", "close_workspace",
@@ -162,6 +163,8 @@ try {
     idempotentHint: true,
     openWorldHint: false,
   });
+  assert.match(descriptions.get("bash") ?? "", /Prefer terminal_start.*network interruption/);
+  assert.match(descriptions.get("terminal_start") ?? "", /builds.*network interruptions/);
   assert.deepEqual(annotations.get("bash"), {
     readOnlyHint: false,
     destructiveHint: false,

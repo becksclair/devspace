@@ -444,16 +444,17 @@ Expose maintenance findings in `devspace doctor` and `workspace_status`; do not 
 
 ### 9. Make remote deadlines match tool semantics
 
-The remote client currently applies a fixed 30-second timeout to every call even though `run_shell` accepts up to 300 seconds. Compute the node deadline from the validated canonical tool arguments:
+The remote deadline remains derived from the validated canonical tool arguments:
 
-- `hello`: short fixed timeout;
+- `hello`: short fixed timeout with bounded retry of transient transport failures;
 - file, workspace, review, lifecycle, and terminal control calls: normal fixed timeout;
 - `run_shell`: requested shell timeout plus bounded network/serialization grace;
-- no operation is retried automatically after transport uncertainty.
+- when a node advertises resumable calls and a process-lifetime node instance ID, each remote execute gets a gateway-generated operation UUID and transient Saga-to-node transport failure replays that exact UUID and instance-bound envelope, while the node executes the operation UUID at most once;
+- legacy gateway/node pairs retain the original one-shot behavior during rolling upgrades.
 
-Node request abort and response close continue to abort synchronous executor work. Persistent terminal processes are not tied to the request after `terminal_start` succeeds.
+For capability-negotiated resumable calls, a downstream Saga-to-node HTTP failure does not implicitly abort the executor operation. The node retains running/completed request-ID state for bounded reattachment, rejects request-ID reuse with different arguments, degrades expired results to deduplication tombstones, and requires the same process-lifetime node instance ID on every reattach. A node restart therefore fails an uncertain replay closed instead of invoking it in the new process. Upstream MCP caller cancellation and the remote execution deadline use the separate authenticated cancel endpoint as best-effort stops. Legacy calls preserve disconnect-cancels-execution semantics. Persistent terminal processes remain detached from individual requests and are still the preferred path for installers, substantial builds, upgrades, long test suites, and anything that should survive unreliable connectivity or a client-side MCP interruption.
 
-Add tests proving a remote 90-second shell is not killed at 30 seconds, a timed-out shell aborts its process tree, a disconnected mutation is invoked once, and terminal sessions remain usable after the request that started them has ended.
+Tests prove a remote 90-second shell is not killed at 30 seconds, a resumable mutation is invoked once across a dropped-and-reattached transport, a node restart cannot duplicate an uncertain mutation, expired replay state cannot re-execute, legacy callers keep the prior cancellation semantics, caller/deadline cancellation is explicit, and terminal sessions remain usable after the request that started them has ended.
 
 ### 10. Update configuration, protocol, UI, and documentation as one contract change
 

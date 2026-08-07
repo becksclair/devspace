@@ -209,6 +209,14 @@ Without those conditions, terminal sessions still survive individual MCP calls b
 
 Use the terminal tools' explicit IDs rather than the default tmux socket. DevSpace uses a private configured socket.
 
+## Remote Node Connection Drops Mid-Command
+
+When both gateway and node advertise resumable calls, DevSpace gives each remote execute call a gateway-generated operation UUID (separate from the session-scoped MCP JSON-RPC ID) and binds it to the node's current instance ID. A transient Saga-to-node tunnel failure may reconnect and replay that exact envelope without executing the operation twice. If the node itself restarted while the result was uncertain, the old instance ID fails closed instead of replaying the mutation into the new process. An upstream MCP caller cancellation is different and triggers best-effort remote cancellation so abandoned callers do not leave orphaned commands.
+
+Completed results remain replayable for a bounded window, after which DevSpace retains a lightweight deduplication tombstone long enough to reject uncertain late replays rather than execute them again. This protects short and bounded remote operations from flaky links, but it is not process persistence across a node restart. For installers, substantial builds, upgrades, long test suites, and anything whose process must outlive the MCP request, use `terminal_start` and inspect the terminal afterward instead of relying on one long `bash` call.
+
+Older gateway/node pairs intentionally keep the prior one-shot, disconnect-cancels behavior until both sides support the resumable capability.
+
 ## Dirty Isolated Workspace Was Not Deleted
 
 This is intentional. `close_workspace` and maintenance remove only clean managed work. Dirty managed checkouts are retained and their exact path is reported. Inspect, commit, copy, or delete them deliberately.

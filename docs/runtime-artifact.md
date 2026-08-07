@@ -30,14 +30,31 @@ The Saga app root is `/opt/saga-services/devspace`; the Asgard user app root is
 0600 secret environment files must remain outside those replaceable roots.
 
 The Saga gateway listens on `127.0.0.1:7676`, serves `/healthz`, OAuth, MCP at
-`/mcp`, and widgets. The Asgard node listens on `127.0.0.1:7679` and exposes only
-authenticated `/internal/v1/hello` and `/internal/v1/call`. Both commands handle
-SIGTERM by stopping their HTTP listener before exit. Artifact publication does
-not restart either runtime service or any tunnel unit.
+`/mcp`, and widgets. The Asgard node listens on `127.0.0.1:7679` and exposes
+authenticated `/internal/v1/hello`, `/internal/v1/call`, and
+`/internal/v1/cancel`. Both commands handle SIGTERM by stopping their HTTP
+listener before exit. Artifact publication does not restart either runtime
+service or any tunnel unit.
 
 The versioned node call envelope is
-`{ protocolMajor, toolContractHash, machineId, requestId, tool, arguments }`.
+`{ protocolMajor, toolContractHash, machineId, requestId, tool, arguments, resumable?, nodeInstanceId? }`.
 `machineId` is the gateway's configured target ID. The node compares it with
 its own configured ID in the same request before invoking any executor and
 returns the same ID in successful responses. Identity mismatches fail closed
 without executor invocation.
+
+A node advertises `resumableCalls: true` plus a process-lifetime
+`nodeInstanceId` from `/internal/v1/hello` when it supports request-ID replay.
+The gateway only sends `resumable: true` after both values are observed,
+preserving rolling compatibility with older nodes. For a resumable call, the gateway generates a fresh operation UUID instead of
+reusing the session-scoped MCP JSON-RPC ID. The node binds that `requestId` to
+the tool plus parsed arguments and requires the same node instance ID on every
+reattach. It executes the request ID at most once,
+retains the completed outcome for bounded replay, then retains a lightweight
+deduplication tombstone long enough to reject late uncertain replays without
+re-executing them. If the gateway loses the Saga-to-node tunnel mid-call it may
+reattach with the exact same envelope. If the node restarted, the instance-ID
+mismatch fails closed instead of invoking the mutation on the new process.
+Upstream MCP caller cancellation and the remote execution deadline use the
+separate cancel endpoint as a best-effort stop. Legacy calls preserve the
+earlier response-close cancellation behavior.
