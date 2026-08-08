@@ -18,7 +18,7 @@ import { configuredLogicalRoots, expandHomePath, normalizeRootPolicies, rootPoli
 import { loadRoleConfig } from "./role-config.js";
 import { createShellRuntime, runConfiguredShell } from "./shell-environment.js";
 import { createWorkspaceStore } from "./workspace-store.js";
-import { mintHeadlessOAuth, writeHermesOAuthFiles, writeOAuthBundle } from "./headless-auth.js";
+import { assertHermesOAuthConfigCompatible, mintHeadlessOAuth, writeHermesOAuthFiles, writeOAuthBundle } from "./headless-auth.js";
 
 type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "auth" | "help";
 const require = createRequire(import.meta.url);
@@ -413,6 +413,8 @@ async function runAuthCommand(args: string[]): Promise<void> {
   if (destinationCount !== 1) {
     throw new Error("Specify exactly one of --output <file> or --hermes-home <directory>");
   }
+  const hermesHome = options.hermesHome ? resolve(expandHomePath(options.hermesHome)) : undefined;
+  if (hermesHome) await assertHermesOAuthConfigCompatible(hermesHome, options.serverName);
   let baseUrl = options.url ?? (process.env.DEVSPACE_PUBLIC_BASE_URL?.trim() || undefined);
   let ownerToken = options.ownerToken ?? (process.env.DEVSPACE_OAUTH_OWNER_TOKEN?.trim() || undefined);
   if (!baseUrl || !ownerToken) {
@@ -423,8 +425,8 @@ async function runAuthCommand(args: string[]): Promise<void> {
   if (!baseUrl) throw new Error("OAuth server URL is required via --url, DEVSPACE_PUBLIC_BASE_URL, or DevSpace config");
   if (!ownerToken) throw new Error("OAuth owner password is required via --owner-token, DEVSPACE_OAUTH_OWNER_TOKEN, or DevSpace auth config");
   const bundle = await mintHeadlessOAuth({ baseUrl, ownerToken, clientName: options.clientName });
-  if (options.hermesHome) {
-    const paths = await writeHermesOAuthFiles(resolve(expandHomePath(options.hermesHome)), options.serverName, bundle);
+  if (hermesHome) {
+    const paths = await writeHermesOAuthFiles(hermesHome, options.serverName, bundle);
     console.log(`Minted OAuth credentials and wrote ${paths.length} Hermes token files for '${options.serverName}'.`);
     return;
   }

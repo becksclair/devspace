@@ -94,7 +94,9 @@ password from the normal DevSpace config files, with
 `DEVSPACE_PUBLIC_BASE_URL` and `DEVSPACE_OAUTH_OWNER_TOKEN` as environment
 overrides. `--url` and `--owner-token` are also available for controlled local
 use, although environment or config input avoids exposing the password in shell
-history. Credential files are written atomically with mode `0600`.
+history and process listings. Credential files are written atomically with mode
+`0600`. Hermes-native minting refuses a server that configures `oauth.client_id`,
+because Hermes would replace the dynamically registered client and break refresh.
 Remote OAuth servers and every discovered endpoint must use HTTPS and the same
 origin; HTTP is accepted only for loopback development. The three Hermes files
 are staged and published as one rollback-protected credential set.

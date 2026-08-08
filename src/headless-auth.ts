@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { parse } from "yaml";
 
 export interface OAuthTokens {
   access_token: string;
@@ -37,6 +38,36 @@ interface MintOptions {
   clientName?: string;
   redirectUri?: string;
   fetchImpl?: typeof fetch;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+export async function assertHermesOAuthConfigCompatible(hermesHome: string, serverName: string): Promise<void> {
+  const configPath = join(hermesHome, "config.yaml");
+  let source: string;
+  try {
+    source = await readFile(configPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  let config: unknown;
+  try {
+    config = parse(source);
+  } catch (error) {
+    throw new Error(`Cannot parse Hermes configuration at ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const server = record(record(config)?.mcp_servers)?.[serverName];
+  const clientId = record(record(server)?.oauth)?.client_id;
+  if (typeof clientId === "string" && clientId.trim()) {
+    throw new Error(
+      `Hermes MCP server '${serverName}' configures oauth.client_id; remove that setting before headless minting so Hermes does not replace the dynamically registered client`,
+    );
+  }
 }
 
 function requireString(record: Record<string, unknown>, key: string, context: string): string {

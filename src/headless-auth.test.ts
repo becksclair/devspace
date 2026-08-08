@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { promisify } from "node:util";
 import {
+  assertHermesOAuthConfigCompatible,
   mintHeadlessOAuth,
   safeServerName,
   writeHermesOAuthFiles,
@@ -170,6 +171,21 @@ describe("headless OAuth minting", () => {
     assert.equal(await readFile(join(tokenDir, "devspace.json"), "utf8"), "old-token");
     assert.equal(await readFile(join(tokenDir, "devspace.client.json", "marker"), "utf8"), "old-client");
     assert.equal(await readFile(join(tokenDir, "devspace.meta.json"), "utf8"), "old-metadata");
+  });
+
+  it("rejects a conflicting Hermes client_id before OAuth side effects", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "devspace-hermes-config-"));
+    dirs.push(dir);
+    await writeFile(join(dir, "config.yaml"), "mcp_servers:\n  devspace:\n    oauth:\n      client_id: preregistered-client\n");
+    await assert.rejects(() => assertHermesOAuthConfigCompatible(dir, "devspace"), /remove that setting before headless minting/);
+    await assert.rejects(
+      () => execFileAsync(process.execPath, ["--import", "tsx", "src/cli.ts", "auth", "mint", "--url", "http://127.0.0.1:1", "--owner-token", "owner-secret", "--hermes-home", dir], { cwd: process.cwd() }),
+      (error: any) => {
+        assert.match(error.stderr, /configures oauth\.client_id/);
+        assert.doesNotMatch(error.stderr, /fetch failed|ECONNREFUSED/);
+        return true;
+      },
+    );
   });
 
   it("writes Hermes token, client, and metadata files with absolute expiry", async () => {
