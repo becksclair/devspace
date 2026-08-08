@@ -68,6 +68,37 @@ the Owner password printed by `devspace init`. It is also stored in:
 
 Keep that password private.
 
+### Headless OAuth credentials
+
+`devspace auth mint` automates DevSpace's existing authorization-code flow with
+PKCE. It performs discovery, dynamic client registration, owner approval, and
+the code exchange without opening a browser, starting a callback listener, or
+asking you to copy an authorization code or token.
+
+Write a portable OAuth bundle:
+
+```bash
+devspace auth mint --output /secure/path/devspace-oauth.json
+```
+
+Or write Hermes-native credentials:
+
+```bash
+devspace auth mint \
+  --hermes-home "${HERMES_HOME:-$HOME/.hermes}" \
+  --server-name devspace
+```
+
+Exactly one destination is required. The command reads the public URL and owner
+password from the normal DevSpace config files, with
+`DEVSPACE_PUBLIC_BASE_URL` and `DEVSPACE_OAUTH_OWNER_TOKEN` as environment
+overrides. `--url` and `--owner-token` are also available for controlled local
+use, although environment or config input avoids exposing the password in shell
+history. Credential files are written atomically with mode `0600`.
+Remote OAuth servers and every discovered endpoint must use HTTPS and the same
+origin; HTTP is accepted only for loopback development. The three Hermes files
+are staged and published as one rollback-protected credential set.
+
 ## Connect Your MCP Client
 
 The default local endpoint is:

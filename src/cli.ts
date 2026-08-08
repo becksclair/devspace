@@ -18,8 +18,9 @@ import { configuredLogicalRoots, expandHomePath, normalizeRootPolicies, rootPoli
 import { loadRoleConfig } from "./role-config.js";
 import { createShellRuntime, runConfiguredShell } from "./shell-environment.js";
 import { createWorkspaceStore } from "./workspace-store.js";
+import { mintHeadlessOAuth, writeHermesOAuthFiles, writeOAuthBundle } from "./headless-auth.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "auth" | "help";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
 
@@ -49,6 +50,9 @@ async function main(argv: string[]): Promise<void> {
     case "config":
       runConfigCommand(args);
       return;
+    case "auth":
+      await runAuthCommand(args);
+      return;
     case "help":
       printHelp();
       return;
@@ -57,7 +61,7 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config" || command === "gateway" || command === "node") return command;
+  if (command === "init" || command === "doctor" || command === "config" || command === "gateway" || command === "node" || command === "auth") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
 }
@@ -398,6 +402,82 @@ function runConfigCommand(args: string[]): void {
   console.log(`Updated ${files.configPath}`);
 }
 
+async function runAuthCommand(args: string[]): Promise<void> {
+  if (args[0] !== "mint") throw new Error("Usage: devspace auth mint [options]");
+  if (args.includes("--help") || args.includes("-h")) {
+    printAuthMintHelp("devspace");
+    return;
+  }
+  const options = parseAuthMintArgs(args, "devspace");
+  const destinationCount = Number(Boolean(options.output)) + Number(Boolean(options.hermesHome));
+  if (destinationCount !== 1) {
+    throw new Error("Specify exactly one of --output <file> or --hermes-home <directory>");
+  }
+  let baseUrl = options.url ?? (process.env.DEVSPACE_PUBLIC_BASE_URL?.trim() || undefined);
+  let ownerToken = options.ownerToken ?? (process.env.DEVSPACE_OAUTH_OWNER_TOKEN?.trim() || undefined);
+  if (!baseUrl || !ownerToken) {
+    const files = loadDevspaceFiles();
+    baseUrl ||= files.config.publicBaseUrl ?? undefined;
+    ownerToken ||= files.auth.ownerToken ?? undefined;
+  }
+  if (!baseUrl) throw new Error("OAuth server URL is required via --url, DEVSPACE_PUBLIC_BASE_URL, or DevSpace config");
+  if (!ownerToken) throw new Error("OAuth owner password is required via --owner-token, DEVSPACE_OAUTH_OWNER_TOKEN, or DevSpace auth config");
+  const bundle = await mintHeadlessOAuth({ baseUrl, ownerToken, clientName: options.clientName });
+  if (options.hermesHome) {
+    const paths = await writeHermesOAuthFiles(resolve(expandHomePath(options.hermesHome)), options.serverName, bundle);
+    console.log(`Minted OAuth credentials and wrote ${paths.length} Hermes token files for '${options.serverName}'.`);
+    return;
+  }
+  if (!options.output) throw new Error("Missing --output <file>");
+  const outputPath = resolve(expandHomePath(options.output));
+  await writeOAuthBundle(outputPath, bundle);
+  console.log(`Minted OAuth credentials and wrote a protected bundle to ${outputPath}.`);
+}
+
+function parseAuthMintArgs(args: string[], defaultServerName: string): {
+  url?: string;
+  ownerToken?: string;
+  clientName: string;
+  output?: string;
+  hermesHome?: string;
+  serverName: string;
+} {
+  if (args[0] !== "mint") throw new Error("Usage: devspace auth mint [options]");
+  const values: Record<string, string> = {};
+  const flags = new Set(["--url", "--owner-token", "--client-name", "--output", "--hermes-home", "--server-name"]);
+  const seen = new Set<string>();
+  for (let index = 1; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (!flags.has(flag)) throw new Error(`Unknown auth mint option: ${flag}`);
+    if (seen.has(flag)) throw new Error(`Duplicate auth mint option: ${flag}`);
+    seen.add(flag);
+    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+    values[flag] = value;
+  }
+  return {
+    url: values["--url"],
+    ownerToken: values["--owner-token"],
+    clientName: values["--client-name"] ?? "Hermes Agent",
+    output: values["--output"],
+    hermesHome: values["--hermes-home"],
+    serverName: values["--server-name"] ?? defaultServerName,
+  };
+}
+
+function printAuthMintHelp(command: string): void {
+  console.log([
+    `Usage: ${command} auth mint [options]`,
+    "",
+    "  --output <file>             Write a portable OAuth bundle",
+    "  --hermes-home <directory>   Write Hermes-native token files",
+    "  --server-name <name>        Hermes server name",
+    "  --url <base-url>            Override the OAuth server URL",
+    "  --owner-token <password>    Override the owner approval password",
+    "  --client-name <name>        Dynamic OAuth client name",
+  ].join("\n"));
+}
+
 function printHelp(): void {
   console.log(
     [
@@ -412,6 +492,7 @@ function printHelp(): void {
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
+      "  devspace auth mint --output <file>|--hermes-home <directory> [options]",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
