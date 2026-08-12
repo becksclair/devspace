@@ -2,7 +2,7 @@ import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypt
 import type { Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { AccessDeniedError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { AccessDeniedError, InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type {
   OAuthClientInformationFull,
@@ -22,6 +22,7 @@ export interface OAuthConfig {
   refreshTokenTtlSeconds: number;
   scopes: string[];
   allowedRedirectHosts: string[];
+  maxRetainedClients?: number;
 }
 
 interface AuthorizationCodeRecord {
@@ -31,6 +32,7 @@ interface AuthorizationCodeRecord {
 }
 
 const CODE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_RETAINED_CLIENTS = 500;
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -131,6 +133,7 @@ export class OAuthClientsStore implements OAuthRegisteredClientsStore {
   constructor(
     private readonly allowedRedirectHosts: string[],
     private readonly stateStore: OAuthStateStore,
+    private readonly maxRetainedClients = DEFAULT_MAX_RETAINED_CLIENTS,
   ) {}
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
@@ -153,7 +156,9 @@ export class OAuthClientsStore implements OAuthRegisteredClientsStore {
       grant_types: client.grant_types ?? ["authorization_code", "refresh_token"],
       response_types: client.response_types ?? ["code"],
     };
-    this.stateStore.saveClient(registered);
+    if (!this.stateStore.saveClientIfBelowLimit(registered, this.maxRetainedClients)) {
+      throw new InvalidClientMetadataError("Client registration capacity reached");
+    }
     return registered;
   }
 }
@@ -169,9 +174,18 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     resourceServerUrl: URL,
     stateStore: OAuthStateStore = new InMemoryOAuthStateStore(),
   ) {
+    const maxRetainedClients = config.maxRetainedClients ?? DEFAULT_MAX_RETAINED_CLIENTS;
+    if (!Number.isSafeInteger(maxRetainedClients) || maxRetainedClients <= 0 ||
+      maxRetainedClients > DEFAULT_MAX_RETAINED_CLIENTS) {
+      throw new Error("OAuth maxRetainedClients must be an integer between 1 and 500");
+    }
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
     this.stateStore = stateStore;
-    this.clientsStore = new OAuthClientsStore(config.allowedRedirectHosts, stateStore);
+    this.clientsStore = new OAuthClientsStore(
+      config.allowedRedirectHosts,
+      stateStore,
+      maxRetainedClients,
+    );
   }
 
   async authorize(

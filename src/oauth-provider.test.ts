@@ -57,6 +57,23 @@ try {
   assert.deepEqual(restoredClient, client);
   assert.equal((await secondProvider.verifyAccessToken(tokens.access_token)).clientId, client.client_id);
 
+  assert.throws(
+    () => new SingleUserOAuthProvider({ ...config, maxRetainedClients: 501 }, mcpUrl, secondStore),
+    /between 1 and 500/,
+  );
+  const limitedProvider = new SingleUserOAuthProvider(
+    { ...config, maxRetainedClients: 1 },
+    mcpUrl,
+    secondStore,
+  );
+  assert.throws(
+    () => limitedProvider.clientsStore.registerClient?.({
+      redirect_uris: ["http://127.0.0.1/callback"],
+      token_endpoint_auth_method: "none",
+    }),
+    /capacity/,
+  );
+
   const refreshedTokens = await secondProvider.exchangeRefreshToken(
     client,
     tokens.refresh_token,

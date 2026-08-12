@@ -25,6 +25,7 @@ export interface StoredOAuthToken {
 export interface OAuthStateStore {
   getClient(clientId: string): OAuthClientInformationFull | undefined;
   saveClient(client: OAuthClientInformationFull): void;
+  saveClientIfBelowLimit(client: OAuthClientInformationFull, maxClients: number): boolean;
   getToken(tokenHash: string, tokenType: OAuthTokenType): StoredOAuthToken | undefined;
   saveToken(token: StoredOAuthToken): void;
   deleteToken(tokenHash: string, tokenType?: OAuthTokenType): void;
@@ -41,6 +42,12 @@ export class InMemoryOAuthStateStore implements OAuthStateStore {
 
   saveClient(client: OAuthClientInformationFull): void {
     this.clients.set(client.client_id, client);
+  }
+
+  saveClientIfBelowLimit(client: OAuthClientInformationFull, maxClients: number): boolean {
+    if (!this.clients.has(client.client_id) && this.clients.size >= maxClients) return false;
+    this.saveClient(client);
+    return true;
   }
 
   getToken(tokenHash: string, tokenType: OAuthTokenType): StoredOAuthToken | undefined {
@@ -99,6 +106,22 @@ export class SqliteOAuthStateStore implements OAuthStateStore {
         },
       })
       .run();
+  }
+
+  saveClientIfBelowLimit(client: OAuthClientInformationFull, maxClients: number): boolean {
+    return this.database.sqlite.transaction(() => {
+      const existing = this.database.sqlite.prepare(
+        "select 1 from oauth_clients where client_id = ?",
+      ).get(client.client_id);
+      if (!existing) {
+        const count = this.database.sqlite.prepare(
+          "select count(*) as count from oauth_clients",
+        ).get() as { count: number };
+        if (count.count >= maxClients) return false;
+      }
+      this.saveClient(client);
+      return true;
+    })();
   }
 
   getToken(tokenHash: string, tokenType: OAuthTokenType): StoredOAuthToken | undefined {
