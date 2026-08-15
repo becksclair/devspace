@@ -54,6 +54,10 @@ const config = {
     checkoutIdleTtlSeconds: 2592000,
     isolatedIdleTtlSeconds: 604800,
   },
+  sessions: {
+    idleTtlSeconds: 1800,
+    sweepIntervalSeconds: 60,
+  },
   logging: {
     level: "silent",
     format: "json",

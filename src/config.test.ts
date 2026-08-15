@@ -43,6 +43,14 @@ assert.deepEqual(loadConfig(baseEnv).secretNames, ["DEVSPACE_OAUTH_OWNER_TOKEN"]
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SHELL_MODE: "login" }).shell.mode, "login");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TERMINAL_MAX_TOTAL: "7" }).terminals.maxTotal, 7);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_ISOLATED_IDLE_TTL_SECONDS: "123" }).maintenance.isolatedIdleTtlSeconds, 123);
+assert.equal(loadConfig(baseEnv).sessions.idleTtlSeconds, 1800);
+assert.equal(loadConfig(baseEnv).sessions.sweepIntervalSeconds, 60);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SESSION_IDLE_TTL_SECONDS: "300" }).sessions.idleTtlSeconds, 300);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS: "15" }).sessions.sweepIntervalSeconds, 15);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_SESSION_IDLE_TTL_SECONDS: "0" }),
+  /Invalid DEVSPACE_SESSION_IDLE_TTL_SECONDS: 0/,
+);
 assert.deepEqual(
   loadConfig({ ...baseEnv, DEVSPACE_INFRA_SECRET_NAMES: "DEVSPACE_NODE_A,DEVSPACE_NODE_B" }).secretNames,
   ["DEVSPACE_OAUTH_OWNER_TOKEN", "DEVSPACE_NODE_A", "DEVSPACE_NODE_B"],

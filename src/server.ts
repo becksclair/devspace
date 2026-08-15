@@ -1325,6 +1325,8 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     ...(allowedHosts ? { allowedHosts } : {}),
   });
   const transports = new Map<string, Transport>();
+  const lastActiveAt = new Map<string, number>();
+  const inFlight = new Set<string>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthStore = createOAuthStateStore(config.stateDir);
@@ -1469,11 +1471,15 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
           sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
           return;
         }
+        lastActiveAt.set(sessionId, Date.now());
       } else if (initializeRequest) {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
-            if (transport) transports.set(newSessionId, transport);
+            if (transport) {
+              transports.set(newSessionId, transport);
+              lastActiveAt.set(newSessionId, Date.now());
+            }
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
@@ -1487,6 +1493,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
           const closedSessionId = transport?.sessionId;
           if (closedSessionId) {
             transports.delete(closedSessionId);
+            lastActiveAt.delete(closedSessionId);
             logEvent(config.logging, "info", "mcp_session_closed", {
               sessionIdPrefix: sessionIdPrefix(closedSessionId),
             });
@@ -1505,7 +1512,12 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      if (sessionId) inFlight.add(sessionId);
+      try {
+        await transport.handleRequest(req, res, req.body);
+      } finally {
+        if (sessionId) inFlight.delete(sessionId);
+      }
     } catch (error) {
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
@@ -1530,14 +1542,56 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     }
   });
 
+  // MCP clients (ChatGPT, Claude, etc.) routinely create fresh sessions and
+  // never send DELETE, so without eviction every session's McpServer and
+  // transport stay pinned in memory forever. Sweep sessions that have been
+  // idle beyond the configured TTL; active sessions self-warm via activity
+  // polling, and clients re-initialize freely after an eviction.
+  const sweepTimer = setInterval(() => {
+    const now = Date.now();
+    const ttlMs = config.sessions.idleTtlSeconds * 1000;
+    let evicted = 0;
+    for (const [sessionId, lastActive] of lastActiveAt) {
+      if (now - lastActive < ttlMs) continue;
+      // Never close a transport while a request is being handled: a
+      // long-running tool call must not be cut off by eviction.
+      if (inFlight.has(sessionId)) continue;
+      const transport = transports.get(sessionId);
+      if (!transport) {
+        lastActiveAt.delete(sessionId);
+        continue;
+      }
+      evicted += 1;
+      logEvent(config.logging, "info", "mcp_session_evicted", {
+        sessionIdPrefix: sessionIdPrefix(sessionId),
+        idleSeconds: Math.round((now - lastActive) / 1000),
+        ttlSeconds: config.sessions.idleTtlSeconds,
+      });
+      void transport.close().catch(() => undefined);
+    }
+    logEvent(config.logging, "debug", "mcp_session_count", {
+      sessions: transports.size,
+      idleTtlSeconds: config.sessions.idleTtlSeconds,
+    });
+    if (evicted > 0) {
+      logEvent(config.logging, "info", "mcp_session_eviction_sweep", {
+        evicted,
+        remaining: transports.size,
+      });
+    }
+  }, config.sessions.sweepIntervalSeconds * 1000);
+  sweepTimer.unref();
+
   return {
     app,
     config,
     close: () => {
+      clearInterval(sweepTimer);
       executor?.close();
       oauthStore.close?.();
       for (const transport of transports.values()) void transport.close();
       transports.clear();
+      lastActiveAt.clear();
     },
   };
 }

@@ -41,6 +41,7 @@ export interface ServerConfig {
   secretNames: string[];
   terminals: TerminalConfig;
   maintenance: MaintenanceConfig;
+  sessions: SessionConfig;
 }
 
 export interface ShellConfig {
@@ -63,6 +64,11 @@ export interface MaintenanceConfig {
   closedSessionTtlSeconds: number;
   checkoutIdleTtlSeconds: number;
   isolatedIdleTtlSeconds: number;
+}
+
+export interface SessionConfig {
+  idleTtlSeconds: number;
+  sweepIntervalSeconds: number;
 }
 
 /** Publicly exported parser helpers used by role-specific configuration. */
@@ -355,6 +361,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       closedSessionTtlSeconds: parsePositiveInteger(env.DEVSPACE_CLOSED_SESSION_TTL_SECONDS ?? stringValue(files.config.maintenance?.closedSessionTtlSeconds), 7 * 24 * 60 * 60, "DEVSPACE_CLOSED_SESSION_TTL_SECONDS"),
       checkoutIdleTtlSeconds: parsePositiveInteger(env.DEVSPACE_CHECKOUT_IDLE_TTL_SECONDS ?? stringValue(files.config.maintenance?.checkoutIdleTtlSeconds), 30 * 24 * 60 * 60, "DEVSPACE_CHECKOUT_IDLE_TTL_SECONDS"),
       isolatedIdleTtlSeconds: parsePositiveInteger(env.DEVSPACE_ISOLATED_IDLE_TTL_SECONDS ?? stringValue(files.config.maintenance?.isolatedIdleTtlSeconds), 7 * 24 * 60 * 60, "DEVSPACE_ISOLATED_IDLE_TTL_SECONDS"),
+    },
+    sessions: {
+      idleTtlSeconds: parsePositiveInteger(env.DEVSPACE_SESSION_IDLE_TTL_SECONDS ?? stringValue(files.config.sessions?.idleTtlSeconds), 30 * 60, "DEVSPACE_SESSION_IDLE_TTL_SECONDS"),
+      sweepIntervalSeconds: parsePositiveInteger(env.DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS ?? stringValue(files.config.sessions?.sweepIntervalSeconds), 60, "DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS"),
     },
   };
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- fix: evict idle MCP sessions so the gateway no longer accumulates memory
+- feat: add DEVSPACE_SESSION_IDLE_TTL_SECONDS and DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS knobs
+
 ## 2.0.0 - 2026-08-05
 
 - Bump version to 1.0.2

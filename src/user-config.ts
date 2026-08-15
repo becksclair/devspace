@@ -31,6 +31,10 @@ export interface DevspaceUserConfig {
     checkoutIdleTtlSeconds?: number;
     isolatedIdleTtlSeconds?: number;
   };
+  sessions?: {
+    idleTtlSeconds?: number;
+    sweepIntervalSeconds?: number;
+  };
   publicBaseUrl?: string | null;
   allowedHosts?: string[];
   annotationProfile?: AnnotationProfile;

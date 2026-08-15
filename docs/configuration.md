@@ -80,6 +80,8 @@ A nested symlink may enter another configured root when that root grants the req
 | `DEVSPACE_CLOSED_SESSION_TTL_SECONDS` | `604800` | Closed workspace metadata retention. |
 | `DEVSPACE_CHECKOUT_IDLE_TTL_SECONDS` | `2592000` | Inactive checkout metadata retention. |
 | `DEVSPACE_ISOLATED_IDLE_TTL_SECONDS` | `604800` | Inactive clean managed workspace retention. Dirty work is retained. |
+| `DEVSPACE_SESSION_IDLE_TTL_SECONDS` | `1800` | Idle lifetime for MCP sessions before they are evicted. Active sessions self-warm via request activity; clients re-initialize freely after eviction. Bounds gateway memory growth from clients that never send DELETE. |
+| `DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS` | `60` | How often the server sweeps for idle MCP sessions. |
 
 DevSpace always removes `DEVSPACE_OAUTH_OWNER_TOKEN`, the current node bearer variable, and configured remote-node bearer names from child shell and terminal environments. It does not remove user development credentials merely because their names contain `TOKEN`, `KEY`, or `SECRET`.
 

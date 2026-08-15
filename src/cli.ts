@@ -160,6 +160,10 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
       checkoutIdleTtlSeconds: 30 * 24 * 60 * 60,
       isolatedIdleTtlSeconds: 7 * 24 * 60 * 60,
     },
+    sessions: {
+      idleTtlSeconds: 30 * 60,
+      sweepIntervalSeconds: 60,
+    },
     logging: {
       level: "info",
       format: "json",
