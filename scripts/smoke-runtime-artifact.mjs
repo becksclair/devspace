@@ -22,11 +22,23 @@ for (const [role, port] of [["node", 17679], ["gateway", 17676]]) {
       DEVSPACE_OAUTH_OWNER_TOKEN: "smoke-owner-token-that-is-long-enough",
       DEVSPACE_CONFIG_DIR: join(root, ".smoke-empty-config"),
     },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let childOutput = "";
+  for (const stream of [child.stdout, child.stderr]) {
+    stream?.on("data", (chunk) => {
+      childOutput = (childOutput + chunk).slice(-40_000);
+    });
+  }
   try {
     const endpoint = role === "node" ? `http://127.0.0.1:${port}/internal/v1/hello` : `http://127.0.0.1:${port}/healthz`;
-    const response = await poll(endpoint, role === "node" ? { "X-DevSpace-Node-Token": "smoke-token" } : {});
+    let response;
+    try {
+      response = await poll(endpoint, role === "node" ? { "X-DevSpace-Node-Token": "smoke-token" } : {}, () => child.exitCode);
+    } catch (error) {
+      const exit = child.exitCode === null ? "still running" : `exited with code ${child.exitCode}`;
+      throw new Error(`${error instanceof Error ? error.message : String(error)} (child ${exit})\nchild output:\n${childOutput || "<no output>"}`);
+    }
     const identity = await response.json();
     if (identity.sourceCommit !== manifest.source_commit || identity.protocolMajor !== manifest.protocol_major) {
       throw new Error(`${role} runtime identity does not match artifact.json`);
@@ -45,13 +57,16 @@ for (const [role, port] of [["node", 17679], ["gateway", 17676]]) {
 const leftovers = readdirSync(root).filter((name) => name.startsWith(".smoke-"));
 if (leftovers.length) throw new Error(`smoke cleanup left staging files: ${leftovers.join(", ")}`);
 
-async function poll(url, headers) {
-  for (let attempt = 0; attempt < 50; attempt++) {
+async function poll(url, headers, isDone) {
+  // Boot involves cold module loading of the executor SDK plus SQLite init;
+  // give the child a generous but bounded window (60 x 250ms = 15s).
+  for (let attempt = 0; attempt < 60; attempt++) {
+    if (isDone?.()) break;
     try {
       const response = await fetch(url, { headers });
       if (response.ok) return response;
     } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`runtime smoke endpoint did not become healthy: ${url}`);
 }
