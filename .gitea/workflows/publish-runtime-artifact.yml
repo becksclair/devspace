@@ -8,7 +8,7 @@ permissions:
   actions: write
 jobs:
   publish:
-    runs-on: asgard-build-1
+    runs-on: saga-build
     env:
       GITEA_SERVER_URL: ${{ github.server_url }}
       GITEA_OWNER: ${{ vars.DEVSPACE_PACKAGE_OWNER }}
