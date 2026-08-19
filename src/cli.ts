@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { stdin as input, stdout as output } from "node:process";
 import { delimiter, join, resolve } from "node:path";
 import * as prompts from "@clack/prompts";
@@ -19,6 +20,7 @@ import { loadRoleConfig } from "./role-config.js";
 import { createShellRuntime, runConfiguredShell } from "./shell-environment.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import { assertHermesOAuthConfigCompatible, mintHeadlessOAuth, writeHermesOAuthFiles, writeOAuthBundle } from "./headless-auth.js";
+import { StaticKeyStore, mintApiKey, DEFAULT_KEY_TTL_SECONDS } from "./static-key-provider.js";
 
 type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "auth" | "help";
 const require = createRequire(import.meta.url);
@@ -407,7 +409,26 @@ function runConfigCommand(args: string[]): void {
 }
 
 async function runAuthCommand(args: string[]): Promise<void> {
-  if (args[0] !== "mint") throw new Error("Usage: devspace auth mint [options]");
+  const [subcommand] = args;
+  if (subcommand === "mint-key") {
+    await runMintKey(args.slice(1));
+    return;
+  }
+  if (subcommand === "revoke-key") {
+    runRevokeKey(args.slice(1));
+    return;
+  }
+  if (subcommand === "list-keys") {
+    runListKeys(args.slice(1));
+    return;
+  }
+  if (subcommand === "mint") {
+    await runAuthMint(args.slice(1));
+    return;
+  }
+  throw new Error("Usage: devspace auth mint|mint-key|revoke-key|list-keys [options]");
+}
+async function runAuthMint(args: string[]): Promise<void> {
   if (args.includes("--help") || args.includes("-h")) {
     printAuthMintHelp("devspace");
     return;
@@ -438,6 +459,137 @@ async function runAuthCommand(args: string[]): Promise<void> {
   const outputPath = resolve(expandHomePath(options.output));
   await writeOAuthBundle(outputPath, bundle);
   console.log(`Minted OAuth credentials and wrote a protected bundle to ${outputPath}.`);
+}
+
+function resolveStateDir(args: string[]): string {
+  const stateDirIndex = args.indexOf("--state-dir");
+  if (stateDirIndex >= 0 && args[stateDirIndex + 1]) return resolve(args[stateDirIndex + 1]);
+  const stateDir = process.env.DEVSPACE_STATE_DIR;
+  if (stateDir) return resolve(stateDir);
+  const files = loadDevspaceFiles();
+  return resolve(files.config.stateDir ?? join(homedir(), ".local", "share", "devspace"));
+}
+
+function loadSupportedScopes(): string[] {
+  const envScopes = process.env.DEVSPACE_OAUTH_SCOPES;
+  if (envScopes) {
+    return envScopes.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return ["devspace"];
+}
+
+async function runMintKey(args: string[]): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    printMintKeyHelp("devspace");
+    return;
+  }
+  const scopes: string[] = [];
+  let ttlSeconds = DEFAULT_KEY_TTL_SECONDS;
+  let keyId: string | undefined;
+  let jsonOutput = false;
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (flag === "--scope") {
+      const val = args[++i];
+      if (!val || val.startsWith("--")) throw new Error("Missing value for --scope");
+      scopes.push(val);
+      continue;
+    }
+    if (flag === "--ttl") {
+      const val = args[++i];
+      if (!val || val.startsWith("--")) throw new Error("Missing value for --ttl");
+      ttlSeconds = Number(val);
+      if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1) throw new Error("--ttl must be a positive integer");
+      continue;
+    }
+    if (flag === "--key-id") {
+      keyId = args[++i];
+      if (!keyId || keyId.startsWith("--")) throw new Error("Missing value for --key-id");
+      continue;
+    }
+    if (flag === "--json") { jsonOutput = true; continue; }
+    if (flag === "--state-dir") { i++; continue; }
+    throw new Error(`Unknown option: ${flag}`);
+  }
+  if (scopes.length === 0) scopes.push("devspace");
+  const supported = loadSupportedScopes();
+  const stateDir = resolveStateDir(args);
+  const store = new StaticKeyStore(stateDir);
+  try {
+    const mcpUrl = new URL(process.env.DEVSPACE_PUBLIC_BASE_URL || "http://127.0.0.1:7676");
+    const resource = new URL("/mcp", mcpUrl).href;
+    const result = await mintApiKey(store, resource, { scopes, ttlSeconds, keyId }, supported);
+    if (jsonOutput) {
+      console.log(JSON.stringify({ key_id: result.keyId, raw_key: result.rawKey, scopes: result.scopes, expires_at: result.expiresAt, resource: result.resource }, null, 2));
+    } else {
+      console.log(`Static API key minted successfully.`);
+      console.log(`Key ID: ${result.keyId}`);
+      console.log(`Key:    ${result.rawKey}`);
+      console.log(`Scopes: ${result.scopes.join(" ")}`);
+      console.log(`Expires: ${new Date(result.expiresAt * 1000).toISOString()}`);
+      console.log();
+      console.log("Store this key securely. It will not be shown again.");
+    }
+  } finally {
+    store.close();
+  }
+}
+
+function runRevokeKey(args: string[]): void {
+  if (args.includes("--help") || args.includes("-h")) {
+    printRevokeKeyHelp("devspace");
+    return;
+  }
+  let keyId: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--key-id") {
+      keyId = args[++i];
+      if (!keyId || keyId.startsWith("--")) throw new Error("Missing value for --key-id");
+      continue;
+    }
+    if (args[i] === "--state-dir") { i++; continue; }
+    throw new Error(`Unknown option: ${args[i]}`);
+  }
+  if (!keyId) throw new Error("--key-id is required");
+  const stateDir = resolveStateDir(args);
+  const store = new StaticKeyStore(stateDir);
+  try {
+    const deleted = store.deleteById(keyId);
+    if (deleted) {
+      console.log(`Revoked static API key: ${keyId}`);
+    } else {
+      console.log(`No key found with ID: ${keyId}`);
+    }
+  } finally {
+    store.close();
+  }
+}
+
+function runListKeys(args: string[]): void {
+  if (args.includes("--help") || args.includes("-h")) {
+    printListKeysHelp("devspace");
+    return;
+  }
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--state-dir") { i++; continue; }
+    throw new Error(`Unknown option: ${args[i]}`);
+  }
+  const stateDir = resolveStateDir(args);
+  const store = new StaticKeyStore(stateDir);
+  try {
+    const keys = store.listAll();
+    if (keys.length === 0) {
+      console.log("No static API keys found.");
+      return;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    for (const key of keys) {
+      const expired = key.expiresAt < now;
+      console.log(`  ${key.keyId}  scopes=${key.scopes.join(",")}  expires=${new Date(key.expiresAt * 1000).toISOString()}${expired ? " [EXPIRED]" : ""}`);
+    }
+  } finally {
+    store.close();
+  }
 }
 
 function parseAuthMintArgs(args: string[], defaultServerName: string): {
@@ -484,6 +636,35 @@ function printAuthMintHelp(command: string): void {
   ].join("\n"));
 }
 
+function printMintKeyHelp(command: string): void {
+  console.log([
+    `Usage: ${command} auth mint-key [options]`,
+    "",
+    "  --scope <scope>             Scope to grant (repeatable, default: devspace)",
+    "  --ttl <seconds>             Key lifetime in seconds (default: 31536000)",
+    "  --key-id <id>               Custom key ID (default: auto-generated)",
+    "  --json                      Output key details as JSON",
+    "  --state-dir <dir>           Override the state directory",
+  ].join("\n"));
+}
+
+function printRevokeKeyHelp(command: string): void {
+  console.log([
+    `Usage: ${command} auth revoke-key [options]`,
+    "",
+    "  --key-id <id>               Key ID to revoke (required)",
+    "  --state-dir <dir>           Override the state directory",
+  ].join("\n"));
+}
+
+function printListKeysHelp(command: string): void {
+  console.log([
+    `Usage: ${command} auth list-keys [options]`,
+    "",
+    "  --state-dir <dir>           Override the state directory",
+  ].join("\n"));
+}
+
 function printHelp(): void {
   console.log(
     [
@@ -499,6 +680,9 @@ function printHelp(): void {
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
       "  devspace auth mint --output <file>|--hermes-home <directory> [options]",
+      "  devspace auth mint-key [options]",
+      "  devspace auth revoke-key --key-id <id>",
+      "  devspace auth list-keys",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
