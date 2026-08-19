@@ -600,11 +600,10 @@ function parseAuthMintArgs(args: string[], defaultServerName: string): {
   hermesHome?: string;
   serverName: string;
 } {
-  if (args[0] !== "mint") throw new Error("Usage: devspace auth mint [options]");
   const values: Record<string, string> = {};
   const flags = new Set(["--url", "--owner-token", "--client-name", "--output", "--hermes-home", "--server-name"]);
   const seen = new Set<string>();
-  for (let index = 1; index < args.length; index += 2) {
+  for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
     if (!flags.has(flag)) throw new Error(`Unknown auth mint option: ${flag}`);
