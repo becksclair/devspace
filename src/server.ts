@@ -26,6 +26,7 @@ import {
 } from "./logger.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createOAuthStateStore } from "./oauth-store.js";
+import { StaticKeyStore, StaticKeyVerifier } from "./static-key-provider.js";
 import { DEVSPACE_VERSION } from "./version.js";
 import { GatewayExecutionRouter, type ExecutionTarget, type RoutedExecution } from "./gateway-router.js";
 import type { ToolName as CanonicalToolName } from "./tool-contract.js";
@@ -1331,8 +1332,20 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthStore = createOAuthStateStore(config.stateDir);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, oauthStore);
+  const staticKeyStore = new StaticKeyStore(config.stateDir);
+  staticKeyStore.cleanupExpired();
+  const staticKeyVerifier = new StaticKeyVerifier(staticKeyStore, resourceServerUrl.href);
+  const compositeVerifier = {
+    async verifyAccessToken(token: string) {
+      try {
+        return await staticKeyVerifier.verifyAccessToken(token);
+      } catch {
+        return oauthProvider.verifyAccessToken(token);
+      }
+    },
+  };
   const bearerAuth = requireBearerAuth({
-    verifier: oauthProvider,
+    verifier: compositeVerifier,
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
@@ -1589,6 +1602,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
       clearInterval(sweepTimer);
       executor?.close();
       oauthStore.close?.();
+      staticKeyStore.close();
       for (const transport of transports.values()) void transport.close();
       transports.clear();
       lastActiveAt.clear();
