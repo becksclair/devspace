@@ -17,7 +17,7 @@ import {
 import express from "express";
 import type { Request, Response } from "express";
 import * as z from "zod/v4";
-import { loadConfig, type ServerConfig, type WidgetMode } from "./config.js";
+import { isCapabilityDisabled, loadConfig, parseDisabledCapabilities, type ServerConfig, type WidgetMode } from "./config.js";
 import {
   logEvent,
   requestIp,
@@ -39,6 +39,68 @@ import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings 
 
 type Transport = StreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
+
+// sky-cua bridge singleton: lazily created stdio MCP client that proxies sky-cua's tools/list live.
+// Keyed by binPath so changing DEVSPACE_SKY_CUA_BIN without restart does not reuse stale binary.
+// Unhealthy bridges are not cached - next enabled session retries.
+let skyBridgeCache = new Map<string, Promise<import("./sky-cua/bridge.js").SkyBridge | null>>();
+async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bridge.js").SkyBridge | null> {
+  const disabled = config.disabledCapabilities ?? new Set<string>();
+  if (isCapabilityDisabled(disabled, "sky-cua")) return null;
+  const skyCua = config.skyCua ?? { projectRoot: "/tmp/sky-cua-missing", binPath: "/tmp/sky-cua-missing/bin/sky-cua-client" };
+  const key = skyCua.binPath;
+  const cached = skyBridgeCache.get(key);
+  if (cached) return cached;
+  const promise = (async () => {
+    try {
+      const mod = await import("./sky-cua/bridge.js");
+      const bridge = await mod.createSkyBridge(skyCua);
+      if (!bridge || !bridge.healthy) {
+        skyBridgeCache.delete(key);
+        return bridge;
+      }
+      return bridge;
+    } catch {
+      skyBridgeCache.delete(key);
+      return null;
+    }
+  })();
+  skyBridgeCache.set(key, promise);
+  promise.catch(() => skyBridgeCache.delete(key));
+  return promise;
+}
+
+export function parseEffectiveDisabledFromRequest(req: Request, config: ServerConfig): Set<string> {
+  const global = config.disabledCapabilities ?? new Set<string>();
+  const headerRaw = (req.header("x-disabled-capabilities") ?? req.header("x-devspace-disabled-capabilities") ?? "") as string;
+  const queryRaw = (typeof req.query?.disabled_capabilities === "string" ? (req.query.disabled_capabilities as string) : "") as string;
+  // Also support clientInfo _meta disabledCapabilities passed via JSON-RPC body for initialize: check header fallback below in mcp handler.
+  const headerSet = parseDisabledCapabilities(headerRaw);
+  const querySet = parseDisabledCapabilities(queryRaw);
+  const merged = new Set<string>([...global]);
+  for (const c of headerSet) merged.add(c);
+  for (const c of querySet) merged.add(c);
+  // Also check per-request body meta if present (set by caller in initialize params._meta)
+  // This is handled per-session at create time; here we just merge header/query.
+  return merged;
+}
+
+function isSkyCuaDisabled(effective: Set<string>): boolean {
+  return isCapabilityDisabled(effective, "sky-cua");
+}
+
+function filterSkyCuaSkillsForEffective(skills: unknown[] | undefined, effective: Set<string>, skyCuaRoot?: string): unknown[] | undefined {
+  if (!skills || !isSkyCuaDisabled(effective)) return skills;
+  const root = skyCuaRoot ?? "";
+  return (skills as Array<{ path?: string; name?: string; id?: string }>).filter((s) => {
+    const p = s.path ?? "";
+    const n = s.name ?? s.id ?? "";
+    if (root && p.includes(root)) return false;
+    if (p.includes("sky-cua/skills") || p.includes("sky-cua")) return false;
+    if (["phone-use", "browser-use", "computer-use"].includes(n)) return false;
+    return true;
+  });
+}
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 interface ToolAnnotations {
   readOnlyHint: boolean;
@@ -324,7 +386,9 @@ function toolNamesFor(config: ServerConfig): ToolNames {
       };
 }
 
-function serverInstructions(config: ServerConfig, toolNames: ToolNames): string {
+function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiveDisabled?: Set<string>): string {
+  const disabled = effectiveDisabled ?? config.disabledCapabilities ?? new Set<string>();
+  const skyDisabled = isCapabilityDisabled(disabled, "sky-cua");
   const inspection = config.minimalTools
     ? `In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use ${toolNames.shell} with command-line tools such as grep, rg, find, ls, and tree for search and directory inspection. `
     : `${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} provide structured file inspection when useful. `;
@@ -340,7 +404,11 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames): string 
       ? " After creating, editing, or overwriting files, call show_changes once after the related file changes are complete so the user can see the aggregate diff."
       : "";
 
-  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode=\"isolated\" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${showChanges}`;
+  const skyCua = skyDisabled
+    ? ""
+    : " sky-cua desktop/browser/phone (sky-cua) tools are available: desktop/browser observe/capture/input plus phone Companion (aliases phone=default + tablet) via status/list_resources(surface=phone)/phone_connection/observe(surface=phone)/phone_pointer etc. When a task matches browser-use/computer-use/phone-use, read that SKILL.md before acting and follow its AppShot/phone_snapshot_id contract.";
+
+  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode=\"isolated\" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}`;
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -700,11 +768,13 @@ function publicExecutorResult(
   };
 }
 
-function createMcpServer(
+async function createMcpServer(
   config: ServerConfig,
   executor: LocalExecutor | undefined,
   gatewayRouter?: GatewayExecutionRouter,
-): McpServer {
+  effectiveDisabled?: Set<string>,
+): Promise<McpServer> {
+  const effective = effectiveDisabled ?? config.disabledCapabilities ?? new Set<string>();
   const toolNames = toolNamesFor(config);
   const workspaceAppManifestEntry =
     config.widgets === "off" ? undefined : getWorkspaceAppManifestEntry();
@@ -720,7 +790,7 @@ function createMcpServer(
         "Secure local coding workspace for MCP clients. Provides workspace-scoped file, search, edit, write, and shell tools.",
     },
     {
-      instructions: serverInstructions(config, toolNames),
+      instructions: serverInstructions(config, toolNames, effective),
     },
   );
 
@@ -824,19 +894,22 @@ function createMcpServer(
       ...toolWidgetDescriptorMeta(config, "workspace_open", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }),
     },
-    async ({ path, mode, baseRef, create, fresh, machine }, extra) => {
-      if (gatewayRouter) {
-        return routeGatewayTool(
-          gatewayRouter,
-          "open_workspace",
-          "open_workspace",
-          { path, mode, baseRef, create, fresh, machine },
-          extra,
-        );
+    (async (input: unknown, extra: unknown) => {
+      const { path, mode, baseRef, create, fresh, machine } = input as { path: string; mode?: string; baseRef?: string; create?: boolean; fresh?: boolean; machine?: string };
+      const ex = extra as { requestId: string | number; signal: AbortSignal };
+      const res = gatewayRouter
+        ? await routeGatewayTool(gatewayRouter, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh, machine }, ex)
+        : (() => { if (machine !== undefined) throw new Error("machine selection is available only in gateway mode"); return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, ex); })();
+      const awaited = await res;
+      if (isSkyCuaDisabled(effective)) {
+        const sc = (awaited as unknown as { structuredContent?: { skills?: unknown[]; skillDiagnostics?: unknown[] } }).structuredContent;
+        if (sc?.skills) sc.skills = filterSkyCuaSkillsForEffective(sc.skills, effective, config.skyCua?.projectRoot) as unknown as never;
+        if (sc?.skillDiagnostics) sc.skillDiagnostics = filterSkyCuaSkillsForEffective(sc.skillDiagnostics, effective, config.skyCua?.projectRoot) as unknown as never;
+        const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[] } } })._meta?.card;
+        if (card?.skills) card.skills = filterSkyCuaSkillsForEffective(card.skills, effective, config.skyCua?.projectRoot) as unknown as never;
       }
-      if (machine !== undefined) throw new Error("machine selection is available only in gateway mode");
-      return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, extra);
-    },
+      return awaited;
+    }) as unknown as never,
   );
 
   if (gatewayRouter && config.widgets === "workspace") {
@@ -1305,6 +1378,60 @@ function createMcpServer(
       : routeStandaloneTool(executor, "terminal_close", "terminal_close", input, extra),
   );
 
+  // sky-cua bridge — live tools/list from ~/projects/sky-cua/bin/sky-cua-client mcp
+  // Hidden when DISABLED_CAPABILITIES includes sky-cua (per-session header or global),
+  // or when the gateway node's disabledCapabilities hides it.
+  const effectiveSet = effective ?? new Set<string>();
+  if (!isSkyCuaDisabled(effectiveSet)) {
+    const bridge = await getSkyBridge(config);
+    if (bridge && bridge.healthy) {
+      for (const tool of bridge.tools) {
+        // sky-cua tools are not workspace-scoped, high-risk phone/desktop/browser actions
+        const skyAnnotations = tool.annotations ?? { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+        // inputSchema here is a Zod object; registerAppTool expects ZodRawShape, so unwrap if it's ZodObject
+        const rawInputShape: Record<string, z.ZodTypeAny> = (() => {
+          const s = tool.inputSchema as z.ZodTypeAny;
+          if (s instanceof z.ZodObject) return (s as z.ZodObject<Record<string, z.ZodTypeAny>>).shape;
+          const maybeShape = (s as unknown as { shape?: Record<string, z.ZodTypeAny> }).shape;
+          if (maybeShape && typeof maybeShape === "object" && !Array.isArray(maybeShape)) return maybeShape;
+          return {};
+        })();
+        const hasShape = Object.keys(rawInputShape).length > 0;
+        registerAppTool(
+          server as never,
+          tool.name as never,
+          {
+            title: tool.title ?? tool.name,
+            description: tool.description ?? `sky-cua tool ${tool.name}`,
+            ...(hasShape ? { inputSchema: rawInputShape } : { inputSchema: {} }),
+            ...(tool.outputSchema ? { outputSchema: tool.outputSchema as unknown as Record<string, z.ZodTypeAny> } : {}),
+            annotations: toolAnnotationsForProfile(config.annotationProfile, skyAnnotations as ToolAnnotations),
+            _meta: {},
+          } as never,
+          (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
+            // Validate against original JSON Schema-derived Zod type when MCP layer used empty shape fallback
+            if (!hasShape) {
+              const parsed = (tool.inputSchema as z.ZodTypeAny).safeParse(input);
+              if (!parsed.success) throw new Error(`Invalid arguments for tool ${tool.name}: ${parsed.error.message}`);
+            }
+            const result = await bridge.callTool(tool.name, input as Record<string, unknown>, extra.signal);
+            const mapped: Record<string, unknown> = {
+              content: result.content as unknown[],
+              ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
+              ...(result.isError ? { isError: true } : {}),
+            };
+            if ((mapped.content as unknown[]).length === 0) {
+              (mapped.content as unknown[]).push({ type: "text", text: "" });
+            }
+            return mapped as { content: { type: string; text?: string }[]; structuredContent?: unknown; isError?: boolean };
+          }) as never,
+        );
+      }
+    } else if (bridge && !bridge.healthy) {
+      // Degraded but visible: expose a diagnostic doctor tool? bridge error surfaced via doctor only.
+    }
+  }
+
   return server;
 }
 
@@ -1328,6 +1455,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   const transports = new Map<string, Transport>();
   const lastActiveAt = new Map<string, number>();
   const inFlight = new Set<string>();
+  const sessionEffectiveDisabled = new Map<string, Set<string>>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthStore = createOAuthStateStore(config.stateDir);
@@ -1485,13 +1613,32 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
           return;
         }
         lastActiveAt.set(sessionId, Date.now());
+        // Refresh stored effective set from current header/query - tools remain fixed until new session, but map stays current for diagnostics.
+        try {
+          const cur = parseEffectiveDisabledFromRequest(req, config);
+          const bm = (req.body as unknown as { params?: { _meta?: { disabledCapabilities?: unknown } } })?.params?._meta?.disabledCapabilities as unknown;
+          if (Array.isArray(bm)) for (const v of bm as string[]) if (typeof v === "string" && v.trim()) cur.add(v.trim().toLowerCase());
+          else if (typeof bm === "string" && (bm as string).trim()) for (const v of (bm as string).split(",")) if (v.trim()) cur.add(v.trim().toLowerCase());
+          sessionEffectiveDisabled.set(sessionId, cur);
+        } catch {}
       } else if (initializeRequest) {
+        const pendingEffectiveDisabled = parseEffectiveDisabledFromRequest(req, config);
+        // Merge body _meta disabledCapabilities if present in initialize
+        try {
+          const bodyMeta = (req.body as { params?: { _meta?: { disabledCapabilities?: unknown } } })?.params?._meta?.disabledCapabilities;
+          if (Array.isArray(bodyMeta)) {
+            for (const v of bodyMeta) if (typeof v === "string" && v.trim()) pendingEffectiveDisabled.add(v.trim().toLowerCase());
+          } else if (typeof bodyMeta === "string" && bodyMeta.trim()) {
+            for (const v of bodyMeta.split(",")) if (v.trim()) pendingEffectiveDisabled.add(v.trim().toLowerCase());
+          }
+        } catch {}
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             if (transport) {
               transports.set(newSessionId, transport);
               lastActiveAt.set(newSessionId, Date.now());
+              sessionEffectiveDisabled.set(newSessionId, new Set(pendingEffectiveDisabled));
             }
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
@@ -1507,13 +1654,15 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
           if (closedSessionId) {
             transports.delete(closedSessionId);
             lastActiveAt.delete(closedSessionId);
+            sessionEffectiveDisabled.delete(closedSessionId);
             logEvent(config.logging, "info", "mcp_session_closed", {
               sessionIdPrefix: sessionIdPrefix(closedSessionId),
             });
           }
         };
 
-        const server = createMcpServer(config, executor, options.gatewayRouter);
+        const effectiveDisabled = pendingEffectiveDisabled;
+        const server = await createMcpServer(config, executor, options.gatewayRouter, effectiveDisabled);
         await server.connect(transport);
       } else {
         logEvent(config.logging, "warn", "mcp_routing_error", {
@@ -1572,6 +1721,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
       const transport = transports.get(sessionId);
       if (!transport) {
         lastActiveAt.delete(sessionId);
+        sessionEffectiveDisabled.delete(sessionId);
         continue;
       }
       evicted += 1;
@@ -1606,6 +1756,10 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
       for (const transport of transports.values()) void transport.close();
       transports.clear();
       lastActiveAt.clear();
+      sessionEffectiveDisabled.clear();
+      // close sky bridges if created
+      for (const p of skyBridgeCache.values()) void p.then((b) => b?.close()).catch(() => undefined);
+      skyBridgeCache.clear();
     },
   };
 }
@@ -1627,6 +1781,16 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
   });
   publicConfig.minimalTools = false;
   publicConfig.widgets = process.env.DEVSPACE_WIDGETS === undefined ? "workspace" : publicConfig.widgets;
+  // Merge local machine disabledCapabilities (if any) into gateway public config.
+  // Remote nodes default to sky-cua disabled but gateway's sky-cua lives on the local host,
+  // so only the local machine's toggle matters for exposure.
+  const localDisabled = localMachine?.disabledCapabilities;
+  if (localDisabled && localDisabled.length > 0) {
+    const eff = publicConfig.disabledCapabilities ?? new Set<string>();
+    for (const cap of localDisabled) eff.add(cap.toLowerCase());
+    publicConfig.disabledCapabilities = eff;
+  }
+  if (!publicConfig.disabledCapabilities) publicConfig.disabledCapabilities = new Set<string>();
   const bindings = createGatewayWorkspaceStore(roleConfig.stateDir);
   const targets = new Map<string, ExecutionTarget>();
   const localExecutors: LocalExecutor[] = [];
