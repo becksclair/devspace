@@ -18,6 +18,12 @@ export type AnnotationProfile = "standard" | "trusted-owner";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 
+export interface SkyCuaConfig {
+  projectRoot: string;
+  binPath: string;
+  serviceSocketPath?: string;
+}
+
 export interface ServerConfig {
   host: string;
   port: number;
@@ -42,6 +48,8 @@ export interface ServerConfig {
   terminals: TerminalConfig;
   maintenance: MaintenanceConfig;
   sessions: SessionConfig;
+  disabledCapabilities?: Set<string>;
+  skyCua?: SkyCuaConfig;
 }
 
 export interface ShellConfig {
@@ -252,6 +260,24 @@ function parseWidgetMode(value: string | undefined): WidgetMode {
   throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
 }
 
+export function parseDisabledCapabilities(value: string | undefined): Set<string> {
+  const raw = value?.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean) ?? [];
+  return new Set(raw);
+}
+
+export function isCapabilityDisabled(disabled: Set<string>, capability: string): boolean {
+  return disabled.has(capability.toLowerCase());
+}
+
+export function parseSkyCuaConfig(env: NodeJS.ProcessEnv): SkyCuaConfig {
+  const projectRoot = resolve(expandHomePath(env.DEVSPACE_SKY_CUA_PROJECT_ROOT?.trim() || "~/projects/sky-cua"));
+  const binPath = env.DEVSPACE_SKY_CUA_BIN?.trim()
+    ? resolve(expandHomePath(env.DEVSPACE_SKY_CUA_BIN.trim()))
+    : join(projectRoot, "bin/sky-cua-client");
+  const serviceSocketPath = env.SKY_CUA_SERVICE_SOCKET_PATH?.trim() || undefined;
+  return { projectRoot, binPath, serviceSocketPath };
+}
+
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
@@ -319,6 +345,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 
   const rootPolicies = parseRootPolicies(files.config, env);
   const stateDir = resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir()));
+  const disabledCapabilities = parseDisabledCapabilities(env.DISABLED_CAPABILITIES);
+  const skyCua = parseSkyCuaConfig(env);
+  const baseSkillPaths = parsePathList(env.DEVSPACE_SKILL_PATHS);
+  // Always wire sky-cua skills; per-session filtering via effectiveDisabled (global + X-Disabled-Capabilities header) decides visibility.
+  const skillPaths = [...baseSkillPaths, join(skyCua.projectRoot, "skills")];
   return {
     host,
     port,
@@ -334,7 +365,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     stateDir,
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
-    skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
+    skillPaths,
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     globalInstructionsFile: resolve(expandHomePath(
       env.DEVSPACE_GLOBAL_INSTRUCTIONS_FILE ?? files.config.globalInstructionsFile ?? defaultGlobalInstructionsFile(),
@@ -366,6 +397,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       idleTtlSeconds: parsePositiveInteger(env.DEVSPACE_SESSION_IDLE_TTL_SECONDS ?? stringValue(files.config.sessions?.idleTtlSeconds), 30 * 60, "DEVSPACE_SESSION_IDLE_TTL_SECONDS"),
       sweepIntervalSeconds: parsePositiveInteger(env.DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS ?? stringValue(files.config.sessions?.sweepIntervalSeconds), 60, "DEVSPACE_SESSION_SWEEP_INTERVAL_SECONDS"),
     },
+    disabledCapabilities,
+    skyCua,
   };
 }
 

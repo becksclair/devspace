@@ -149,6 +149,11 @@ The trusted-owner profile is an operator UX choice for MCP hosts that apply extr
 | `DEVSPACE_SKILLS` | Set to `0` to hide skills. Enabled by default. |
 | `DEVSPACE_AGENT_DIR` | Skill/resource agent directory, defaulting to `~/.codex`. It is not used as DevSpace global instruction context. |
 | `DEVSPACE_SKILL_PATHS` | Optional comma-separated skill directories. |
+| `DISABLED_CAPABILITIES` | Comma-separated list of capabilities to hide for this instance or per-MCP-session. Hermes on Saga sets `DISABLED_CAPABILITIES=sky-cua` so ChatGPT sees phone/desktop/browser tools but Hermes does not. Future values use same list: `DISABLED_CAPABILITIES=sky-cua,other-cap`. Per-session: client may send `X-Disabled-Capabilities: sky-cua` header or `?disabled_capabilities=sky-cua` query or `params._meta.disabledCapabilities` at `initialize`; evaluated at session creation — ChatGPT “refresh tools” re-initializes (new MCP session) without reauth and picks up the new set; plain `tools/list` on the same session does not change until next session. |
+| `DEVSPACE_SKY_CUA_PROJECT_ROOT` | Local checkout of sky-cua, default `~/projects/sky-cua`. Used to resolve `bin/sky-cua-client` and `skills/` for the live bridge. |
+| `DEVSPACE_SKY_CUA_BIN` | Override sky-cua MCP binary path, default `<projectRoot>/bin/sky-cua-client`. |
+| `SKY_CUA_SERVICE_SOCKET_PATH` | Passthrough to sky-cua service (default `XDG_RUNTIME_DIR/sky-cua/service.sock`). Also `SKY_CUA_PHONE_*`, `SKY_CUA_BROWSER` etc. are forwarded unchanged. |
+| `SKY_CUA_PHONE_ALIASES` | Alias map for phone devices (`phone` default + `tablet`). Preferred: `~/.config/sky-cua/sky-cua.toml` `[phone.aliases]` as committed. |
 
 Example:
 
@@ -257,6 +262,10 @@ The node environment must define `DEVSPACE_NODE_TOKEN`. Configuration loading
 fails on a missing node-token variable, non-HTTPS remote URLs, alias/ID collisions,
 multiple or missing canonical machines, non-loopback node binding, and
 overlapping gateway/executor state or worktree roots.
+
+Remote machines hide `sky-cua` by default (`disabled_capabilities: ["sky-cua"]` or `disabledCapabilities: ["sky-cua"]`) so the phone/desktop/browser bridge stays local. To expose it for Asgard testing, set `disabled_capabilities: []` (or `disabledCapabilities: []`) on that node's config. Local machines default to enabled. `DISABLED_CAPABILITIES` on the server still applies per-session via header/query without reauth.
+
+Phone aliases are `[phone.aliases]` in `~/.config/sky-cua/sky-cua.toml` (already `phone` default + `tablet` secondary on this host). DevSpace's bridge reads tools live from `bin/sky-cua-client mcp` at startup, so definitions/descriptions stay in sync without edits.
 
 
 ## Checkout session reuse

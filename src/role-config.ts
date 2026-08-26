@@ -28,6 +28,7 @@ export interface MachineConfig {
   worktreeRoot?: string;
   url?: string;
   nodeTokenEnv?: string;
+  disabledCapabilities?: string[];
 }
 
 export interface GatewayRoleConfig {
@@ -51,6 +52,7 @@ export interface NodeRoleConfig {
   nodeTokenEnv: string;
   shell?: { path?: string; mode?: "service" | "login"; environment?: Record<string, string> };
   terminals?: RoleTerminalConfig;
+  disabledCapabilities?: string[];
 }
 
 export type RoleConfig = GatewayRoleConfig | NodeRoleConfig;
@@ -86,6 +88,7 @@ export function loadRoleConfig(filePath: string, env: NodeJS.ProcessEnv = proces
       shell: parseShell(raw.shell, "shell"),
       terminals: parseTerminals(raw.terminals, "terminals"),
       worktreeRoot, nodeTokenEnv,
+      disabledCapabilities: parseDisabledCapabilitiesList(raw.disabledCapabilities ?? raw.disabled_capabilities, "node.disabledCapabilities"),
     };
   }
   if (role !== "gateway") throw new Error(`Unknown role: ${role}`);
@@ -120,6 +123,12 @@ function parseMachine(raw: Record<string, unknown>, index: number): MachineConfi
   if (kind !== "local" && kind !== "remote") throw new Error(`invalid machine kind: ${kind}`);
   const machine: MachineConfig = { id: norm(nonEmpty(raw.id, `machines[${index}].id`)), displayName: nonEmpty(raw.displayName, `machines[${index}].displayName`), canonical: raw.canonical === true, kind };
   machine.aliases = Array.isArray(raw.aliases) ? raw.aliases.map((x) => norm(nonEmpty(x, "alias"))) : [];
+  const explicitDisabled = parseDisabledCapabilitiesList(raw.disabledCapabilities ?? raw.disabled_capabilities, `machines[${index}].disabledCapabilities`);
+  if (explicitDisabled !== undefined) {
+    machine.disabledCapabilities = explicitDisabled;
+  } else if (kind === "remote") {
+    machine.disabledCapabilities = ["sky-cua"];
+  }
    if (kind === "local") {
     Object.assign(machine, parseRootConfig(raw, `machines[${index}]`));
     machine.shell = parseShell(raw.shell, `machines[${index}].shell`);
@@ -216,6 +225,14 @@ function optionalPaths(value: unknown, name: string): string[] {
   return value.map((entry) => pathValue(entry, name));
 }
 function paths(value: unknown, name: string): string[] { if (!Array.isArray(value) || value.length === 0) throw new Error(`${name} must be a non-empty array`); return value.map((x) => pathValue(x, name)); }
+function parseDisabledCapabilitiesList(value: unknown, name: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  return value.map((entry) => {
+    if (typeof entry !== "string" || !entry.trim()) throw new Error(`${name} entries must be non-empty strings`);
+    return entry.trim().toLowerCase();
+  });
+}
 function parsePort(value: unknown, name: string): number { const n = Number(value ?? 7676); if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error(`Invalid ${name}`); return n; }
 function normalizeUrl(value: unknown): string { const u = new URL(nonEmpty(value, "publicBaseUrl")); if (!["http:", "https:"].includes(u.protocol)) throw new Error("URL must use http or https"); u.hash = ""; u.search = ""; u.pathname = u.pathname.replace(/\/+$/, ""); return u.toString().replace(/\/$/, ""); }
 

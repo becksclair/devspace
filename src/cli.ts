@@ -7,7 +7,7 @@ import { delimiter, join, resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
-import { loadConfig, type ServerConfig } from "./config.js";
+import { loadConfig, parseDisabledCapabilities, parseSkyCuaConfig, type ServerConfig } from "./config.js";
 import {
   generateOwnerToken,
   loadDevspaceFiles,
@@ -24,7 +24,7 @@ import { StaticKeyStore, mintApiKey, DEFAULT_KEY_TTL_SECONDS } from "./static-ke
 
 type Command = "serve" | "init" | "doctor" | "config" | "gateway" | "node" | "auth" | "help";
 const require = createRequire(import.meta.url);
-const SUPPORTED_NODE_RANGE = ">=20.12 <27";
+const SUPPORTED_NODE_RANGE = ">=24 <27";
 
 async function main(argv: string[]): Promise<void> {
   assertSupportedNode();
@@ -136,7 +136,7 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
     stateDir: config.stateDir,
     worktreeRoot: config.worktreeRoot,
     skillsEnabled: true,
-    skillPaths: [],
+    skillPaths: [join(parseSkyCuaConfig(process.env).projectRoot, "skills")],
     agentDir: resolve(expandHomePath(process.env.DEVSPACE_AGENT_DIR ?? "~/.codex")),
     globalInstructionsFile: resolve(expandHomePath(process.env.DEVSPACE_GLOBAL_INSTRUCTIONS_FILE ?? "~/.devspace/AGENTS.md")),
     shell: {
@@ -166,6 +166,12 @@ function nodeExecutorConfig(config: import("./role-config.js").NodeRoleConfig): 
       idleTtlSeconds: 30 * 60,
       sweepIntervalSeconds: 60,
     },
+    disabledCapabilities: (() => {
+      if (config.disabledCapabilities !== undefined) return new Set(config.disabledCapabilities.map((c) => c.toLowerCase()));
+      if (process.env.DISABLED_CAPABILITIES !== undefined) return parseDisabledCapabilities(process.env.DISABLED_CAPABILITIES);
+      return new Set<string>(["sky-cua"]);
+    })(),
+    skyCua: parseSkyCuaConfig(process.env),
     logging: {
       level: "info",
       format: "json",
@@ -348,6 +354,11 @@ async function runDoctor(): Promise<void> {
     console.log(`Filtered child secret names: ${config.secretNames.join(", ")}`);
     console.log(`Terminals: ${config.terminals.backend} runtime=${config.terminals.runtimeDir} max=${config.terminals.maxPerWorkspace}/${config.terminals.maxTotal} idle=${config.terminals.idleTtlSeconds}s user-systemd=${config.terminals.useUserSystemd}`);
     console.log(`Maintenance: every ${config.maintenance.intervalSeconds}s closed=${config.maintenance.closedSessionTtlSeconds}s checkout=${config.maintenance.checkoutIdleTtlSeconds}s isolated=${config.maintenance.isolatedIdleTtlSeconds}s`);
+    const effDisabled = config.disabledCapabilities ?? new Set<string>();
+    const skyCua = config.skyCua ?? { projectRoot: resolve(expandHomePath("~/projects/sky-cua")), binPath: resolve(expandHomePath("~/projects/sky-cua/bin/sky-cua-client")) };
+    const skillsWired = config.skillPaths.includes(join(skyCua.projectRoot, "skills"));
+    console.log(`Disabled capabilities: ${effDisabled.size > 0 ? [...effDisabled].join(",") : "(none)"}`);
+    console.log(`sky-cua: ${effDisabled.has("sky-cua") ? "disabled (global - per-session filter hides tools+skills)" : "enabled"} (projectRoot=${skyCua.projectRoot} bin=${skyCua.binPath} ${existsSync(skyCua.binPath) ? "bin present" : "bin missing"}; serviceSocket=${skyCua.serviceSocketPath ?? "(default)"} skills=${skillsWired ? (effDisabled.has("sky-cua") ? "wired but global disabled - per-session hidden" : "wired (per-session filter)") : "not wired"})`);
 
     const runtime = createShellRuntime(config.shell, config.secretNames);
     console.log(`Executor PATH: ${(runtime.environment.PATH ?? "").split(delimiter).filter(Boolean).join(delimiter)}`);
@@ -753,7 +764,7 @@ function assertSupportedNode(): void {
       `DevSpace requires Node ${SUPPORTED_NODE_RANGE}.`,
       `Current Node: ${process.version}`,
       "",
-      "Install Node 22 LTS or use a version manager such as nvm, fnm, or mise.",
+        "Install Node 24 LTS or use a version manager such as nvm, fnm, or mise.",
     ].join("\n"),
   );
 }
