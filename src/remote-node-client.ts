@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { TargetUnavailableError, type ExecutionTarget, type ExecutorResult } from "./gateway-router.js";
 import { getBuildMetadata, PROTOCOL_MAJOR } from "./build-metadata.js";
 import { TOOL_CONTRACT_HASH, type ToolName } from "./tool-contract.js";
+import { isTailnetUrl } from "./tailnet.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -47,7 +48,10 @@ class RemoteNodeExecutionError extends Error {
 export class RemoteNodeClient implements ExecutionTarget {
   constructor(private readonly config: RemoteNodeClientConfig) {
     const url = new URL(config.url);
-    if (url.protocol !== "https:") throw new Error("Remote node URL must use HTTPS");
+    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Remote node URL must use HTTPS or HTTP");
+    if (url.protocol === "http:" && !isTailnetUrl(url)) {
+      throw new Error("Remote node HTTP is only allowed for Tailnet targets (100.64.0.0/10, fd7a:115c:a1e0::/48, or *.ts.net)");
+    }
   }
 
   async hello(signal: AbortSignal): Promise<NodeHello> {

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { timingSafeEqual } from "node:crypto";
 import { expandHomePath } from "./roots.js";
 import type { RootPolicy } from "./roots.js";
+import { isTailnetHost, isTailnetUrl } from "./tailnet.js";
 
 export interface RoleTerminalConfig {
   backend?: "tmux";
@@ -40,7 +41,7 @@ export interface GatewayRoleConfig {
 
 export interface NodeRoleConfig {
   role: "node";
-  host: "127.0.0.1";
+  host: string;
   port: number;
   machineId: string;
   allowedRoots?: string[];
@@ -68,8 +69,10 @@ export function loadRoleConfig(filePath: string, env: NodeJS.ProcessEnv = proces
     ? Array.isArray(raw.machines) ? "gateway" : raw.machineId !== undefined ? "node" : ""
     : nonEmpty(raw.role, "role");
   if (role === "node") {
-    const host = raw.host ?? "127.0.0.1";
-    if (host !== "127.0.0.1") throw new Error("node host must be 127.0.0.1");
+    const hostRaw = raw.host ?? "127.0.0.1";
+    if (typeof hostRaw !== "string" || !hostRaw.trim()) throw new Error("node host must be a non-empty string");
+    const host = hostRaw.trim();
+    if (host !== "127.0.0.1" && !isTailnetHost(host)) throw new Error("node host must be 127.0.0.1 or a Tailnet IP/hostname (*.ts.net, 100.64.0.0/10, fd7a:115c:a1e0::/48)");
     const nodeTokenEnv = nonEmpty(raw.nodeTokenEnv, "nodeTokenEnv");
     envSecret(nodeTokenEnv, env);
     const stateDir = pathValue(raw.stateDir, "stateDir");
@@ -125,7 +128,13 @@ function parseMachine(raw: Record<string, unknown>, index: number): MachineConfi
     machine.worktreeRoot = pathValue(raw.worktreeRoot, "worktreeRoot");
   }
   else {
-    const url = normalizeUrl(raw.url); if (!url.startsWith("https://")) throw new Error(`remote machine ${machine.id} url must use https`); machine.url = url;
+    const url = normalizeUrl(raw.url);
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error(`remote machine ${machine.id} url must use https or http`);
+    if (parsed.protocol === "http:" && !isTailnetUrl(parsed)) {
+      throw new Error(`remote machine ${machine.id} http is only allowed for Tailnet targets (*.ts.net, 100.64.0.0/10, fd7a:115c:a1e0::/48)`);
+    }
+    machine.url = url;
     machine.nodeTokenEnv = nonEmpty(raw.nodeTokenEnv, "nodeTokenEnv");
   }
   return machine;
