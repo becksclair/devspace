@@ -3,7 +3,16 @@ import { RemoteNodeClient, remoteToolTimeoutMs } from "./remote-node-client.js";
 import { PROTOCOL_MAJOR, getBuildMetadata } from "./build-metadata.js";
 import { TOOL_CONTRACT_HASH } from "./tool-contract.js";
 
-assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://localhost", nodeToken: "t" }), /HTTPS/);
+assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://localhost", nodeToken: "t" }), /Tailnet/);
+assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://example.com", nodeToken: "t" }), /Tailnet/);
+assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://100.5.0.1:7679", nodeToken: "t" }), /Tailnet/);
+assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://100.200.0.1:7679", nodeToken: "t" }), /Tailnet/);
+assert.doesNotThrow(() => new RemoteNodeClient({ machineId: "m", url: "http://100.64.0.5:7679", nodeToken: "t" }));
+assert.doesNotThrow(() => new RemoteNodeClient({ machineId: "m", url: "http://100.127.255.255:7679", nodeToken: "t" }));
+assert.doesNotThrow(() => new RemoteNodeClient({ machineId: "m", url: "http://100.120.202.119:7679", nodeToken: "t" }));
+assert.doesNotThrow(() => new RemoteNodeClient({ machineId: "m", url: "http://asgard.stegosaurus-aeolian.ts.net", nodeToken: "t" }));
+assert.doesNotThrow(() => new RemoteNodeClient({ machineId: "m", url: "http://[fd7a:115c:a1e0::1]:7679", nodeToken: "t" }));
+assert.throws(() => new RemoteNodeClient({ machineId: "m", url: "http://[fd7a::1]:7679", nodeToken: "t" }), /Tailnet/);
 assert.equal(remoteToolTimeoutMs("read_file", {}), 30_000);
 assert.equal(remoteToolTimeoutMs("terminal_read", {}), 30_000);
 assert.equal(remoteToolTimeoutMs("run_shell", { timeout: 90 }), 100_000);
