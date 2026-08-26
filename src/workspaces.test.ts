@@ -178,6 +178,7 @@ try {
   assert.equal(isolatedWorktree.workspace.worktree?.sourceCanonicalRoot, gitRoot);
 
   const readOnlyConfig = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(tmpdir(), `devspace-readonly-config-${process.pid}`),
     DEVSPACE_ROOTS: JSON.stringify([{ path: root, access: "read-only" }]),
     DEVSPACE_WORKTREE_ROOT: join(tmpdir(), `devspace-readonly-isolated-${process.pid}`),
     DEVSPACE_AGENT_DIR: agentDir,
@@ -277,6 +278,7 @@ try {
     assert.equal(aliasWorkspace.workspace.sourceRoot, join(aliasRoot, "git-project"));
 
     const policyAliasConfig = loadConfig({
+      DEVSPACE_CONFIG_DIR: join(root, "policy-alias-config"),
       DEVSPACE_ROOTS: JSON.stringify([{ path: root, aliases: [aliasRoot], access: "read-write" }]),
       DEVSPACE_WORKTREE_ROOT: join(root, ".devspace", "policy-alias-worktrees"),
       DEVSPACE_AGENT_DIR: agentDir,

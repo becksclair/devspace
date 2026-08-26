@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, opendir, realpath, rm, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { MaintenanceConfig, ServerConfig } from "./config.js";
@@ -568,6 +569,9 @@ export class WorkspaceRegistry {
     const discovered: AvailableAgentsFile[] = [];
     const agentDir = resolve(this.config.agentDir);
     const skipAgentDir = !isPathInsideRoot(workspace.root, agentDir);
+    const isHomedirRoot = isHomedirWorkspaceRoot(workspace.root);
+    const maxDepth = isHomedirRoot ? HOMEDIR_MAX_DEPTH : undefined;
+    const extraSkips = isHomedirRoot ? HOMEDIR_HEAVY_SKIPPED_DIRS : ALWAYS_HEAVY_SKIPPED_DIRS;
 
     await walkWorkspace(
       workspace.root,
@@ -581,6 +585,7 @@ export class WorkspaceRegistry {
         }
       },
       (path) => skipAgentDir && isPathInsideRoot(path, agentDir),
+      { maxDepth, extraSkippedDirs: extraSkips },
     );
 
     return discovered.sort((a, b) => a.path.localeCompare(b.path));
@@ -722,7 +727,39 @@ function loadProjectContextFile(directory: string, canonicalRoot: string): Loade
   return undefined;
 }
 
-const SKIPPED_CONTEXT_DIRS = new Set([".git", ".hg", ".svn", ".devspace", "node_modules", "dist", "build", ".next", ".turbo", ".cache"]);
+export const SKIPPED_CONTEXT_DIRS = new Set([".git", ".hg", ".svn", ".devspace", "node_modules", "dist", "build", ".next", ".turbo", ".cache"]);
+
+// Heavy vendor/build trees that essentially never contain AGENTS.md.
+// Split: some are always-skipped (safe anywhere), some only when workspace root is $HOME
+// so that opening ~/projects/brave directly still sees its own top-level files but
+// opening ~ doesn't pay for walking 2M files under src/out/vendor.
+export const ALWAYS_HEAVY_SKIPPED_DIRS = new Set([
+  "out",
+  "target",
+  "vendor",
+  "third_party",
+  "chromium_src",
+  ".repo",
+  "__pycache__",
+  ".venv",
+  "venv",
+]);
+export const HOMEDIR_HEAVY_SKIPPED_DIRS = new Set([
+  ...ALWAYS_HEAVY_SKIPPED_DIRS,
+  "src",
+  ".gradle",
+  ".cargo",
+  ".rustup",
+]);
+export const HOMEDIR_MAX_DEPTH = 4;
+
+export function isHomedirWorkspaceRoot(root: string): boolean {
+  try {
+    return resolve(root) === resolve(homedir());
+  } catch {
+    return false;
+  }
+}
 
 export function formatAgentsPath(path: string, workspaceRoot: string | undefined): string {
   if (!workspaceRoot) return path.split(sep).join("/");
@@ -733,10 +770,12 @@ export function formatAgentsPath(path: string, workspaceRoot: string | undefined
   return relationship.split(sep).join("/");
 }
 
-async function walkWorkspace(
+export async function walkWorkspace(
   directory: string,
   visit: (path: string, entry: { name: string; isFile(): boolean; isDirectory(): boolean }) => Promise<void> | void,
   skipDirectory?: (path: string) => boolean,
+  options?: { maxDepth?: number; extraSkippedDirs?: Set<string> },
+  depth: number = 0,
 ): Promise<void> {
   let entries;
   try {
@@ -748,9 +787,13 @@ async function walkWorkspace(
   for await (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIPPED_CONTEXT_DIRS.has(entry.name) && !skipDirectory?.(path)) {
-        await walkWorkspace(path, visit, skipDirectory);
+      if (SKIPPED_CONTEXT_DIRS.has(entry.name) || options?.extraSkippedDirs?.has(entry.name) || skipDirectory?.(path)) {
+        continue;
       }
+      if (options?.maxDepth !== undefined && depth >= options.maxDepth) {
+        continue;
+      }
+      await walkWorkspace(path, visit, skipDirectory, options, depth + 1);
       continue;
     }
     await visit(path, entry);
