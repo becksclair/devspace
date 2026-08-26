@@ -173,6 +173,19 @@ export async function createSkyBridge(config: SkyCuaConfig): Promise<SkyBridge> 
     if (k === "DEVSPACE_OAUTH_OWNER_TOKEN" || k === "GH_TOKEN" || k === "GITHUB_TOKEN" || k.endsWith("_NODE_TOKEN")) continue;
     env[k] = v;
   }
+  // System services (devspace.service User=ubuntu) don't inherit XDG_RUNTIME_DIR, so sky-cua falls back to /run/saga-brave-origin and times out 24s.
+  // Ensure a sane default so initialize is <1s even when the parent has no XDG_RUNTIME_DIR.
+  if (!env.XDG_RUNTIME_DIR) {
+    try {
+      const uid = typeof (process as unknown as { getuid?: () => number }).getuid === "function" ? (process as unknown as { getuid: () => number }).getuid() : 1000;
+      env.XDG_RUNTIME_DIR = `/run/user/${uid}`;
+    } catch {
+      env.XDG_RUNTIME_DIR = "/run/user/1000";
+    }
+  }
+  if (!env.SKY_CUA_SERVICE_SOCKET_PATH) {
+    env.SKY_CUA_SERVICE_SOCKET_PATH = `${env.XDG_RUNTIME_DIR}/sky-cua/service.sock`;
+  }
 
   const transport = new StdioClientTransport({
     command: binPath,
