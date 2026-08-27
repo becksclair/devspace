@@ -193,13 +193,101 @@ try {
     }
     return jsonResponse(successEnvelope());
   }) as typeof fetch;
-  const identityClient = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t", maxBodyBytes: 1000 });
+  const identityClient = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t", maxBodyBytes: 1000, helloCacheTtlMs: 0 });
   await identityClient.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "first", signal: new AbortController().signal });
   await assert.rejects(
     identityClient.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "second", signal: new AbortController().signal }),
     /identity is incompatible/,
   );
   assert.equal(identityCalls, 3, "second operation stops after hello mismatch and makes no wrong-host call");
+
+  // Cache gateway hello to remove extra RTT: second execute reuses cached hello
+  {
+    let helloCount = 0;
+    let callCount = 0;
+    globalThis.fetch = (async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/hello")) {
+        helloCount += 1;
+        return jsonResponse(resumableHello());
+      }
+      callCount += 1;
+      return jsonResponse(successEnvelope());
+    }) as typeof fetch;
+    const cacheClient = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t" });
+    await cacheClient.execute("read_file", { workspaceId: "ws1", path: "a.txt" }, { requestId: "r1", signal: AbortSignal.timeout(1000) });
+    await cacheClient.execute("read_file", { workspaceId: "ws1", path: "a.txt" }, { requestId: "r2", signal: AbortSignal.timeout(1000) });
+    assert.equal(helloCount, 1, "second call used cached hello");
+    assert.equal(callCount, 2, "both calls still executed");
+  }
+
+  // Bust on protocol_mismatch: cached hello cleared and retried with fresh hello
+  {
+    let helloCount = 0;
+    let callCount = 0;
+    globalThis.fetch = (async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/hello")) {
+        helloCount += 1;
+        return jsonResponse(resumableHello());
+      }
+      callCount += 1;
+      if (callCount === 1) {
+        return jsonResponse({ ok: false, error: { code: "protocol_mismatch", message: "mismatch" } }, 200);
+      }
+      return jsonResponse(successEnvelope());
+    }) as typeof fetch;
+    const bustClient = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t" });
+    const bustResult = await bustClient.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "bust-1", signal: AbortSignal.timeout(1000) });
+    assert.equal(textResult(bustResult), "ok");
+    assert.equal(helloCount, 2, "bust triggers second hello");
+    assert.equal(callCount, 2, "call retried after bust");
+  }
+
+  // TTL expiry: after short TTL a new hello is issued
+  {
+    let helloCount = 0;
+    globalThis.fetch = (async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/hello")) {
+        helloCount += 1;
+        return jsonResponse(resumableHello());
+      }
+      return jsonResponse(successEnvelope());
+    }) as typeof fetch;
+    const ttlClient = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t", helloCacheTtlMs: 10 });
+    await ttlClient.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "ttl-1", signal: AbortSignal.timeout(1000) });
+    assert.equal(helloCount, 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await ttlClient.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "ttl-2", signal: AbortSignal.timeout(1000) });
+    assert.equal(helloCount, 2, "TTL expiry triggers new hello");
+  }
+
+  // Resumable path bust uses fresh nodeInstanceId from new hello
+  {
+    let helloCount = 0;
+    let lastNodeInstanceId: string | undefined;
+    const secondInstanceId = "22222222-2222-4222-8222-222222222222";
+    globalThis.fetch = (async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/hello")) {
+        helloCount += 1;
+        if (helloCount === 1) return jsonResponse(resumableHello());
+        return jsonResponse({ ...resumableHello(), nodeInstanceId: secondInstanceId });
+      }
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      lastNodeInstanceId = String(body.nodeInstanceId ?? "");
+      if (helloCount === 1) {
+        return jsonResponse({ ok: false, error: { code: "protocol_mismatch", message: "mismatch" } }, 200);
+      }
+      return jsonResponse(successEnvelope());
+    }) as typeof fetch;
+    const resumableBustClient = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t" });
+    const resumableBustResult = await resumableBustClient.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "resumable-bust", signal: AbortSignal.timeout(1000) });
+    assert.equal(textResult(resumableBustResult), "ok");
+    assert.equal(helloCount, 2);
+    assert.equal(lastNodeInstanceId, secondInstanceId, "resumable bust uses fresh nodeInstanceId from new hello");
+  }
 
   let deadlineCancelCalls = 0;
   let deadlineCancelBody: Record<string, unknown> | undefined;
