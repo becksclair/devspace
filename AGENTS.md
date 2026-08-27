@@ -25,9 +25,8 @@ workspace.
 
 Core constraints:
 
-- Treat this as remote access to the local machine; security is part of the
-  core design, not a later add-on.
-- Start with a narrow filesystem allowlist.
-- Prefer explicit, inspectable tool calls over autonomous local agent loops.
-- Keep the first version small enough to validate with real ChatGPT/Claude MCP
-  clients before adding UI or workflow features.
+- Treat this as remote access to the local machine; security is part of the core design, not a later add-on.
+- Start with a narrow filesystem allowlist; enforce it on every file and shell operation, including any batched or co-located execution.
+- Do not delegate work to Pi or any other local agent unless the user explicitly asks; the MCP host remains the orchestrator.
+- Optimize for round-trip efficiency over Streamable HTTP + Cloudflare Tunnel: prefer composite/batch and co-located execution (e.g., batched reads, grep+read, multi-edit) over N× sequential read/grep/edit calls.
+- Keep every file and action inspectable and auditable even when executed as a batch, and keep the surface small enough to validate with real ChatGPT/Claude MCP clients before adding UI or workflow features.
