@@ -15,6 +15,8 @@ export interface RemoteNodeClientConfig {
   nodeToken: string;
   timeoutMs?: number;
   maxBodyBytes?: number;
+  /** testing only: override hello cache TTL */
+  helloCacheTtlMs?: number;
 }
 
 interface NodeHello {
@@ -46,12 +48,17 @@ class RemoteNodeExecutionError extends Error {
 }
 
 export class RemoteNodeClient implements ExecutionTarget {
+  private helloCache: { hello: NodeHello; expiresAt: number } | null = null;
+  private helloInflight: Promise<NodeHello> | null = null;
+  private readonly helloCacheTtlMs: number;
+
   constructor(private readonly config: RemoteNodeClientConfig) {
     const url = new URL(config.url);
     if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Remote node URL must use HTTPS or HTTP");
     if (url.protocol === "http:" && !isTailnetUrl(url)) {
       throw new Error("Remote node HTTP is only allowed for Tailnet targets (100.64.0.0/10, fd7a:115c:a1e0::/48, or *.ts.net)");
     }
+    this.helloCacheTtlMs = config.helloCacheTtlMs ?? 30_000;
   }
 
   async hello(signal: AbortSignal): Promise<NodeHello> {
@@ -79,47 +86,68 @@ export class RemoteNodeClient implements ExecutionTarget {
     return hello;
   }
 
+  private async cachedHello(signal: AbortSignal): Promise<NodeHello> {
+    const now = Date.now();
+    if (this.helloCache && now < this.helloCache.expiresAt) return this.helloCache.hello;
+    if (this.helloInflight) return this.helloInflight;
+    this.helloInflight = this.hello(signal).then((h) => {
+      this.helloCache = { hello: h, expiresAt: Date.now() + this.helloCacheTtlMs };
+      return h;
+    }).finally(() => { this.helloInflight = null; });
+    return this.helloInflight;
+  }
+
   async execute(
     tool: ToolName,
     args: Record<string, unknown>,
     options: { requestId: string; signal: AbortSignal },
   ): Promise<ExecutorResult> {
-    // Revalidate immediately before every operation. A process-lifetime cache
-    // could route a later call to the wrong machine after DNS/tunnel changes.
-    const hello = await this.hello(options.signal);
-    // MCP JSON-RPC IDs are scoped to a session and are commonly reused (for
-    // example, many fresh ChatGPT MCP sessions start again at id=1). Generate a
-    // gateway-side operation ID unique to this execute() invocation and keep it
-    // stable only across automatic transport reattachments for that call.
-    const remoteRequestId = randomUUID();
-    const nodeInstanceId = typeof hello.nodeInstanceId === "string" && hello.nodeInstanceId.length > 0
-      ? hello.nodeInstanceId
-      : undefined;
-    const resumable = hello.resumableCalls === true && nodeInstanceId !== undefined;
-    const body = JSON.stringify({
-      protocolMajor: PROTOCOL_MAJOR,
-      toolContractHash: TOOL_CONTRACT_HASH,
-      machineId: this.config.machineId,
-      requestId: remoteRequestId,
-      tool,
-      arguments: args,
-      ...(resumable ? { resumable: true, nodeInstanceId } : {}),
-    });
-    if (Buffer.byteLength(body) > this.maxBodyBytes()) throw new Error("Internal request is too large");
+    let bustAttempt = 0;
+    while (true) {
+      const hello = await this.cachedHello(options.signal);
+      // MCP JSON-RPC IDs are scoped to a session and are commonly reused (for
+      // example, many fresh ChatGPT MCP sessions start again at id=1). Generate a
+      // gateway-side operation ID unique to this execute() invocation and keep it
+      // stable only across automatic transport reattachments for that call.
+      const remoteRequestId = randomUUID();
+      const nodeInstanceId = typeof hello.nodeInstanceId === "string" && hello.nodeInstanceId.length > 0
+        ? hello.nodeInstanceId
+        : undefined;
+      const resumable = hello.resumableCalls === true && nodeInstanceId !== undefined;
+      const body = JSON.stringify({
+        protocolMajor: PROTOCOL_MAJOR,
+        toolContractHash: TOOL_CONTRACT_HASH,
+        machineId: this.config.machineId,
+        requestId: remoteRequestId,
+        tool,
+        arguments: args,
+        ...(resumable ? { resumable: true, nodeInstanceId } : {}),
+      });
+      if (Buffer.byteLength(body) > this.maxBodyBytes()) throw new Error("Internal request is too large");
 
-    if (!resumable) {
       try {
-        return await this.withTimeout(
-          options.signal,
-          (boundedSignal) => this.callOnce(body, boundedSignal),
-          remoteToolTimeoutMs(tool, args, this.config.timeoutMs),
-        );
+        if (!resumable) {
+          try {
+            return await this.withTimeout(
+              options.signal,
+              (boundedSignal) => this.callOnce(body, boundedSignal),
+              remoteToolTimeoutMs(tool, args, this.config.timeoutMs),
+            );
+          } catch (error) {
+            throw normalizeTargetError(error, options.signal, "Remote node call failed");
+          }
+        }
+
+        return await this.executeResumable(body, tool, args, remoteRequestId, nodeInstanceId!, options);
       } catch (error) {
-        throw normalizeTargetError(error, options.signal, "Remote node call failed");
+        if (bustAttempt === 0 && isHelloStaleError(error)) {
+          this.helloCache = null;
+          bustAttempt++;
+          continue;
+        }
+        throw error;
       }
     }
-
-    return this.executeResumable(body, tool, args, remoteRequestId, nodeInstanceId!, options);
   }
 
   private async executeResumable(
@@ -284,6 +312,16 @@ function normalizeTargetError(error: unknown, callerSignal: AbortSignal, message
   if (callerSignal.aborted) return callerSignal.reason ?? new Error("Remote node call cancelled");
   if (error instanceof TargetUnavailableError) return error;
   return new TargetUnavailableError(message, { cause: error });
+}
+
+function isHelloStaleError(error: unknown): boolean {
+  if (error instanceof TargetUnavailableError) {
+    return /identity|protocol_mismatch|hello/i.test(error.message);
+  }
+  if (error instanceof RemoteNodeExecutionError) {
+    return error.code === "protocol_mismatch" || error.code === "identity_mismatch";
+  }
+  return false;
 }
 
 function isTransientTransportStatus(status: number): boolean {
