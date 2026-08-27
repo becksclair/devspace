@@ -400,6 +400,7 @@ const PHONE_EPHEMERAL_AGENTS_CONTENT = [
   "- **Selector — never combine:** `phone_app_action`, `phone_notifications`, `phone_accessibility_tree`, `observe(phone)` etc expect **exactly one** of `session_id` / `device_id` / `alias` (e.g. `alias:phone`). Providing `alias` **and** `session_id` together is `InvalidRequest` (\"never combine them\"). After `phone_connection` gives you `direct-…-13`, call the next tool with **only** `session_id:direct-…-13` (or only `alias:phone` if you have no session yet), not both.",
   "- **Observe(phone) contract — don't mix surfaces:** `observe(surface:phone, session_id:direct-…)` (or `alias:phone`/`device_id`) allows **only** `surface` + one selector + `include_accessibility`/`include_notifications`/`backend`. Do **not** send `detail`/`element_*`/`target`/`tab_id`/`capture_timeout_ms`/`text_limit` — those belong to `surface:desktop`/`browser` and cause `InvalidRequest: do not mix fields from another surface` (e.g. `detail:full` is desktop-only). Correct: `{\"surface\":\"phone\",\"session_id\":\"direct-738…-13\",\"include_accessibility\":true}`. Gateway now strips stray desktop fields, but keep the call clean.",
   "- **App launch — wait for ready:** After `phone_app_action(launch)` returns `backend companion` with a `destination_appshot`, the app may still be `Connecting…` and the accessibility tree may not yet expose chat names/message previews (e.g., Telegram shows 2 unread in All Chats / 1 in Personal but no `Luke`). Don't guess or tap random conversations. Poll `observe(surface:phone, session_id, include_accessibility:true)` or `phone_accessibility_tree(session_id)` until `Connecting…` is gone and the expected text appears, then locate and open the target chat. Use the fresh `destination_appshot` / `phone_snapshot_id` from the observe for the subsequent tap.",
+  "- **Pointer — provenance & AppShotRequired:** `phone_pointer(operation:tap, session_id, x, y, phone_snapshot_id)` requires `phone_snapshot_id` from the *same* `observe` that produced the coordinates — **not** `appshot_id` (common copy-paste → `InvalidRequest: expects phone_snapshot_id`). First tap often returns `AppShotRequired` with `fresh_appshot.snapshot_id` — this is **not** a validator error, retry immediately with that fresh `phone_snapshot_id` (or re-observe). For bottom-up selection, loop: `observe` → long-press/swipe with fresh `phone_snapshot_id` → `observe` → scroll up → repeat. Use `use_device_coordinates:true` only for raw device pixels.",
   "- **Android Doze:** expect epoch churn every 30-90 min. Keep Companion foreground: `Settings → Apps → Sky Companion → Battery → Unrestricted`, `Pause if unused OFF`, keep Tailscale active. Then just `connect` again.",
 ].join("\n");
 function phoneEphemeralAgentsFile(): { path: string; content: string } {
@@ -466,6 +467,22 @@ function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, 
   if (toolName === "capture_screen" && out.surface === "phone") {
     const capsAllowed = new Set(["surface", "session_id", "device_id", "alias", "serial", "backend"]);
     for (const k of Object.keys(out)) if (!capsAllowed.has(k)) delete out[k];
+  }
+  // `phone_pointer` is strict: tap requires x/y + phone_snapshot_id OR use_device_coordinates, swipe requires start/end. ChatGPT sometimes copies observe fields (surface/backend/detail) or sends appshot_id instead of phone_snapshot_id. Strip non-allowed fields so the call reaches the device.
+  if (toolName === "phone_pointer") {
+    const op = out.operation;
+    const baseAllowed = new Set(["operation", "session_id", "device_id", "alias", "serial", "appshot_id", "phone_snapshot_id", "use_device_coordinates"]);
+    let allowed: Set<string>;
+    if (op === "tap") allowed = new Set([...baseAllowed, "x", "y"]);
+    else if (op === "swipe") allowed = new Set([...baseAllowed, "start_x", "start_y", "end_x", "end_y", "duration_ms"]);
+    else allowed = baseAllowed;
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+    // Common copy-paste: appshot_id sent where phone_snapshot_id required. If phone_snapshot_id missing, fall back to appshot_id (they are often the same UUID from observe).
+    const hasPhoneSnapshot = typeof out.phone_snapshot_id === "string" && (out.phone_snapshot_id as string).trim() !== "";
+    const hasAppshot = typeof out.appshot_id === "string" && (out.appshot_id as string).trim() !== "";
+    if (!hasPhoneSnapshot && hasAppshot) {
+      out.phone_snapshot_id = out.appshot_id;
+    }
   }
   return out;
 }
