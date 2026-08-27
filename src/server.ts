@@ -401,6 +401,7 @@ const PHONE_EPHEMERAL_AGENTS_CONTENT = [
   "- **Observe(phone) contract — don't mix surfaces:** `observe(surface:phone, session_id:direct-…)` (or `alias:phone`/`device_id`) allows **only** `surface` + one selector + `include_accessibility`/`include_notifications`/`backend`. Do **not** send `detail`/`element_*`/`target`/`tab_id`/`capture_timeout_ms`/`text_limit` — those belong to `surface:desktop`/`browser` and cause `InvalidRequest: do not mix fields from another surface` (e.g. `detail:full` is desktop-only). Correct: `{\"surface\":\"phone\",\"session_id\":\"direct-738…-13\",\"include_accessibility\":true}`. Gateway now strips stray desktop fields, but keep the call clean.",
   "- **App launch — wait for ready:** After `phone_app_action(launch)` returns `backend companion` with a `destination_appshot`, the app may still be `Connecting…` and the accessibility tree may not yet expose chat names/message previews (e.g., Telegram shows 2 unread in All Chats / 1 in Personal but no `Luke`). Don't guess or tap random conversations. Poll `observe(surface:phone, session_id, include_accessibility:true)` or `phone_accessibility_tree(session_id)` until `Connecting…` is gone and the expected text appears, then locate and open the target chat. Use the fresh `destination_appshot` / `phone_snapshot_id` from the observe for the subsequent tap.",
   "- **Pointer — provenance & AppShotRequired:** `phone_pointer(operation:tap, session_id, x, y, phone_snapshot_id)` requires `phone_snapshot_id` from the *same* `observe` that produced the coordinates — **not** `appshot_id` (common copy-paste → `InvalidRequest: expects phone_snapshot_id`). First tap often returns `AppShotRequired` with `fresh_appshot.snapshot_id` — this is **not** a validator error, retry immediately with that fresh `phone_snapshot_id` (or re-observe). For bottom-up selection, loop: `observe` → long-press/swipe with fresh `phone_snapshot_id` → `observe` → scroll up → repeat. Use `use_device_coordinates:true` only for raw device pixels.",
+  "- **Other phone tools — per-operation allowlists:** `phone_keyboard` (`type_text`→`text`, `press_key`→`key`), `phone_app_action` (`launch`→`package_name`, `open_intent`→`intent_uri`), `phone_notification_action` (`open`/`dismiss`→`event_id`, `action`→`action_id`), `phone_accessibility_tree`/`phone_notifications`, `phone_connection` (`connect` vs `refresh`/`disconnect`), etc are all `additionalProperties:false` per branch. Don't mix fields from another operation or surface (`surface`/`tab_id`/`detail`/`target`/`include_*`/`backend` where not listed). Gateway now strips stray fields and maps `appshot_id→phone_snapshot_id` for pointer, but keep calls minimal.",
   "- **Android Doze:** expect epoch churn every 30-90 min. Keep Companion foreground: `Settings → Apps → Sky Companion → Battery → Unrestricted`, `Pause if unused OFF`, keep Tailscale active. Then just `connect` again.",
 ].join("\n");
 function phoneEphemeralAgentsFile(): { path: string; content: string } {
@@ -483,6 +484,75 @@ function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, 
     if (!hasPhoneSnapshot && hasAppshot) {
       out.phone_snapshot_id = out.appshot_id;
     }
+  }
+  // Other phone tools are also strict per-operation (exact_branch_schema + additionalProperties:false). Gateway advertised schema is flattened and permissive, so stray fields (surface, tab_id, detail, etc) slip through and hit InvalidRequest on the rich validation. Strip to per-operation allowlists.
+  if (toolName === "phone_keyboard") {
+    const op = out.operation;
+    const base = new Set(["operation", "session_id", "device_id", "alias", "serial", "appshot_id"]);
+    let allowed: Set<string>;
+    if (op === "type_text") allowed = new Set([...base, "text"]);
+    else if (op === "press_key") allowed = new Set([...base, "key"]);
+    else allowed = new Set([...base, "text", "key"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "phone_app_action") {
+    const op = out.operation;
+    const base = new Set(["operation", "session_id", "device_id", "alias", "serial"]);
+    let allowed: Set<string>;
+    if (op === "launch") allowed = new Set([...base, "package_name"]);
+    else if (op === "open_intent") allowed = new Set([...base, "intent_uri", "package_name"]);
+    else allowed = new Set([...base, "package_name", "intent_uri"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "phone_notification_action") {
+    const op = out.operation;
+    const base = new Set(["operation", "session_id", "device_id", "alias", "serial", "appshot_id", "event_id"]);
+    let allowed: Set<string>;
+    if (op === "action") allowed = new Set([...base, "action_id"]);
+    else allowed = base; // open/dismiss need only event_id
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "phone_accessibility_tree" || toolName === "phone_notifications") {
+    const allowed = new Set(["session_id", "device_id", "alias", "serial", "node_limit", "limit"]);
+    // phone_notifications uses limit, accessibility_tree uses node_limit — keep both, strip the other + any surface/detail
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "phone_app_force_stop") {
+    const allowed = new Set(["session_id", "device_id", "alias", "serial", "package_name", "appshot_id"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "phone_connection") {
+    const op = out.operation;
+    let allowed: Set<string>;
+    if (op === "connect") allowed = new Set(["operation", "serial", "device_id", "alias", "backend", "install_companion", "start_scrcpy"]);
+    else if (op === "disconnect") allowed = new Set(["operation", "session_id", "device_id", "alias", "serial", "keep_wireless"]);
+    else if (op === "refresh") allowed = new Set(["operation", "session_id", "device_id", "alias", "serial"]);
+    else allowed = new Set(["operation", "serial", "device_id", "alias", "session_id", "backend", "install_companion", "start_scrcpy", "keep_wireless"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "phone_setup") {
+    const op = out.operation;
+    let allowed: Set<string>;
+    if (op === "create_enrollment") allowed = new Set(["operation"]);
+    else if (op === "install_companion") allowed = new Set(["operation", "session_id", "device_id", "alias", "serial", "force_reinstall", "allow_downgrade"]);
+    else if (op === "open_settings") allowed = new Set(["operation", "session_id", "device_id", "alias", "serial", "screen", "package_name"]);
+    else allowed = new Set(["operation", "session_id", "device_id", "alias", "serial", "screen", "package_name", "force_reinstall", "allow_downgrade"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "list_resources" && out.surface === "phone") {
+    // Phone list_resources: surface + resource (+ session_id for apps/current_app). Strip browser/desktop extras like target/tab_id/limit-as-browser
+    const allowed = new Set(["surface", "resource", "session_id", "device_id", "alias", "serial", "include_system", "filter", "limit", "query"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  if (toolName === "status" && (out.component === "phone" || out.component === "phone_companion")) {
+    const allowed = new Set(["component", "refresh_devices", "session_id", "device_id", "alias", "serial"]);
+    for (const k of Object.keys(out)) if (!allowed.has(k)) delete out[k];
+  }
+  // Generic fallback for remaining phone_* tools (content/clipboard/editor/camera/storage/install) that weren't explicitly allowlisted above:
+  // strip obvious cross-surface contaminants that often leak from observe/desktop examples. Keep per-tool allowlists permissive above.
+  if (toolName.startsWith("phone_") && toolName !== "phone_pointer" && toolName !== "phone_keyboard" && toolName !== "phone_app_action" && toolName !== "phone_notification_action" && toolName !== "phone_accessibility_tree" && toolName !== "phone_notifications" && toolName !== "phone_app_force_stop" && toolName !== "phone_connection" && toolName !== "phone_setup") {
+    const crossSurface = new Set(["surface", "resource", "component", "tab_id", "target", "detail", "text_limit", "capture_timeout_ms", "element_query", "element_offset", "element_limit", "window_id", "pid", "tty", "title", "app_id", "wm_class", "include_accessibility", "include_notifications", "backend"]);
+    for (const k of Object.keys(out)) if (crossSurface.has(k)) delete out[k];
   }
   return out;
 }
