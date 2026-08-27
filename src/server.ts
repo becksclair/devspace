@@ -1693,24 +1693,30 @@ async function createMcpServer(
       })();
       try { return await lazyBridgePromise; } finally { pendingNodeReplCreates = Math.max(0, pendingNodeReplCreates - 1); lazyBridgePromise = null; }
     };
-    // Hardcoded defs to avoid needing spawn to discover (fixes eager block + RV-002)
-    const nodeReplDefs: Array<{ name: string; title: string; description: string; shape: Record<string, z.ZodTypeAny> }> = [
-      { name: "js", title: "Node REPL js", description: "Execute JavaScript in persistent Node REPL. Use nodeRepl.write for output. Top-level var persists until js_reset.", shape: { code: z.string().describe("JavaScript source to execute"), timeout_ms: z.number().int().optional().describe("Timeout in ms"), title: z.string().optional().describe("Title") } },
-      { name: "js_reset", title: "Node REPL reset", description: "Reset the persistent JS kernel and clear bindings.", shape: {} },
-      { name: "js_add_node_module_dir", title: "Add node_modules dir", description: "Add an absolute node_modules directory to search path.", shape: { path: z.string().describe("Absolute path to node_modules") } },
+    // Hardcoded defs for lazy node_repl spawn (RV-002 resilience: passthrough so extra binary params don't break)
+    const nodeReplDefs: Array<{ name: string; title: string; description: string; inputSchema: Record<string, z.ZodTypeAny> }> = [
+      { name: "js", title: "Node REPL js", description: "Execute JavaScript in persistent Node REPL. Use nodeRepl.write for output. Top-level var persists until js_reset.", inputSchema: { code: z.string().describe("JavaScript source"), timeout_ms: z.number().int().optional().describe("Timeout in ms"), title: z.string().optional().describe("Title") } },
+      { name: "js_reset", title: "Node REPL reset", description: "Reset the persistent JS kernel and clear bindings.", inputSchema: {} },
+      { name: "js_add_node_module_dir", title: "Add node_modules dir", description: "Add an absolute node_modules directory to search path.", inputSchema: { path: z.string().describe("Absolute path to node_modules") } },
     ];
     for (const def of nodeReplDefs) {
+      // RV-002: register with loose passthrough object to allow any extra fields from binary
+      const looseShape: Record<string, z.ZodTypeAny> = {};
+      for (const [k, v] of Object.entries(def.inputSchema)) looseShape[k] = (v as z.ZodTypeAny).optional();
+      const looseSchema = z.object(looseShape).passthrough();
       registerAppTool(
         server as never,
         def.name as never,
         {
           title: def.title,
           description: def.description,
-          inputSchema: def.shape,
+          inputSchema: looseSchema,
           annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as ToolAnnotations),
           _meta: {},
         } as never,
         (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
+          const parsed = looseSchema.safeParse(input);
+          if (!parsed.success) throw new Error(`Invalid arguments for tool ${def.name}: ${parsed.error.message}`);
           const b = await getOrCreateBridge(extra.signal);
           const result = await b.callTool(def.name, input as Record<string, unknown>, extra.signal);
           const mapped: Record<string, unknown> = {
