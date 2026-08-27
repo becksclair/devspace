@@ -171,6 +171,27 @@ export class GatewayExecutionRouter {
       durationMs: Date.now() - startedMs,
       createdAt: new Date().toISOString(),
     });
+    // RV-003 per-file fan-out for multi_read so gateway UI/audit shows per-file granularity
+    if (tool === "multi_read" && Array.isArray((rewrittenResult.structuredContent as unknown as { results?: unknown[] })?.results)) {
+      const results = (rewrittenResult.structuredContent as unknown as { results: Array<{ path: string; status: string }> }).results;
+      for (let idx = 0; idx < results.length; idx++) {
+        const r = results[idx]!;
+        const sanitized = r.path.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "file";
+        const fileOpId = `${operationId}:${sanitized}:${idx}`;
+        this.appendActivity({
+          workspaceId: publicWorkspaceId,
+          operationId: fileOpId,
+          tool: "read_file" as ToolName,
+          machine: publicMachine(machine),
+          status: r.status === "ok" ? "success" : "error",
+          label: `read_file ${r.path}`,
+          detail: r.status,
+          startedAt,
+          durationMs: Date.now() - startedMs,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
 
     const workspaceClosed = tool === "close_workspace" && result.structuredContent?.workspace && typeof result.structuredContent.workspace === "object"
       ? (result.structuredContent.workspace as { closed?: unknown }).closed === true

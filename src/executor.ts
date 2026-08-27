@@ -1,3 +1,4 @@
+import { open, stat } from "node:fs/promises";
 import type { ServerConfig } from "./config.js";
 import { commandPreview, logEvent } from "./logger.js";
 import { editFileTool, findFilesTool, grepFilesTool, listDirectoryTool, readFileTool, runShellTool, writeFileTool, type ToolResponse } from "./pi-tools.js";
@@ -14,6 +15,21 @@ export interface LocalExecutorOptions {
   workspaces?: WorkspaceRegistry;
   reviewCheckpoints?: ReviewCheckpointManager;
   terminals?: TerminalManager;
+}
+
+function truncateUtf8Safe(input: string, maxBytes: number): { content: string; truncated: boolean; bytes: number } {
+  const total = Buffer.byteLength(input, "utf8");
+  if (total <= maxBytes) return { content: input, truncated: false, bytes: total };
+  let acc = 0;
+  let end = 0;
+  for (const ch of input) {
+    const b = Buffer.byteLength(ch, "utf8");
+    if (acc + b > maxBytes) break;
+    acc += b;
+    end += ch.length;
+  }
+  const content = input.slice(0, end);
+  return { content, truncated: true, bytes: acc };
 }
 
 type MaintenanceResult = {
@@ -95,6 +111,7 @@ export class LocalExecutor {
       case "workspace_status": return this.workspaceStatus(input as ToolArguments<"workspace_status">);
       case "close_workspace": return this.closeWorkspace(input as ToolArguments<"close_workspace">);
       case "read_file": return this.read(input as ToolArguments<"read_file">, options);
+      case "multi_read": return this.multiRead(input as ToolArguments<"multi_read">, options);
       case "write_file": return this.write(input as ToolArguments<"write_file">, options);
       case "edit_file": return this.edit(input as ToolArguments<"edit_file">, options);
       case "grep_files": return this.grep(input as ToolArguments<"grep_files">, options);
@@ -368,6 +385,126 @@ export class LocalExecutor {
     const workspace = this.workspaces.getWorkspace(input.workspaceId);
     const review = await this.reviewCheckpoints.reviewChanges({ workspaceId: input.workspaceId, root: workspace.root, since: input.since, markReviewed: input.markReviewed });
     return { content: [{ type: "text", text: review.result }], structuredContent: review as unknown as Record<string, unknown> };
+  }
+
+  private async multiRead(input: ToolArguments<"multi_read">, options: ExecutorRequestOptions): Promise<ToolResponse> {
+    const workspace = this.workspaces.getWorkspace(input.workspaceId);
+    const maxBytesPerFile = input.maxBytesPerFile ?? 256_000;
+    const maxTotalBytes = input.maxTotalBytes ?? 1_000_000;
+    const startedAt = performance.now();
+    const perFileStarted = input.reads.map(() => performance.now());
+    const statSizes = await Promise.all(
+      input.reads.map(async (entry) => {
+        try {
+          const rp = this.workspaces.resolveReadPath(workspace, entry.path);
+          const s = await stat(rp.absolutePath).catch(() => null) as unknown as { size: number } | null;
+          return s ? s.size : null;
+        } catch { return null; }
+      }),
+    );
+    const preSkipped = new Map<number, { code: string; message: string }>();
+    {
+      let estTotal = 0;
+      for (let idx = 0; idx < input.reads.length; idx++) {
+        const sz = statSizes[idx];
+        const est = sz !== null ? Math.min(sz, maxBytesPerFile) : maxBytesPerFile;
+        if (estTotal + est > maxTotalBytes) {
+          preSkipped.set(idx, { code: "total_limit_exceeded", message: `Total bytes limit ${maxTotalBytes} exceeded (pre-flight)` });
+          continue;
+        }
+        estTotal += est;
+      }
+    }
+    const rawByIdx = new Map<number, any>();
+    await Promise.all(
+      input.reads.map(async (entry, idx) => {
+        if (preSkipped.has(idx)) return;
+        if (options.signal?.aborted) throw new Error("Request cancelled");
+        const t0 = perFileStarted[idx] ?? startedAt;
+        try {
+          const readPath = this.workspaces.resolveReadPath(workspace, entry.path);
+          const sz = statSizes[idx];
+          if (sz !== null && sz > maxBytesPerFile && entry.offset === undefined && entry.limit === undefined) {
+            let fh: any = null;
+            try {
+              fh = await open(readPath.absolutePath, "r");
+              const buf = Buffer.alloc(maxBytesPerFile + 1024);
+              const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+              let text = buf.subarray(0, bytesRead).toString("utf8");
+              const { content } = truncateUtf8Safe(text, maxBytesPerFile);
+              rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: content, t0 });
+              return;
+            } catch {} finally { if (fh) try { await fh.close(); } catch {} }
+          }
+          const result = await readFileTool(
+            { path: readPath.absolutePath, offset: entry.offset, limit: entry.limit },
+            { cwd: workspace.root, root: workspace.canonicalRoot, readRoots: readPath.readRoots },
+            options.signal,
+            `${options.requestId}:${entry.path}:${idx}`,
+          );
+          if (result.isError) {
+            const errText = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n").slice(0, 1024);
+            rawByIdx.set(idx, { entry, readPath, status: "error" as const, error: { code: "read_error", message: errText }, t0 });
+            return;
+          }
+          const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
+          rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text, t0 });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const code = message.includes("outside") || message.includes("denied") || message.includes("permitted") ? "access_denied" : "read_error";
+          rawByIdx.set(idx, { entry, status: "error" as const, error: { code, message: message.slice(0, 1024) }, t0 });
+        }
+      }),
+    );
+    const results: Array<Record<string, unknown>> = [];
+    let totalBytes = 0;
+    for (let idx = 0; idx < input.reads.length; idx++) {
+      const pre = preSkipped.get(idx);
+      if (pre) {
+        const entry = input.reads[idx]!;
+        const t0 = perFileStarted[idx] ?? startedAt;
+        results.push({ path: entry.path, status: "error", error: pre });
+        this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: entry.path }, false, t0, pre.message.slice(0, 240));
+        continue;
+      }
+      const raw = rawByIdx.get(idx);
+      if (!raw) {
+        const entry = input.reads[idx]!;
+        const t0 = perFileStarted[idx] ?? startedAt;
+        results.push({ path: entry.path, status: "error", error: { code: "read_error", message: "skipped" } });
+        this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: entry.path }, false, t0, "skipped");
+        continue;
+      }
+      const t0 = raw.t0;
+      if (raw.status === "error") {
+        const maybePath = (raw as unknown as { readPath?: { absolutePath: string } }).readPath;
+        results.push({ path: raw.entry.path, ...(maybePath ? { canonicalPath: maybePath.absolutePath } : {}), status: "error", error: raw.error });
+        this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path, offset: raw.entry.offset, limit: raw.entry.limit }, false, t0, (raw.error.message as string).slice(0, 240));
+        continue;
+      }
+      const { content, truncated, bytes } = truncateUtf8Safe(raw.text, maxBytesPerFile);
+      if (totalBytes + bytes > maxTotalBytes) {
+        results.push({ path: raw.entry.path, status: "error", error: { code: "total_limit_exceeded", message: `Total bytes limit ${maxTotalBytes} exceeded` } });
+        this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path }, false, t0, "total_limit_exceeded");
+        continue;
+      }
+      totalBytes += bytes;
+      if (raw.readPath) this.workspaces.markReadPathLoaded(workspace, raw.readPath as any);
+      results.push({ path: raw.entry.path, canonicalPath: (raw.readPath as { absolutePath: string }).absolutePath, status: "ok", content, truncated, bytes });
+      this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path, offset: raw.entry.offset, limit: raw.entry.limit }, true, t0);
+      if (options.signal?.aborted) throw new Error("Request cancelled");
+    }
+    const summary = `multi_read: ${results.length} files, ${results.filter((r) => r.status === "ok").length} ok, ${results.filter((r) => r.status === "error").length} error, totalBytes=${totalBytes}`;
+    const details = results.map((r) => {
+      if (r.status === "ok") return `OK ${r.path} (${r.bytes} bytes${r.truncated ? ", truncated" : ""})`;
+      return `ERROR ${r.path}: ${(r.error as { message: string }).message}`;
+    }).join("\n");
+    void startedAt;
+    return {
+      content: [{ type: "text", text: `${summary}\n${details}` }],
+      structuredContent: { results, totalBytes },
+      isError: results.every((r) => r.status === "error"),
+    };
   }
 
   private beginWorkspaceOperation(workspaceId: string): void {
