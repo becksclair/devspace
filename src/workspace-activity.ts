@@ -60,8 +60,12 @@ export function workspaceActivityLabel(tool: ToolName, args: Record<string, unkn
       return "capabilities and Git state";
     case "close_workspace":
       return "workspace session";
+    case "multi_read":
+      return truncate("batch read", MAX_LABEL_LENGTH);
     case "open_workspace":
       return truncate(stringArg(args.path) ?? "workspace", MAX_LABEL_LENGTH);
+    default:
+      return truncate(tool, MAX_LABEL_LENGTH);
   }
 }
 
@@ -114,6 +118,9 @@ export function workspaceActivityDetail(tool: ToolName, result: ToolResponse): s
     case "find_files":
     case "list_directory":
     case "run_shell":
+    case "multi_read":
+      return lineDetail(result);
+    default:
       return lineDetail(result);
   }
 }
