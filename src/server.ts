@@ -397,10 +397,36 @@ const PHONE_EPHEMERAL_AGENTS_CONTENT = [
   "- **Device visible but session 0:** Companion says `Connected to Saga/Asgard` + `list_resources` shows `2 devices` but `status` shows `sessions=0` → just `connect` again. If `list_resources` shows `0 devices` while Companion says connected, the DevSpace gateway's `sky-cua-client mcp` bridge is stale after a `sky-cua-service` restart (stale `service.sock`). Gateway restart (Saga/Asgard) clears it — no re-pairing needed.",
   "- **Notifications/accessibility:** require `notification_listener_enabled:true`/`accessibility_enabled:true` in the `phone_connection` capability. After `connect`, `phone_notifications(alias:phone)` returns `backend companion` (fixed for Direct). Verified on Saga `738…` → 3 events.",
   "- **App packages — verify before launch:** `list_resources(surface:phone, resource:apps, session_id, include_system:false)` is paginated/truncated (293 on S26). Search the returned `apps[].package_name`/`label` — Thunderbird on this S26 is `net.thunderbird.android` (`label: Thunderbird`, `launchable:true`), not `org.mozilla.thunderbird` (not installed → `PhoneCompanionDirectDispatchFailed: rejected`). Use `phone_app_action(operation:launch, session_id, package_name:<actual>)`; check `list_resources` or `phone_app_list` first.",
+  "- **Selector — never combine:** `phone_app_action`, `phone_notifications`, `phone_accessibility_tree`, `observe(phone)` etc expect **exactly one** of `session_id` / `device_id` / `alias` (e.g. `alias:phone`). Providing `alias` **and** `session_id` together is `InvalidRequest` (\"never combine them\"). After `phone_connection` gives you `direct-…-13`, call the next tool with **only** `session_id:direct-…-13` (or only `alias:phone` if you have no session yet), not both.",
   "- **Android Doze:** expect epoch churn every 30-90 min. Keep Companion foreground: `Settings → Apps → Sky Companion → Battery → Unrestricted`, `Pause if unused OFF`, keep Tailscale active. Then just `connect` again.",
 ].join("\n");
 function phoneEphemeralAgentsFile(): { path: string; content: string } {
   return { path: PHONE_EPHEMERAL_AGENTS_PATH, content: PHONE_EPHEMERAL_AGENTS_CONTENT };
+}
+
+function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  // sky-cua's rich validation (validation_schemas, not the flattened advertised schema) is strict:
+  // phone tools require *exactly one* of session_id / device_id / alias / serial — "never combine them".
+  // ChatGPT often sends both alias:phone and session_id:direct-… after a connect, which then hits
+  // InvalidRequest before the phone RPC. Normalize by keeping the most specific selector.
+  const has = (k: string) => typeof args[k] === "string" && (args[k] as string).trim() !== "";
+  const isPhoneSelectorTool =
+    toolName.startsWith("phone_") ||
+    toolName === "observe" ||
+    toolName === "capture_screen" ||
+    toolName === "list_resources" ||
+    toolName === "status";
+  if (!isPhoneSelectorTool) return args;
+  const selectors = ["session_id", "device_id", "alias", "serial"].filter(has);
+  if (selectors.length <= 1) return args;
+  // Prefer session_id > device_id > alias > serial
+  const order = ["session_id", "device_id", "alias", "serial"];
+  let keep: string | undefined;
+  for (const k of order) if (has(k)) { keep = k; break; }
+  if (!keep) return args;
+  const out: Record<string, unknown> = { ...args };
+  for (const k of selectors) if (k !== keep) delete out[k];
+  return out;
 }
 
 function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiveDisabled?: Set<string>): string {
@@ -1466,7 +1492,8 @@ async function createMcpServer(
               const parsed = (tool.inputSchema as z.ZodTypeAny).safeParse(input);
               if (!parsed.success) throw new Error(`Invalid arguments for tool ${tool.name}: ${parsed.error.message}`);
             }
-            const result = await bridge.callTool(tool.name, input as Record<string, unknown>, extra.signal);
+            const normalized = normalizePhoneSelectorForBridge(tool.name, (input as Record<string, unknown>) ?? {});
+            const result = await bridge.callTool(tool.name, normalized, extra.signal);
             const mapped: Record<string, unknown> = {
               content: result.content as unknown[],
               ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
