@@ -178,6 +178,8 @@ export class GatewayExecutionRouter {
         const r = results[idx]!;
         const sanitized = r.path.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "file";
         const fileOpId = `${operationId}:${sanitized}:${idx}`;
+        // Per-file duration estimated as equal split of total duration for simplicity; advisory only (RV-003)
+        const perFileMs = Math.round((Date.now() - startedMs) / results.length);
         this.appendActivity({
           workspaceId: publicWorkspaceId,
           operationId: fileOpId,
@@ -187,7 +189,7 @@ export class GatewayExecutionRouter {
           label: `read_file ${r.path}`,
           detail: r.status,
           startedAt,
-          durationMs: Date.now() - startedMs,
+          durationMs: perFileMs,
           createdAt: new Date().toISOString(),
         });
       }
