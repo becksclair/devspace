@@ -6,7 +6,7 @@ import { CANONICAL_TOOL_NAMES, TOOL_CONTRACT_HASH, TOOL_SCHEMAS, canonicalToolCo
 test("internal tool contract has fixed names and deterministic lowercase hash", () => {
   assert.deepEqual(CANONICAL_TOOL_NAMES, [
     "open_workspace", "workspace_status", "close_workspace",
-    "read_file", "multi_read", "write_file", "edit_file", "grep_files", "find_files", "list_directory", "run_shell",
+    "read_file", "write_file", "edit_file", "grep_files", "find_files", "list_directory", "run_shell",
     "terminal_start", "terminal_read", "terminal_write", "terminal_resize", "terminal_status", "terminal_close",
     "show_changes",
   ]);
