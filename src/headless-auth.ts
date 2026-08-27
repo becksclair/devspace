@@ -158,21 +158,57 @@ export async function mintHeadlessOAuth(options: MintOptions): Promise<HeadlessO
   }) as OAuthClient;
   const clientId = requireString(client, "client_id", "registration response");
   const pair = pkce();
+
+  // Fetch CSRF token via GET (double-submit cookie) before owner approval POST.
+  const csrfParams = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: pair.challenge,
+    code_challenge_method: "S256",
+    scope: scopes.join(" "),
+    state: pair.state,
+    resource,
+  });
+  const csrfCookieName = "__Host-devspace-csrf";
+  let csrfToken: string | undefined;
+  let csrfCookie: string | undefined;
+  try {
+    const csrfUrl = `${authorizationEndpoint}?${csrfParams.toString()}`;
+    const csrfResp = await fetchImpl(csrfUrl, { method: "GET", redirect: "manual", headers: { Accept: "text/html" } });
+    if (csrfResp.ok) {
+      const setCookie = csrfResp.headers.get("set-cookie") ?? csrfResp.headers.get("Set-Cookie") ?? "";
+      const m = setCookie.match(new RegExp(`${csrfCookieName}=([^;]+)`));
+      if (m) csrfCookie = decodeURIComponent(m[1]);
+      const html = await csrfResp.text();
+      const htmlMatch = html.match(/name="csrf_token" value="([^"]+)"/);
+      if (htmlMatch) csrfToken = htmlMatch[1];
+      if (!csrfToken && csrfCookie) csrfToken = csrfCookie;
+      if (!csrfCookie && csrfToken) csrfCookie = csrfToken;
+    }
+  } catch {
+    // ignore and fall back to direct POST without CSRF (server may not enforce it)
+  }
+
+  const authorizationBody = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code_challenge: pair.challenge,
+    code_challenge_method: "S256",
+    scope: scopes.join(" "),
+    state: pair.state,
+    resource,
+    owner_token: options.ownerToken,
+    ...(csrfToken ? { csrf_token: csrfToken } : {}),
+  });
+  const authHeaders: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+  if (csrfCookie && csrfToken) authHeaders.Cookie = `${csrfCookieName}=${csrfCookie}`;
   const authorization = await fetchImpl(authorizationEndpoint, {
     method: "POST",
     redirect: "manual",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      response_type: "code",
-      client_id: clientId,
-      redirect_uri: redirectUri,
-      code_challenge: pair.challenge,
-      code_challenge_method: "S256",
-      scope: scopes.join(" "),
-      state: pair.state,
-      resource,
-      owner_token: options.ownerToken,
-    }),
+    headers: authHeaders,
+    body: authorizationBody,
   });
   if (authorization.status !== 302) {
     throw new Error(`OAuth authorization returned HTTP ${authorization.status}; owner password may be invalid`);

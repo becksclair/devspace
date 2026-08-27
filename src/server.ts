@@ -16,6 +16,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import express from "express";
 import type { Request, Response } from "express";
+import rateLimit from "express-rate-limit";
 import * as z from "zod/v4";
 import { isCapabilityDisabled, loadConfig, parseDisabledCapabilities, type ServerConfig, type WidgetMode } from "./config.js";
 import {
@@ -1868,6 +1869,22 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
 
     next();
   });
+
+  const authorizeLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too_many_requests", error_description: "Too many authorization attempts" },
+  });
+  const tokenLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.use("/authorize", authorizeLimiter);
+  app.use("/token", tokenLimiter);
 
   app.use(
     mcpAuthRouter({

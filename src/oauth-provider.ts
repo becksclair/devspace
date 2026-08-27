@@ -1,5 +1,5 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { AccessDeniedError, InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -33,6 +33,9 @@ interface AuthorizationCodeRecord {
 
 const CODE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RETAINED_CLIENTS = 500;
+export const CSRF_COOKIE_NAME = "__Host-devspace-csrf";
+const CSRF_TOKEN_BYTES = 32;
+const CSRF_MAX_AGE_SECONDS = 600;
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -43,6 +46,73 @@ function safeEquals(a: string, b: string): boolean {
   const right = Buffer.from(b);
   if (left.byteLength !== right.byteLength) return false;
   return timingSafeEqual(left, right);
+}
+
+function generateCsrfToken(): string {
+  return randomBytes(CSRF_TOKEN_BYTES).toString("hex");
+}
+
+function getCsrfCookie(req: Request): string | undefined {
+  const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+  if (cookies && typeof cookies[CSRF_COOKIE_NAME] === "string") return cookies[CSRF_COOKIE_NAME];
+  // fallback manual parse for environments without cookie-parser
+  const header = (req.headers as Record<string, unknown>)?.cookie as string | undefined;
+  if (!header || typeof header !== "string") return undefined;
+  for (const part of header.split(";")) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const name = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (name === CSRF_COOKIE_NAME) return decodeURIComponent(value);
+  }
+  return undefined;
+}
+
+function isSecureRequest(resourceServerUrl: URL): boolean {
+  return resourceServerUrl.protocol === "https:";
+}
+
+function setCsrfCookie(res: Response, token: string, secure: boolean): void {
+  const cookieOpts: Record<string, unknown> = {
+    httpOnly: true,
+    secure,
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: CSRF_MAX_AGE_SECONDS * 1000,
+  };
+  const anyRes = res as unknown as { cookie?: (name: string, value: string, opts: unknown) => void };
+  if (typeof anyRes.cookie === "function") {
+    anyRes.cookie(CSRF_COOKIE_NAME, token, cookieOpts);
+    return;
+  }
+  // fallback manual Set-Cookie
+  let cookie = `${CSRF_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${CSRF_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax`;
+  if (secure) cookie += "; Secure";
+  const existing = res.getHeader?.("Set-Cookie");
+  if (existing) {
+    const arr = Array.isArray(existing) ? existing : [String(existing)];
+    res.setHeader("Set-Cookie", [...arr, cookie]);
+  } else {
+    res.setHeader("Set-Cookie", cookie);
+  }
+}
+
+function clearCsrfCookie(res: Response, secure: boolean): void {
+  const anyRes = res as unknown as { clearCookie?: (name: string, opts: unknown) => void };
+  if (typeof anyRes.clearCookie === "function") {
+    anyRes.clearCookie(CSRF_COOKIE_NAME, { httpOnly: true, secure, sameSite: "lax" as const, path: "/" });
+    return;
+  }
+  let cookie = `${CSRF_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`;
+  if (secure) cookie += "; Secure";
+  const existing = res.getHeader?.("Set-Cookie");
+  if (existing) {
+    const arr = Array.isArray(existing) ? existing : [String(existing)];
+    res.setHeader("Set-Cookie", [...arr, cookie]);
+  } else {
+    res.setHeader("Set-Cookie", cookie);
+  }
 }
 
 function htmlEscape(value: string): string {
@@ -200,14 +270,35 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new InvalidRequestError("Requested scope is not supported");
     }
 
+    const secure = isSecureRequest(this.resourceServerUrl);
     if (res.req.method !== "POST") {
+      const csrf = generateCsrfToken();
+      setCsrfCookie(res, csrf, secure);
       res.status(200).setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
         formHtml({
           clientName: client.client_name ?? client.client_id,
           scopes: params.scopes ?? this.config.scopes,
           resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          fields: { ...authorizationFormFields(client, params), csrf_token: csrf },
+        }),
+      );
+      return;
+    }
+
+    const cookieCsrf = getCsrfCookie(res.req);
+    const bodyCsrf = String((res.req.body as Record<string, unknown>)?.csrf_token ?? "");
+    if (!cookieCsrf || !bodyCsrf || !safeEquals(bodyCsrf, cookieCsrf)) {
+      const nextCsrf = generateCsrfToken();
+      setCsrfCookie(res, nextCsrf, secure);
+      res.status(400).setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(
+        formHtml({
+          error: "Invalid request.",
+          clientName: client.client_name ?? client.client_id,
+          scopes: params.scopes ?? this.config.scopes,
+          resource: params.resource,
+          fields: { ...authorizationFormFields(client, params), csrf_token: nextCsrf },
         }),
       );
       return;
@@ -215,6 +306,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
 
     const providedToken = String(res.req.body?.owner_token ?? "");
     if (!safeEquals(providedToken, this.config.ownerToken)) {
+      const nextCsrf = generateCsrfToken();
+      setCsrfCookie(res, nextCsrf, secure);
       res.status(401).setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
         formHtml({
@@ -222,12 +315,13 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
           clientName: client.client_name ?? client.client_id,
           scopes: params.scopes ?? this.config.scopes,
           resource: params.resource,
-          fields: authorizationFormFields(client, params),
+          fields: { ...authorizationFormFields(client, params), csrf_token: nextCsrf },
         }),
       );
       return;
     }
 
+    clearCsrfCookie(res, secure);
     const code = `code-${randomUUID()}`;
     this.codes.set(code, {
       clientId: client.client_id,
