@@ -398,7 +398,8 @@ const PHONE_EPHEMERAL_AGENTS_CONTENT = [
   "- **Notifications/accessibility:** require `notification_listener_enabled:true`/`accessibility_enabled:true` in the `phone_connection` capability. After `connect`, `phone_notifications(alias:phone)` returns `backend companion` (fixed for Direct). Verified on Saga `738…` → 3 events.",
   "- **App packages — verify before launch:** `list_resources(surface:phone, resource:apps, session_id, include_system:false)` is paginated/truncated (293 on S26). Search the returned `apps[].package_name`/`label` — Thunderbird on this S26 is `net.thunderbird.android` (`label: Thunderbird`, `launchable:true`), not `org.mozilla.thunderbird` (not installed → `PhoneCompanionDirectDispatchFailed: rejected`). Use `phone_app_action(operation:launch, session_id, package_name:<actual>)`; check `list_resources` or `phone_app_list` first.",
   "- **Selector — never combine:** `phone_app_action`, `phone_notifications`, `phone_accessibility_tree`, `observe(phone)` etc expect **exactly one** of `session_id` / `device_id` / `alias` (e.g. `alias:phone`). Providing `alias` **and** `session_id` together is `InvalidRequest` (\"never combine them\"). After `phone_connection` gives you `direct-…-13`, call the next tool with **only** `session_id:direct-…-13` (or only `alias:phone` if you have no session yet), not both.",
-  "- **App launch — wait for ready:** After `phone_app_action(launch)` returns `backend companion` with a `destination_appshot`, the app may still be `Connecting…` and the accessibility tree may not yet expose chat names/message previews (e.g., Telegram shows 2 unread in All Chats / 1 in Personal but no `Luke`). Don't guess or tap random conversations. Poll `phone_observe(session_id, include_accessibility:true)` or `phone_accessibility_tree(session_id)` until `Connecting…` is gone and the expected text appears, then locate and open the target chat. Use the fresh `destination_appshot` / `phone_snapshot_id` from the observe for the subsequent tap.",
+  "- **Observe(phone) contract — don't mix surfaces:** `observe(surface:phone, session_id:direct-…)` (or `alias:phone`/`device_id`) allows **only** `surface` + one selector + `include_accessibility`/`include_notifications`/`backend`. Do **not** send `detail`/`element_*`/`target`/`tab_id`/`capture_timeout_ms`/`text_limit` — those belong to `surface:desktop`/`browser` and cause `InvalidRequest: do not mix fields from another surface` (e.g. `detail:full` is desktop-only). Correct: `{\"surface\":\"phone\",\"session_id\":\"direct-738…-13\",\"include_accessibility\":true}`. Gateway now strips stray desktop fields, but keep the call clean.",
+  "- **App launch — wait for ready:** After `phone_app_action(launch)` returns `backend companion` with a `destination_appshot`, the app may still be `Connecting…` and the accessibility tree may not yet expose chat names/message previews (e.g., Telegram shows 2 unread in All Chats / 1 in Personal but no `Luke`). Don't guess or tap random conversations. Poll `observe(surface:phone, session_id, include_accessibility:true)` or `phone_accessibility_tree(session_id)` until `Connecting…` is gone and the expected text appears, then locate and open the target chat. Use the fresh `destination_appshot` / `phone_snapshot_id` from the observe for the subsequent tap.",
   "- **Android Doze:** expect epoch churn every 30-90 min. Keep Companion foreground: `Settings → Apps → Sky Companion → Battery → Unrestricted`, `Pause if unused OFF`, keep Tailscale active. Then just `connect` again.",
 ].join("\n");
 function phoneEphemeralAgentsFile(): { path: string; content: string } {
@@ -418,15 +419,41 @@ function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, 
     toolName === "list_resources" ||
     toolName === "status";
   if (!isPhoneSelectorTool) return args;
+  let out: Record<string, unknown> = { ...args };
   const selectors = ["session_id", "device_id", "alias", "serial"].filter(has);
-  if (selectors.length <= 1) return args;
-  // Prefer session_id > device_id > alias > serial
-  const order = ["session_id", "device_id", "alias", "serial"];
-  let keep: string | undefined;
-  for (const k of order) if (has(k)) { keep = k; break; }
-  if (!keep) return args;
-  const out: Record<string, unknown> = { ...args };
-  for (const k of selectors) if (k !== keep) delete out[k];
+  if (selectors.length > 1) {
+    // Prefer session_id > device_id > alias > serial
+    const order = ["session_id", "device_id", "alias", "serial"];
+    let keep: string | undefined;
+    for (const k of order) if (has(k)) { keep = k; break; }
+    if (keep) {
+      for (const k of selectors) if (k !== keep) delete out[k];
+    }
+  }
+  // `observe(surface=phone)` is strict: exact_branch_schema allows only
+  // surface + one selector + include_accessibility/include_notifications/backend.
+  // `detail` (and desktop/browser fields like target/tab_id/element_*) belong to
+  // the desktop/browser branches. ChatGPT copies them from examples and then
+  // the phone branch is rejected as "do not mix fields from another surface".
+  // Strip desktop/browser-only fields when the caller declared surface=phone so
+  // the call reaches the device instead of failing validation.
+  if (toolName === "observe" && out.surface === "phone") {
+    const phoneAllowed = new Set([
+      "surface",
+      "session_id",
+      "device_id",
+      "alias",
+      "serial",
+      "include_accessibility",
+      "include_notifications",
+      "backend",
+    ]);
+    for (const k of Object.keys(out)) if (!phoneAllowed.has(k)) delete out[k];
+  }
+  if (toolName === "capture_screen" && out.surface === "phone") {
+    const capsAllowed = new Set(["surface", "session_id", "device_id", "alias", "serial", "backend"]);
+    for (const k of Object.keys(out)) if (!capsAllowed.has(k)) delete out[k];
+  }
   return out;
 }
 
