@@ -415,7 +415,11 @@ export class LocalExecutor {
         estTotal += est;
       }
     }
-    const rawByIdx = new Map<number, any>();
+    const rawByIdx = new Map<
+      number,
+      | { entry: (typeof input.reads)[number]; readPath?: { absolutePath: string; readRoots: string[] }; status: "ok"; text: string; truncated?: boolean; bytes?: number; t0: number }
+      | { entry: (typeof input.reads)[number]; readPath?: { absolutePath: string; readRoots: string[] }; status: "error"; error: { code: string; message: string }; t0: number }
+    >();
     await Promise.all(
       input.reads.map(async (entry, idx) => {
         if (preSkipped.has(idx)) return;
@@ -431,8 +435,9 @@ export class LocalExecutor {
               const buf = Buffer.alloc(maxBytesPerFile + 1024);
               const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
               let text = buf.subarray(0, bytesRead).toString("utf8");
-              const { content } = truncateUtf8Safe(text, maxBytesPerFile);
-              rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: content, t0 });
+              const { content, truncated, bytes } = truncateUtf8Safe(text, maxBytesPerFile);
+              // Preserve truncation flag from the fast path; second truncation below must not re-derive it.
+              rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: content, truncated, bytes, t0 });
               return;
             } catch {} finally { if (fh) try { await fh.close(); } catch {} }
           }
@@ -482,7 +487,19 @@ export class LocalExecutor {
         this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path, offset: raw.entry.offset, limit: raw.entry.limit }, false, t0, (raw.error.message as string).slice(0, 240));
         continue;
       }
-      const { content, truncated, bytes } = truncateUtf8Safe(raw.text, maxBytesPerFile);
+      let content: string;
+      let truncated: boolean;
+      let bytes: number;
+      if (typeof (raw as unknown as { truncated?: unknown }).truncated === "boolean" && typeof (raw as unknown as { bytes?: unknown }).bytes === "number") {
+        content = raw.text;
+        truncated = (raw as unknown as { truncated: boolean }).truncated;
+        bytes = (raw as unknown as { bytes: number }).bytes;
+      } else {
+        const t = truncateUtf8Safe(raw.text, maxBytesPerFile);
+        content = t.content;
+        truncated = t.truncated;
+        bytes = t.bytes;
+      }
       if (totalBytes + bytes > maxTotalBytes) {
         results.push({ path: raw.entry.path, status: "error", error: { code: "total_limit_exceeded", message: `Total bytes limit ${maxTotalBytes} exceeded` } });
         this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path }, false, t0, "total_limit_exceeded");
