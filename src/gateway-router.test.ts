@@ -213,6 +213,177 @@ await assert.rejects(
 );
 assert.equal(prunedStore.get(prunedOpen.publicWorkspaceId), undefined);
 
+// --- Plan 002: gateway deep rewrite corruption tests ---
+{
+  // Test: does not corrupt file content containing private id substring
+  const privateId = "private-file-content-123";
+  const fileTarget: ExecutionTarget = {
+    async execute(tool, args): Promise<ExecutorResult> {
+      if (tool === "open_workspace") {
+        return { content: [{ type: "text", text: `Opened workspace ${privateId}` }], structuredContent: { workspaceId: privateId } };
+      }
+      return {
+        content: [{ type: "text", text: `hello ${privateId} world` }],
+        structuredContent: { result: "ok" },
+        isError: false,
+      };
+    },
+  };
+  const fileStore = new MemoryStore();
+  const fileRouter = new GatewayExecutionRouter(
+    [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+    new Map([["saga", fileTarget]]),
+    fileStore,
+  );
+  const fileOpen = await fileRouter.execute("open_workspace", { path: "/file-test" }, options);
+  const fileResult = await fileRouter.execute("read_file", { workspaceId: fileOpen.publicWorkspaceId, path: "x.txt" }, options);
+  assert.equal((fileResult.result.content[0] as { text: string }).text, `hello ${privateId} world`, "file content must remain byte-identical, not rewritten");
+  assert.equal(JSON.stringify(fileResult.result).includes(privateId), true, "file content leak is expected file data, but JSON check for this test should still show privateId in content (not corrupted to publicId)");
+  // Ensure structuredContent not corrupted to publicId
+  assert.equal(fileResult.publicWorkspaceId, fileOpen.publicWorkspaceId);
+}
+
+{
+  // Test: does not rewrite patch/diff fields
+  const privateId = "private-patch-xyz";
+  const patchText = `diff contains ${privateId} as code`;
+  const patchTarget: ExecutionTarget = {
+    async execute(tool, args): Promise<ExecutorResult> {
+      if (tool === "open_workspace") {
+        return { content: [{ type: "text", text: `Opened workspace ${privateId}` }], structuredContent: { workspaceId: privateId } };
+      }
+      return {
+        content: [{ type: "text", text: "review" }],
+        structuredContent: { result: "ok", patch: patchText, details: { patch: patchText } } as unknown as Record<string, unknown>,
+      };
+    },
+  };
+  const patchStore = new MemoryStore();
+  const patchRouter = new GatewayExecutionRouter(
+    [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+    new Map([["saga", patchTarget]]),
+    patchStore,
+  );
+  const patchOpen = await patchRouter.execute("open_workspace", { path: "/patch" }, options);
+  const patchResult = await patchRouter.execute("show_changes", { workspaceId: patchOpen.publicWorkspaceId }, options);
+  const sc = patchResult.result.structuredContent as Record<string, unknown>;
+  assert.equal(sc["patch"], patchText, "patch field must not be rewritten");
+  assert.equal((sc["details"] as Record<string, unknown>)["patch"], patchText, "nested patch unchanged");
+  // Also ensure workspaceId mapping still works if present? In this result, workspaceId not present, so no leak check
+}
+
+{
+  // Test: rewrites only workspaceId fields and leaks no private id
+  const privateId = "private-workspace-only-789";
+  const wsTarget: ExecutionTarget = {
+    async execute(tool, args): Promise<ExecutorResult> {
+      if (tool === "open_workspace") {
+        return { content: [{ type: "text", text: `Opened workspace ${privateId}` }], structuredContent: { workspaceId: privateId, root: "/tmp", canonicalRoot: "/tmp" } };
+      }
+      return {
+        content: [{ type: "text", text: "ok" }],
+        structuredContent: { workspaceId: privateId, root: "/tmp", canonicalRoot: "/tmp" },
+      };
+    },
+  };
+  const wsStore = new MemoryStore();
+  const wsRouter = new GatewayExecutionRouter(
+    [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+    new Map([["saga", wsTarget]]),
+    wsStore,
+  );
+  const wsOpen = await wsRouter.execute("open_workspace", { path: "/ws" }, options);
+  const wsResult = await wsRouter.execute("workspace_status", { workspaceId: wsOpen.publicWorkspaceId }, options);
+  assert.equal((wsResult.result.structuredContent as Record<string, unknown>)["workspaceId"], wsOpen.publicWorkspaceId, "workspaceId should be rewritten to publicId");
+  assert.equal(JSON.stringify(wsResult.result).includes(privateId), false, "privateId must not leak in rewritten result");
+}
+
+{
+  // Test: error message rewrite preserves integrity
+  const privateId = "private-error-456";
+  const errorTarget: ExecutionTarget = {
+    async execute(tool, args): Promise<ExecutorResult> {
+      if (tool === "open_workspace") {
+        return { content: [{ type: "text", text: `Opened workspace ${privateId}` }], structuredContent: { workspaceId: privateId } };
+      }
+      throw new Error(`something with ${privateId} and other context`);
+    },
+  };
+  const errorStore = new MemoryStore();
+  const errorRouter = new GatewayExecutionRouter(
+    [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+    new Map([["saga", errorTarget]]),
+    errorStore,
+  );
+  const errorOpen = await errorRouter.execute("open_workspace", { path: "/err" }, options);
+  // Non-workspace error should not corrupt file content portion containing privateId, and should not leak via substring replacement.
+  // After fix, error is rethrown without naive split/join; message should remain containing privateId (original error) OR be preserved.
+  // The gateway should NOT rewrite arbitrary error messages with split/join. We assert that the thrown error does not have publicId substituted in file-content position.
+  // For generic errors, gateway rethrows original; for unknown_workspace errors, it maps to GatewayRoutingError with publicId.
+  try {
+    await errorRouter.execute("read_file", { workspaceId: errorOpen.publicWorkspaceId, path: "x" }, options);
+    assert.fail("should have thrown");
+  } catch (err) {
+    assert.ok(err instanceof Error);
+    // Should not have publicId injected into the arbitrary file-content part via split/join
+    // The original privateId substring should remain (since we don't do substring replace), or if we do exact-match only, it remains
+    assert.equal((err as Error).message.includes(privateId), true, "generic error message should preserve privateId substring (no naive rewrite) or at least not be corrupted to publicId");
+    assert.equal((err as Error).message.includes(errorOpen.publicWorkspaceId), false, "generic error should not have publicId substituted for file content substring");
+  }
+
+  // Unknown workspace error mapping should use publicId without leaking privateId
+  const unknownTarget: ExecutionTarget = {
+    async execute(tool, args): Promise<ExecutorResult> {
+      if (tool === "open_workspace") {
+        return { content: [{ type: "text", text: `Opened workspace ${privateId}` }], structuredContent: { workspaceId: privateId } };
+      }
+      throw new Error(`Unknown workspaceId: ${privateId}. Call open_workspace first.`);
+    },
+  };
+  const unknownStore = new MemoryStore();
+  const unknownRouter = new GatewayExecutionRouter(
+    [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+    new Map([["saga", unknownTarget]]),
+    unknownStore,
+  );
+  const unknownOpen = await unknownRouter.execute("open_workspace", { path: "/unknown" }, options);
+  await assert.rejects(
+    unknownRouter.execute("workspace_status", { workspaceId: unknownOpen.publicWorkspaceId }, options),
+    (error: unknown) => {
+      assert.ok(error instanceof GatewayRoutingError && error.code === "unknown_workspace");
+      assert.equal((error as Error).message.includes(unknownOpen.publicWorkspaceId), true);
+      assert.equal((error as Error).message.includes(privateId), false, "unknown_workspace message must not leak privateId");
+      return true;
+    },
+  );
+}
+
+{
+  // Test: large payload patch not mutated (performance/correctness)
+  const privateId = "private-large-999";
+  const largePatch = "a".repeat(1024 * 1024); // 1 MB
+  const largeTarget: ExecutionTarget = {
+    async execute(tool, args): Promise<ExecutorResult> {
+      if (tool === "open_workspace") {
+        return { content: [{ type: "text", text: `Opened workspace ${privateId}` }], structuredContent: { workspaceId: privateId } };
+      }
+      return {
+        content: [{ type: "text", text: "ok" }],
+        structuredContent: { patch: largePatch } as unknown as Record<string, unknown>,
+      };
+    },
+  };
+  const largeStore = new MemoryStore();
+  const largeRouter = new GatewayExecutionRouter(
+    [{ id: "saga", displayName: "Saga", aliases: [], canonical: true }],
+    new Map([["saga", largeTarget]]),
+    largeStore,
+  );
+  const largeOpen = await largeRouter.execute("open_workspace", { path: "/large" }, options);
+  const largeResult = await largeRouter.execute("show_changes", { workspaceId: largeOpen.publicWorkspaceId }, options);
+  assert.equal((largeResult.result.structuredContent as Record<string, unknown>)["patch"], largePatch, "large patch must be returned without mutation");
+}
+
 // A reconstructed router must honor the persisted machine affinity and hide the
 // executor's private workspace ID on the next operation.
 const restartState = mkdtempSync(join(tmpdir(), "devspace-gateway-router-restart-"));
