@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -22,6 +23,12 @@ export interface SkyCuaConfig {
   projectRoot: string;
   binPath: string;
   serviceSocketPath?: string;
+}
+
+export interface NodeReplConfig {
+  binPath: string;
+  cwd: string;
+  maxPerHost: number;
 }
 
 export interface ServerConfig {
@@ -50,6 +57,7 @@ export interface ServerConfig {
   sessions: SessionConfig;
   disabledCapabilities?: Set<string>;
   skyCua?: SkyCuaConfig;
+  nodeRepl?: NodeReplConfig;
 }
 
 export interface ShellConfig {
@@ -278,6 +286,19 @@ export function parseSkyCuaConfig(env: NodeJS.ProcessEnv): SkyCuaConfig {
   return { projectRoot, binPath, serviceSocketPath };
 }
 
+export function parseNodeReplConfig(env: NodeJS.ProcessEnv): NodeReplConfig {
+  const binPath = env.DEVSPACE_NODE_REPL_BIN?.trim()
+    ? resolve(expandHomePath(env.DEVSPACE_NODE_REPL_BIN.trim()))
+    : env.NODE_REPL_BIN?.trim()
+      ? resolve(expandHomePath(env.NODE_REPL_BIN.trim()))
+      : existsSync(resolve(expandHomePath("~/.local/share/sky-cua/bin/node_repl")))
+        ? resolve(expandHomePath("~/.local/share/sky-cua/bin/node_repl"))
+        : join(resolve(expandHomePath("~/projects/sky-cua")), "bin/node_repl");
+  const cwd = resolve(expandHomePath(env.DEVSPACE_NODE_REPL_CWD?.trim() || "~/.local/share/sky-cua"));
+  const maxPerHost = parsePositiveInteger(env.DEVSPACE_NODE_REPL_MAX_PER_HOST, 12, "DEVSPACE_NODE_REPL_MAX_PER_HOST");
+  return { binPath, cwd, maxPerHost };
+}
+
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
@@ -347,6 +368,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const stateDir = resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir()));
   const disabledCapabilities = parseDisabledCapabilities(env.DISABLED_CAPABILITIES);
   const skyCua = parseSkyCuaConfig(env);
+  const nodeRepl = parseNodeReplConfig(env);
   const baseSkillPaths = parsePathList(env.DEVSPACE_SKILL_PATHS);
   // Always wire sky-cua skills; per-session filtering via effectiveDisabled (global + X-Disabled-Capabilities header) decides visibility.
   const skillPaths = [...baseSkillPaths, join(skyCua.projectRoot, "skills")];
@@ -399,6 +421,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     },
     disabledCapabilities,
     skyCua,
+    nodeRepl,
   };
 }
 

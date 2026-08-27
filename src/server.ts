@@ -44,6 +44,13 @@ const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
 // Keyed by binPath so changing DEVSPACE_SKY_CUA_BIN without restart does not reuse stale binary.
 // Unhealthy bridges are not cached - next enabled session retries.
 let skyBridgeCache = new Map<string, Promise<import("./sky-cua/bridge.js").SkyBridge | null>>();
+
+// node_repl per-session bridges: one process per MCP session for isolation (UR-REV-004).
+// Keyed by sessionId, sweep alongside transports. Cap via config.nodeRepl.maxPerHost.
+const sessionNodeReplBridges = new Map<string, import("./node-repl-bridge.js").NodeReplBridge>();
+const serverNodeReplBridge = new WeakMap<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, import("./node-repl-bridge.js").NodeReplBridge>();
+let pendingNodeReplCreates = 0;
+const serverTransportMap = new WeakMap<object, any>();
 async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bridge.js").SkyBridge | null> {
   const disabled = config.disabledCapabilities ?? new Set<string>();
   if (isCapabilityDisabled(disabled, "sky-cua")) return null;
@@ -87,6 +94,10 @@ export function parseEffectiveDisabledFromRequest(req: Request, config: ServerCo
 
 function isSkyCuaDisabled(effective: Set<string>): boolean {
   return isCapabilityDisabled(effective, "sky-cua");
+}
+
+function isNodeReplDisabled(effective: Set<string>): boolean {
+  return isCapabilityDisabled(effective, "node_repl");
 }
 
 function filterSkyCuaSkillsForEffective(skills: unknown[] | undefined, effective: Set<string>, skyCuaRoot?: string): unknown[] | undefined {
@@ -894,6 +905,7 @@ function publicExecutorResult(
   const structuredTools = new Set<CanonicalToolName>([
     "open_workspace", "workspace_status", "close_workspace", "show_changes",
     "terminal_start", "terminal_read", "terminal_write", "terminal_resize", "terminal_status", "terminal_close",
+    "multi_read",
   ]);
   const structuredContent = structuredTools.has(canonicalTool)
     ? executorStructured
@@ -1294,6 +1306,52 @@ async function createMcpServer(
 
   registerAppTool(
     server,
+    "multi_read",
+    {
+      title: "Multi read",
+      description:
+        "Read multiple files inside an open workspace in one round-trip. Prefer this over N× read_file when you need several files. Each entry is relative to the workspace root and supports offset/limit like read_file. Call open_workspace first and pass workspaceId. Per-file allowlist and audit are applied; partial success is success.",
+      inputSchema: {
+        workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
+        reads: z
+          .array(
+            z.object({
+              path: z.string().describe("File path to read, relative to the workspace root."),
+              offset: z.number().int().positive().optional().describe("1-indexed line number to start reading from."),
+              limit: z.number().int().positive().optional().describe("Maximum number of lines to read."),
+            }),
+          )
+          .min(1)
+          .max(20)
+          .describe("Files to read (1-20). Each supports offset/limit."),
+        maxBytesPerFile: z.number().int().positive().max(2_000_000).optional().describe("Max bytes per file before truncation (default 256000)."),
+        maxTotalBytes: z.number().int().positive().max(10_000_000).optional().describe("Max total bytes across all files (default 1000000)."),
+      },
+      outputSchema: resultOutputSchema({
+        results: z.array(
+          z.object({
+            path: z.string(),
+            canonicalPath: z.string().optional(),
+            status: z.enum(["ok", "error"]),
+            content: z.string().optional(),
+            truncated: z.boolean().optional(),
+            bytes: z.number().int().optional(),
+            error: z.object({ code: z.string(), message: z.string() }).optional(),
+          }),
+        ),
+        totalBytes: z.number().int().optional(),
+      }),
+      ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ workspaceId, ...input }, extra) => {
+      if (gatewayRouter) return routeGatewayTool(gatewayRouter, "multi_read", "multi_read", { workspaceId, ...input }, extra);
+      return routeStandaloneTool(executor, "multi_read", "multi_read", { workspaceId, ...input }, extra);
+    },
+  );
+
+  registerAppTool(
+    server,
     toolNames.write,
     {
       title: "Write file",
@@ -1610,6 +1668,68 @@ async function createMcpServer(
   // Hidden when DISABLED_CAPABILITIES includes sky-cua (per-session header or global),
   // or when the gateway node's disabledCapabilities hides it.
   const effectiveSet = effective ?? new Set<string>();
+  // node_repl per-session bridge — lazy spawn on first use to avoid blocking initialize (RV-001)
+  // Gated by DISABLED_CAPABILITIES=node_repl, independent of sky-cua. Cap enforced at first use.
+  if (!isNodeReplDisabled(effectiveSet)) {
+    const maxPerHost = config.nodeRepl?.maxPerHost ?? 12;
+    let lazyBridge: import("./node-repl-bridge.js").NodeReplBridge | null = null;
+    let lazyBridgePromise: Promise<import("./node-repl-bridge.js").NodeReplBridge> | null = null;
+    const getOrCreateBridge = async (signal?: AbortSignal): Promise<import("./node-repl-bridge.js").NodeReplBridge> => {
+      if (lazyBridge) return lazyBridge;
+      if (lazyBridgePromise) return lazyBridgePromise;
+      if (sessionNodeReplBridges.size + pendingNodeReplCreates >= maxPerHost) throw new Error(`node_repl per-host cap ${maxPerHost} reached`);
+      pendingNodeReplCreates++;
+      lazyBridgePromise = (async () => {
+        const mod = await import("./node-repl-bridge.js");
+        const b = await mod.createNodeReplBridge(config);
+        if (!b.healthy) throw new Error(b.error ?? "node_repl unavailable");
+        if (sessionNodeReplBridges.size >= maxPerHost) { try { await b.close(); } catch {} throw new Error(`node_repl per-host cap ${maxPerHost} reached`); }
+        lazyBridge = b;
+        serverNodeReplBridge.set(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, b);
+        const maybeTransport: any = serverTransportMap.get(server as unknown as object);
+        const sid: string | undefined = maybeTransport?.sessionId;
+        if (sid) sessionNodeReplBridges.set(sid, b);
+        return b;
+      })();
+      try { return await lazyBridgePromise; } finally { pendingNodeReplCreates = Math.max(0, pendingNodeReplCreates - 1); lazyBridgePromise = null; }
+    };
+    // Hardcoded defs to avoid needing spawn to discover (fixes eager block + RV-002)
+    const nodeReplDefs: Array<{ name: string; title: string; description: string; shape: Record<string, z.ZodTypeAny> }> = [
+      { name: "js", title: "Node REPL js", description: "Execute JavaScript in persistent Node REPL. Use nodeRepl.write for output. Top-level var persists until js_reset.", shape: { code: z.string().describe("JavaScript source to execute"), timeout_ms: z.number().int().optional().describe("Timeout in ms"), title: z.string().optional().describe("Title") } },
+      { name: "js_reset", title: "Node REPL reset", description: "Reset the persistent JS kernel and clear bindings.", shape: {} },
+      { name: "js_add_node_module_dir", title: "Add node_modules dir", description: "Add an absolute node_modules directory to search path.", shape: { path: z.string().describe("Absolute path to node_modules") } },
+    ];
+    for (const def of nodeReplDefs) {
+      registerAppTool(
+        server as never,
+        def.name as never,
+        {
+          title: def.title,
+          description: def.description,
+          inputSchema: def.shape,
+          annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as ToolAnnotations),
+          _meta: {},
+        } as never,
+        (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
+          const b = await getOrCreateBridge(extra.signal);
+          const result = await b.callTool(def.name, input as Record<string, unknown>, extra.signal);
+          const mapped: Record<string, unknown> = {
+            content: result.content as unknown[],
+            ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
+            ...(result.isError ? { isError: true } : {}),
+          };
+          if ((mapped.content as unknown[]).length === 0) (mapped.content as unknown[]).push({ type: "text", text: "" });
+          return mapped as { content: { type: string; text?: string }[]; structuredContent?: unknown; isError?: boolean };
+        }) as never,
+      );
+    }
+    const origClose = (server as unknown as { close?: () => Promise<void> }).close;
+    (server as unknown as { close: () => Promise<void> }).close = async () => {
+      const b = lazyBridge ?? serverNodeReplBridge.get(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer);
+      if (b) try { await b.close(); } catch {}
+      if (origClose) await origClose.call(server);
+    };
+  }
   if (!isSkyCuaDisabled(effectiveSet)) {
     const bridge = await getSkyBridge(config);
     if (bridge && bridge.healthy) {
@@ -1864,6 +1984,9 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
             for (const v of bodyMeta.split(",")) if (v.trim()) pendingEffectiveDisabled.add(v.trim().toLowerCase());
           }
         } catch {}
+        // RB-001 fix: bridge is created in createMcpServer before sessionId exists.
+        // Capture server reference and link bridge in onsessioninitialized when sid is known.
+        let serverForBridge: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer | null = null;
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
@@ -1871,6 +1994,26 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
               transports.set(newSessionId, transport);
               lastActiveAt.set(newSessionId, Date.now());
               sessionEffectiveDisabled.set(newSessionId, new Set(pendingEffectiveDisabled));
+              // Link per-session node_repl bridge now that sid is known (RB-001)
+              if (serverForBridge) {
+                const maybeBridge = serverNodeReplBridge.get(serverForBridge);
+                if (maybeBridge) {
+                  sessionNodeReplBridges.set(newSessionId, maybeBridge);
+                  const prevOnClose = transport.onclose;
+                  transport.onclose = () => {
+                    const b = sessionNodeReplBridges.get(newSessionId);
+                    if (b) { void b.close().catch(() => {}); sessionNodeReplBridges.delete(newSessionId); }
+                    serverNodeReplBridge.delete(serverForBridge!);
+                    if (prevOnClose) prevOnClose();
+                    else {
+                      transports.delete(newSessionId);
+                      lastActiveAt.delete(newSessionId);
+                      sessionEffectiveDisabled.delete(newSessionId);
+                      logEvent(config.logging, "info", "mcp_session_closed", { sessionIdPrefix: sessionIdPrefix(newSessionId) });
+                    }
+                  };
+                }
+              }
             }
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
@@ -1887,15 +2030,26 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
             transports.delete(closedSessionId);
             lastActiveAt.delete(closedSessionId);
             sessionEffectiveDisabled.delete(closedSessionId);
+            const b = sessionNodeReplBridges.get(closedSessionId);
+            if (b) { void b.close().catch(() => {}); sessionNodeReplBridges.delete(closedSessionId); }
             logEvent(config.logging, "info", "mcp_session_closed", {
               sessionIdPrefix: sessionIdPrefix(closedSessionId),
             });
+          } else {
+            // Initialize failed before sessionId assigned: close any pending bridge via WeakMap
+            // serverForBridge may have bridge that never got linked
+            if (serverForBridge) {
+              const maybeBridge = serverNodeReplBridge.get(serverForBridge);
+              if (maybeBridge) { void maybeBridge.close().catch(() => {}); serverNodeReplBridge.delete(serverForBridge); }
+            }
           }
         };
 
         const effectiveDisabled = pendingEffectiveDisabled;
         const server = await createMcpServer(config, executor, options.gatewayRouter, effectiveDisabled);
+        serverForBridge = server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
         await server.connect(transport);
+        serverTransportMap.set(server as unknown as object, transport);
       } else {
         logEvent(config.logging, "warn", "mcp_routing_error", {
           requestId,
@@ -1954,6 +2108,8 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
       if (!transport) {
         lastActiveAt.delete(sessionId);
         sessionEffectiveDisabled.delete(sessionId);
+        const b = sessionNodeReplBridges.get(sessionId);
+        if (b) { void b.close().catch(() => {}); sessionNodeReplBridges.delete(sessionId); }
         continue;
       }
       evicted += 1;
@@ -1962,6 +2118,8 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
         idleSeconds: Math.round((now - lastActive) / 1000),
         ttlSeconds: config.sessions.idleTtlSeconds,
       });
+      const b = sessionNodeReplBridges.get(sessionId);
+      if (b) { void b.close().catch(() => {}); sessionNodeReplBridges.delete(sessionId); }
       void transport.close().catch(() => undefined);
     }
     logEvent(config.logging, "debug", "mcp_session_count", {
@@ -1989,6 +2147,9 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
       transports.clear();
       lastActiveAt.clear();
       sessionEffectiveDisabled.clear();
+      for (const b of sessionNodeReplBridges.values()) void b.close().catch(() => {});
+      sessionNodeReplBridges.clear();
+      // WeakMap serverNodeReplBridge entries will be GC'd with servers
       // close sky bridges if created
       for (const p of skyBridgeCache.values()) void p.then((b) => b?.close()).catch(() => undefined);
       skyBridgeCache.clear();
