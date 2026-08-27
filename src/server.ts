@@ -405,6 +405,19 @@ const PHONE_EPHEMERAL_AGENTS_CONTENT = [
 function phoneEphemeralAgentsFile(): { path: string; content: string } {
   return { path: PHONE_EPHEMERAL_AGENTS_PATH, content: PHONE_EPHEMERAL_AGENTS_CONTENT };
 }
+const PHONE_USE_SKILL_EPHEMERAL_PATH = ".devspace/skills/phone-use/SKILL.md";
+function phoneUseSkillEphemeralFile(config: ServerConfig): { path: string; content: string } | null {
+  const root = config.skyCua?.projectRoot ?? "";
+  if (!root) return null;
+  try {
+    const p = `${root}/skills/phone-use/SKILL.md`;
+    const content = readFileSync(p, "utf8");
+    if (!content.trim()) return null;
+    return { path: PHONE_USE_SKILL_EPHEMERAL_PATH, content };
+  } catch {
+    return null;
+  }
+}
 
 function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
   // sky-cua's rich validation (validation_schemas, not the flattened advertised schema) is strict:
@@ -468,7 +481,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
     ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
     : "";
 
-  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. When sky-cua phone is enabled, ${PHONE_EPHEMERAL_AGENTS_PATH} is auto-injected on open and contains the Direct epoch/session lifecycle. `;
+  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. When sky-cua phone is enabled, ${PHONE_EPHEMERAL_AGENTS_PATH} and ${PHONE_USE_SKILL_EPHEMERAL_PATH} are auto-injected on open: the former has the Direct epoch/session lifecycle, the latter is the full phone-use skill (AppShot/snapshot/execution contract). `;
 
   const showChanges =
     config.widgets === "changes"
@@ -979,7 +992,7 @@ async function createMcpServer(
         const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[] } } })._meta?.card;
         if (card?.skills) card.skills = filterSkyCuaSkillsForEffective(card.skills, effective, config.skyCua?.projectRoot) as unknown as never;
       } else {
-        // Ephemeral phone lifecycle guidance: injected as AGENTS.md so every workspace open sees it.
+        // Ephemeral phone lifecycle guidance + full phone-use skill: injected as AGENTS so every workspace open is fully loaded without an extra read.
         const sc = (awaited as unknown as {
           structuredContent?: {
             agentsFiles?: Array<{ path: string; content: string }>;
@@ -990,15 +1003,23 @@ async function createMcpServer(
         }).structuredContent;
         const card = (awaited as unknown as { _meta?: { card?: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } } })._meta?.card;
         const phoneFile = phoneEphemeralAgentsFile();
+        const phoneSkillFile = phoneUseSkillEphemeralFile(config);
         const inject = (target: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } | undefined) => {
           if (!target) return;
-          if (Array.isArray(target.agentsFiles)) {
-            if (!target.agentsFiles.some((f) => f.path === phoneFile.path)) target.agentsFiles.push(phoneFile);
-          } else target.agentsFiles = [phoneFile];
-          if (Array.isArray(target.availableAgentsFiles)) {
-            if (!target.availableAgentsFiles.some((f) => f.path === phoneFile.path)) target.availableAgentsFiles.push({ path: phoneFile.path });
-          } else target.availableAgentsFiles = [{ path: phoneFile.path }];
-          if (typeof target.instruction === "string") target.instruction += "\n\n" + PHONE_EPHEMERAL_AGENTS_CONTENT;
+          const filesToInject: Array<{ path: string; content: string }> = [phoneFile];
+          if (phoneSkillFile) filesToInject.push(phoneSkillFile);
+          for (const f of filesToInject) {
+            if (Array.isArray(target.agentsFiles)) {
+              if (!target.agentsFiles.some((existing) => existing.path === f.path)) target.agentsFiles.push(f);
+            } else target.agentsFiles = [f];
+            if (Array.isArray(target.availableAgentsFiles)) {
+              if (!target.availableAgentsFiles.some((existing) => existing.path === f.path)) target.availableAgentsFiles.push({ path: f.path });
+            } else target.availableAgentsFiles = [{ path: f.path }];
+          }
+          if (typeof target.instruction === "string") {
+            target.instruction += "\n\n" + PHONE_EPHEMERAL_AGENTS_CONTENT;
+            if (phoneSkillFile) target.instruction += `\n\nPhone-use skill is also auto-injected as ${phoneSkillFile.path} — read it for the full AppShot/snapshot/execution contract.`;
+          }
         };
         inject(sc);
         inject(card as unknown as never);
@@ -1162,6 +1183,16 @@ async function createMcpServer(
           content: [{ type: "text", text }],
           structuredContent: { result: text },
         } as unknown as never;
+      }
+      if (p === PHONE_USE_SKILL_EPHEMERAL_PATH && !isSkyCuaDisabled(effective)) {
+        const file = phoneUseSkillEphemeralFile(config);
+        const text = file?.content ?? "";
+        if (text) {
+          return {
+            content: [{ type: "text", text }],
+            structuredContent: { result: text },
+          } as unknown as never;
+        }
       }
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "read_file", toolNames.read, { workspaceId, ...input }, extra);
       return routeStandaloneTool(executor, "read_file", toolNames.read, { workspaceId, ...input }, extra);},
