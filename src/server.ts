@@ -89,10 +89,6 @@ function isSkyCuaDisabled(effective: Set<string>): boolean {
   return isCapabilityDisabled(effective, "sky-cua");
 }
 
-function isNodeReplDisabled(effective: Set<string>): boolean {
-  return isCapabilityDisabled(effective, "node_repl");
-}
-
 function filterSkyCuaSkillsForEffective(skills: unknown[] | undefined, effective: Set<string>, skyCuaRoot?: string): unknown[] | undefined {
   if (!skills || !isSkyCuaDisabled(effective)) return skills;
   const root = skyCuaRoot ?? "";
@@ -898,7 +894,6 @@ function publicExecutorResult(
   const structuredTools = new Set<CanonicalToolName>([
     "open_workspace", "workspace_status", "close_workspace", "show_changes",
     "terminal_start", "terminal_read", "terminal_write", "terminal_resize", "terminal_status", "terminal_close",
-    "multi_read",
   ]);
   const structuredContent = structuredTools.has(canonicalTool)
     ? executorStructured
@@ -1299,52 +1294,6 @@ async function createMcpServer(
 
   registerAppTool(
     server,
-    "multi_read",
-    {
-      title: "Multi read",
-      description:
-        "Read multiple files inside an open workspace in one round-trip. Prefer this over N× read_file when you need several files. Each entry is relative to the workspace root and supports offset/limit like read_file. Call open_workspace first and pass workspaceId. Per-file allowlist and audit are applied; partial success is success.",
-      inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        reads: z
-          .array(
-            z.object({
-              path: z.string().describe("File path to read, relative to the workspace root."),
-              offset: z.number().int().positive().optional().describe("1-indexed line number to start reading from."),
-              limit: z.number().int().positive().optional().describe("Maximum number of lines to read."),
-            }),
-          )
-          .min(1)
-          .max(20)
-          .describe("Files to read (1-20). Each supports offset/limit."),
-        maxBytesPerFile: z.number().int().positive().max(2_000_000).optional().describe("Max bytes per file before truncation (default 256000)."),
-        maxTotalBytes: z.number().int().positive().max(10_000_000).optional().describe("Max total bytes across all files (default 1000000)."),
-      },
-      outputSchema: resultOutputSchema({
-        results: z.array(
-          z.object({
-            path: z.string(),
-            canonicalPath: z.string().optional(),
-            status: z.enum(["ok", "error"]),
-            content: z.string().optional(),
-            truncated: z.boolean().optional(),
-            bytes: z.number().int().optional(),
-            error: z.object({ code: z.string(), message: z.string() }).optional(),
-          }),
-        ),
-        totalBytes: z.number().int().optional(),
-      }),
-      ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    async ({ workspaceId, ...input }, extra) => {
-      if (gatewayRouter) return routeGatewayTool(gatewayRouter, "multi_read", "multi_read", { workspaceId, ...input }, extra);
-      return routeStandaloneTool(executor, "multi_read", "multi_read", { workspaceId, ...input }, extra);
-    },
-  );
-
-  registerAppTool(
-    server,
     toolNames.write,
     {
       title: "Write file",
@@ -1661,59 +1610,6 @@ async function createMcpServer(
   // Hidden when DISABLED_CAPABILITIES includes sky-cua (per-session header or global),
   // or when the gateway node's disabledCapabilities hides it.
   const effectiveSet = effective ?? new Set<string>();
-  // node_repl per-session bridge — one process per MCP session for isolation (per your proposal).
-  // Gated by DISABLED_CAPABILITIES=node_repl, independent of sky-cua. Created per-McpServer instance so each session gets its own JS heap.
-  if (!isNodeReplDisabled(effectiveSet)) {
-    try {
-      const mod = await import("./node-repl-bridge.js");
-      const nodeBridge = await mod.createNodeReplBridge();
-      if (nodeBridge && nodeBridge.healthy) {
-        for (const tool of nodeBridge.tools) {
-          const rawInputShape: Record<string, z.ZodTypeAny> = (() => {
-            const s = tool.inputSchema as z.ZodTypeAny;
-            if (s instanceof z.ZodObject) return (s as z.ZodObject<Record<string, z.ZodTypeAny>>).shape;
-            const maybeShape = (s as unknown as { shape?: Record<string, z.ZodTypeAny> }).shape;
-            if (maybeShape && typeof maybeShape === "object" && !Array.isArray(maybeShape)) return maybeShape;
-            return {};
-          })();
-          const hasShape = Object.keys(rawInputShape).length > 0;
-          const baseAnnotations = tool.annotations ?? { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
-          const nodeAnnotations = { ...baseAnnotations, destructiveHint: false, openWorldHint: false };
-          registerAppTool(
-            server as never,
-            tool.name as never,
-            {
-              title: tool.title ?? tool.name,
-              description: tool.description ?? `node_repl tool ${tool.name}`,
-              ...(hasShape ? { inputSchema: rawInputShape } : { inputSchema: {} }),
-              ...(tool.outputSchema ? { outputSchema: tool.outputSchema as unknown as Record<string, z.ZodTypeAny> } : {}),
-              annotations: toolAnnotationsForProfile(config.annotationProfile, nodeAnnotations as ToolAnnotations),
-              _meta: {},
-            } as never,
-            (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
-              if (!hasShape) {
-                const parsed = (tool.inputSchema as z.ZodTypeAny).safeParse(input);
-                if (!parsed.success) throw new Error(`Invalid arguments for tool ${tool.name}: ${parsed.error.message}`);
-              }
-              const result = await nodeBridge.callTool(tool.name, input as Record<string, unknown>, extra.signal);
-              const mapped: Record<string, unknown> = {
-                content: result.content as unknown[],
-                ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
-                ...(result.isError ? { isError: true } : {}),
-              };
-              if ((mapped.content as unknown[]).length === 0) (mapped.content as unknown[]).push({ type: "text", text: "" });
-              return mapped as { content: { type: string; text?: string }[]; structuredContent?: unknown; isError?: boolean };
-            }) as never,
-          );
-        }
-        const origClose = (server as unknown as { close?: () => Promise<void> }).close;
-        (server as unknown as { close: () => Promise<void> }).close = async () => {
-          try { await nodeBridge.close(); } catch {}
-          if (origClose) await origClose.call(server);
-        };
-      }
-    } catch {}
-  }
   if (!isSkyCuaDisabled(effectiveSet)) {
     const bridge = await getSkyBridge(config);
     if (bridge && bridge.healthy) {
