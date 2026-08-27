@@ -38,9 +38,12 @@ try {
   assert.equal(started.persistentAcrossDevspaceRestart, false);
 
   await manager.write({ workspaceId: "ws_terminal", terminalId: id, text: "hello terminal", submit: true });
-  await delay(150);
-  const firstRead = await manager.read({ workspaceId: "ws_terminal", terminalId: id, mode: "screen" });
-  assert.match(firstRead.output, /hello terminal/);
+  let firstRead: Awaited<ReturnType<typeof manager.read>> | undefined;
+  await waitUntil(async () => {
+    firstRead = await manager.read({ workspaceId: "ws_terminal", terminalId: id, mode: "screen" });
+    return /hello terminal/.test(firstRead.output);
+  });
+  assert.match(firstRead!.output, /hello terminal/);
 
   const resized = await manager.resize({ workspaceId: "ws_terminal", terminalId: id, cols: 120, rows: 40 });
   assert.equal(resized.cols, 120);
@@ -51,8 +54,12 @@ try {
   manager = new TerminalManager(config, runtime, stateDir);
   const recovered = await manager.status("ws_terminal", id);
   assert.equal(recovered[0]?.status, "active");
-  const recoveredRead = await manager.read({ workspaceId: "ws_terminal", terminalId: id, mode: "history", lines: 100 });
-  assert.match(recoveredRead.output, /hello terminal/);
+  let recoveredRead: Awaited<ReturnType<typeof manager.read>> | undefined;
+  await waitUntil(async () => {
+    recoveredRead = await manager.read({ workspaceId: "ws_terminal", terminalId: id, mode: "history", lines: 100 });
+    return /hello terminal/.test(recoveredRead.output);
+  });
+  assert.match(recoveredRead!.output, /hello terminal/);
 
   const closed = await manager.close({ workspaceId: "ws_terminal", terminalId: id });
   assert.equal(closed.status, "closed");
@@ -78,10 +85,18 @@ try {
     () => failureManager.start({ workspaceId: "ws_failure", command: "cat", workingDirectory: root }),
     /forced terminal insert failure/,
   );
-  await assert.rejects(
-    () => execFileAsync("tmux", ["-S", join(failureRuntimeDir, "tmux.sock"), "list-sessions"]),
-  );
+  // After DB insert failure, the tmux backend session must have been cleaned up — no orphaned dsp- session should remain.
+  // Use session_name format to avoid matching on window counts; host tmux configs (e.g. continuum) may restore extra sessions.
+  const leakedNames = await execFileAsync("tmux", ["-S", join(failureRuntimeDir, "tmux.sock"), "list-sessions", "-F", "#{session_name}"])
+    .then(({ stdout }) => stdout.trim().split("\n").map((s) => s.trim()).filter(Boolean))
+    .catch((e: any) => {
+      if (e?.code === 1) return [] as string[];
+      throw e;
+    });
+  const hasLeakedDsp = leakedNames.some((n) => n.startsWith("dsp-"));
+  assert.equal(hasLeakedDsp, false, `no leaked dsp- tmux sessions after failed insert, got: ${leakedNames.join(", ")}`);
   failureManager.closeStore();
+  await execFileAsync("tmux", ["-S", join(failureRuntimeDir, "tmux.sock"), "kill-server"]).catch(() => {});
 
   const realTmux = (await execFileAsync("sh", ["-c", "command -v tmux"], { encoding: "utf8" })).stdout.trim();
   const wrapperBin = join(root, "wrapper-bin");
@@ -154,4 +169,12 @@ try {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(fn: () => Promise<boolean>, ms = 1000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (await fn()) return;
+    await delay(50);
+  }
 }
