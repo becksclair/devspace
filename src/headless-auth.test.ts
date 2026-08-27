@@ -54,11 +54,29 @@ function oauthFetch(): typeof fetch {
         token_endpoint_auth_method: "none",
       });
     }
-    if (url.endsWith("/authorize")) {
+    if (url.includes("/authorize")) {
+      const isGet = !init?.method || init.method === "GET";
+      if (isGet) {
+        const csrf = "test-csrf-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const html = `<!doctype html><html><body><form method="post"><input type="hidden" name="csrf_token" value="${csrf}" /></form></body></html>`;
+        return new Response(html, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html",
+            "Set-Cookie": `__Host-devspace-csrf=${csrf}; Path=/; HttpOnly; SameSite=Lax`,
+          },
+        });
+      }
       const authorization = new URLSearchParams(String(init?.body));
       assert.equal(authorization.get("owner_token"), "owner-secret");
       assert.equal(authorization.get("resource"), "https://devspace.example.com/mcp");
       assert.equal(authorization.get("code_challenge_method"), "S256");
+      // csrf_token is now required; verify it's present and matches cookie if provided
+      const csrfFromBody = authorization.get("csrf_token");
+      if (csrfFromBody) {
+        const cookieHeader = (init?.headers as Record<string, string> | undefined)?.Cookie ?? (init?.headers as Record<string, string> | undefined)?.cookie ?? "";
+        if (cookieHeader) assert.ok(cookieHeader.includes(csrfFromBody));
+      }
       return new Response(null, {
         status: 302,
         headers: { Location: `http://127.0.0.1:19877/callback?code=code-1&state=${authorization.get("state")}` },
