@@ -386,6 +386,22 @@ function toolNamesFor(config: ServerConfig): ToolNames {
       };
 }
 
+const PHONE_EPHEMERAL_AGENTS_PATH = ".devspace/phone-AGENTS.md";
+const PHONE_EPHEMERAL_AGENTS_CONTENT = [
+  "# Phone — ephemeral lifecycle guidance (auto-injected when sky-cua is enabled)",
+  "",
+  "CompanionDirect sessions are **epoch-fenced**: `direct-{device_id}-{epoch}`. The companion ws epoch bumps on every reconnect (S26 `f6e5da20-d8df…`/`7381631a…` 1→13 observed), so a session is expected to drop.",
+  "",
+  "- **Ground truth for connectivity:** `list_resources(surface:phone, resource:devices)` (or `status(phone, refresh_devices:true)`). `status(phone)` without refresh only probes ADB and will show `devices=0` even when Direct devices are live — don't use it as \"Not connected\".",
+  "- **To (re)connect:** `phone_connection(operation:connect, alias:phone)` — use `alias:phone` (default, S26) or `alias:tablet`. This mints `direct-{device_id}-{new_epoch}`. After a drop, **use `connect`, not `refresh`**. `refresh` requires a live `session_id` and returns `PhoneNoSession`/\"Not connected\" when the old session was evicted by `reconcile_direct_sessions()`.",
+  "- **Device visible but session 0:** Companion says `Connected to Saga/Asgard` + `list_resources` shows `2 devices` but `status` shows `sessions=0` → just `connect` again. If `list_resources` shows `0 devices` while Companion says connected, the DevSpace gateway's `sky-cua-client mcp` bridge is stale after a `sky-cua-service` restart (stale `service.sock`). Gateway restart (Saga/Asgard) clears it — no re-pairing needed.",
+  "- **Notifications/accessibility:** require `notification_listener_enabled:true`/`accessibility_enabled:true` in the `phone_connection` capability. After `connect`, `phone_notifications(alias:phone)` returns `backend companion` (fixed for Direct). Verified on Saga `738…` → 3 events.",
+  "- **Android Doze:** expect epoch churn every 30-90 min. Keep Companion foreground: `Settings → Apps → Sky Companion → Battery → Unrestricted`, `Pause if unused OFF`, keep Tailscale active. Then just `connect` again.",
+].join("\n");
+function phoneEphemeralAgentsFile(): { path: string; content: string } {
+  return { path: PHONE_EPHEMERAL_AGENTS_PATH, content: PHONE_EPHEMERAL_AGENTS_CONTENT };
+}
+
 function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiveDisabled?: Set<string>): string {
   const disabled = effectiveDisabled ?? config.disabledCapabilities ?? new Set<string>();
   const skyDisabled = isCapabilityDisabled(disabled, "sky-cua");
@@ -397,7 +413,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
     ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
     : "";
 
-  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
+  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. When sky-cua phone is enabled, ${PHONE_EPHEMERAL_AGENTS_PATH} is auto-injected on open and contains the Direct epoch/session lifecycle. `;
 
   const showChanges =
     config.widgets === "changes"
@@ -406,7 +422,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
 
   const skyCua = skyDisabled
     ? ""
-    : " sky-cua desktop/browser/phone (sky-cua) tools are available: desktop/browser observe/capture/input plus phone Companion (aliases phone=default + tablet) via status/list_resources(surface=phone)/phone_connection/observe(surface=phone)/phone_pointer etc. When a task matches browser-use/computer-use/phone-use, read that SKILL.md before acting and follow its AppShot/phone_snapshot_id contract.";
+    : " sky-cua desktop/browser/phone (sky-cua) tools are available: desktop/browser observe/capture/input plus phone Companion (aliases phone=default + tablet) via status/list_resources(surface=phone)/phone_connection/observe(surface=phone)/phone_pointer etc. Phone sessions are epoch-fenced — use connect, not refresh, after a drop; list_resources is the ground truth. When a task matches browser-use/computer-use/phone-use, read that SKILL.md before acting and follow its AppShot/phone_snapshot_id contract.";
 
   return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode=\"isolated\" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}`;
 }
@@ -907,6 +923,30 @@ async function createMcpServer(
         if (sc?.skillDiagnostics) sc.skillDiagnostics = filterSkyCuaSkillsForEffective(sc.skillDiagnostics, effective, config.skyCua?.projectRoot) as unknown as never;
         const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[] } } })._meta?.card;
         if (card?.skills) card.skills = filterSkyCuaSkillsForEffective(card.skills, effective, config.skyCua?.projectRoot) as unknown as never;
+      } else {
+        // Ephemeral phone lifecycle guidance: injected as AGENTS.md so every workspace open sees it.
+        const sc = (awaited as unknown as {
+          structuredContent?: {
+            agentsFiles?: Array<{ path: string; content: string }>;
+            availableAgentsFiles?: Array<{ path: string }>;
+            instruction?: string;
+            skills?: unknown[];
+          };
+        }).structuredContent;
+        const card = (awaited as unknown as { _meta?: { card?: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } } })._meta?.card;
+        const phoneFile = phoneEphemeralAgentsFile();
+        const inject = (target: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } | undefined) => {
+          if (!target) return;
+          if (Array.isArray(target.agentsFiles)) {
+            if (!target.agentsFiles.some((f) => f.path === phoneFile.path)) target.agentsFiles.push(phoneFile);
+          } else target.agentsFiles = [phoneFile];
+          if (Array.isArray(target.availableAgentsFiles)) {
+            if (!target.availableAgentsFiles.some((f) => f.path === phoneFile.path)) target.availableAgentsFiles.push({ path: phoneFile.path });
+          } else target.availableAgentsFiles = [{ path: phoneFile.path }];
+          if (typeof target.instruction === "string") target.instruction += "\n\n" + PHONE_EPHEMERAL_AGENTS_CONTENT;
+        };
+        inject(sc);
+        inject(card as unknown as never);
       }
       return awaited;
     }) as unknown as never,
@@ -1060,6 +1100,14 @@ async function createMcpServer(
       annotations: { readOnlyHint: true },
     },
     async ({ workspaceId, ...input }, extra) => {
+      const p = (input as { path?: string }).path;
+      if (p === PHONE_EPHEMERAL_AGENTS_PATH && !isSkyCuaDisabled(effective)) {
+        const text = PHONE_EPHEMERAL_AGENTS_CONTENT;
+        return {
+          content: [{ type: "text", text }],
+          structuredContent: { result: text },
+        } as unknown as never;
+      }
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "read_file", toolNames.read, { workspaceId, ...input }, extra);
       return routeStandaloneTool(executor, "read_file", toolNames.read, { workspaceId, ...input }, extra);},
   );
