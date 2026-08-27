@@ -155,7 +155,10 @@ export class GatewayExecutionRouter {
           { cause: error },
         );
       }
-      throw new Error(message.split(binding.executorWorkspaceId).join(publicWorkspaceId));
+      // Do not perform substring replacement on arbitrary error messages (which may contain
+      // file content, patches, or logs). That would corrupt data and is unnecessary for
+      // privacy — the workspaceId-specific case is already handled above.
+      throw error instanceof Error ? error : new Error(message);
     }
 
     const rewrittenResult = rewriteExecutorWorkspaceId(result, binding.executorWorkspaceId, publicWorkspaceId);
@@ -406,13 +409,53 @@ export function rewriteExecutorWorkspaceId<T>(
   return rewriteValue(value, executorWorkspaceId, publicWorkspaceId) as T;
 }
 
+// Rewrites only known workspaceId locations via exact string equality, never
+// via substring replacement. This prevents corruption of file content, grep
+// output, patches/diffs (up to 50 MB), and shell logs that happen to contain
+// the private ID as a substring. Only exact-match `workspaceId` /
+// `executorWorkspaceId` fields are remapped; `content[*].text` is left
+// byte-identical except for a constrained prefix rewrite for human-readable
+// workspace lifecycle messages (e.g. "Opened workspace <id>") so the private
+// ID does not leak via the opener's human text while file data remains
+// untouched.
 function rewriteValue(value: unknown, privateId: string, publicId: string): unknown {
-  if (typeof value === "string") return value.split(privateId).join(publicId);
+  if (value === privateId) return publicId;
+  if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map((item) => rewriteValue(item, privateId, publicId));
   if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, rewriteValue(item, privateId, publicId)]),
-    );
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if ((key === "workspaceId" || key === "executorWorkspaceId") && item === privateId) {
+        out[key] = publicId;
+      } else if (key === "content" && Array.isArray(item)) {
+        out[key] = item.map((entry) => {
+          if (
+            entry &&
+            typeof entry === "object" &&
+            "text" in (entry as Record<string, unknown>) &&
+            typeof (entry as Record<string, unknown>)["text"] === "string"
+          ) {
+            const text = (entry as Record<string, unknown>)["text"] as string;
+            const prefixes = ["Opened workspace ", "Workspace ", "workspace ", "Closed workspace "];
+            for (const prefix of prefixes) {
+              if (text.startsWith(prefix + privateId)) {
+                const rest = text.slice((prefix + privateId).length);
+                return { ...(entry as Record<string, unknown>), text: prefix + publicId + rest };
+              }
+            }
+            return entry;
+          }
+          return rewriteValue(entry, privateId, publicId);
+        });
+      } else if (key === "workspace" && item && typeof item === "object") {
+        out[key] = rewriteValue(item, privateId, publicId);
+      } else if (key === "terminal" || key === "terminals") {
+        out[key] = item;
+      } else {
+        out[key] = rewriteValue(item, privateId, publicId);
+      }
+    }
+    return out;
   }
   return value;
 }
