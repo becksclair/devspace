@@ -138,7 +138,8 @@ export class RemoteNodeClient implements ExecutionTarget {
           }
         }
 
-        return await this.executeResumable(body, tool, args, remoteRequestId, nodeInstanceId!, options);
+        if (!nodeInstanceId) throw new Error("Missing nodeInstanceId for resumable call");
+        return await this.executeResumable(body, tool, args, remoteRequestId, nodeInstanceId, options);
       } catch (error) {
         if (bustAttempt === 0 && isHelloStaleError(error)) {
           this.helloCache = null;
