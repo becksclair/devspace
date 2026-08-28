@@ -20,16 +20,19 @@ export interface LocalExecutorOptions {
 function truncateUtf8Safe(input: string, maxBytes: number): { content: string; truncated: boolean; bytes: number } {
   const total = Buffer.byteLength(input, "utf8");
   if (total <= maxBytes) return { content: input, truncated: false, bytes: total };
-  let acc = 0;
-  let end = 0;
-  for (const ch of input) {
-    const b = Buffer.byteLength(ch, "utf8");
-    if (acc + b > maxBytes) break;
-    acc += b;
-    end += ch.length;
+  const buf = Buffer.from(input, "utf8");
+  let end = maxBytes;
+  // Backtrack to valid UTF-8 boundary (at most 3 bytes for incomplete multi-byte char)
+  while (end > 0) {
+    try {
+      new TextDecoder("utf8", { fatal: true }).decode(buf.subarray(0, end));
+      break;
+    } catch {
+      end--;
+    }
   }
-  const content = input.slice(0, end);
-  return { content, truncated: true, bytes: acc };
+  const content = buf.subarray(0, end).toString("utf8");
+  return { content, truncated: true, bytes: end };
 }
 
 type MaintenanceResult = {
@@ -393,10 +396,12 @@ export class LocalExecutor {
     const maxTotalBytes = input.maxTotalBytes ?? 1_000_000;
     const startedAt = performance.now();
     const perFileStarted = input.reads.map(() => performance.now());
+    const resolvedReadPaths: (WorkspaceReadPath | null)[] = new Array(input.reads.length).fill(null);
     const statSizes = await Promise.all(
-      input.reads.map(async (entry) => {
+      input.reads.map(async (entry, idx) => {
         try {
           const rp = this.workspaces.resolveReadPath(workspace, entry.path);
+          resolvedReadPaths[idx] = rp;
           const s = await stat(rp.absolutePath).catch(() => null) as unknown as { size: number } | null;
           return s ? s.size : null;
         } catch { return null; }
@@ -426,13 +431,20 @@ export class LocalExecutor {
         if (options.signal?.aborted) throw new Error("Request cancelled");
         const t0 = perFileStarted[idx] ?? startedAt;
         try {
-          const readPath = this.workspaces.resolveReadPath(workspace, entry.path);
+          let readPath: WorkspaceReadPath;
+          const cached = resolvedReadPaths[idx];
+          if (cached) {
+            readPath = cached;
+          } else {
+            readPath = this.workspaces.resolveReadPath(workspace, entry.path);
+            resolvedReadPaths[idx] = readPath;
+          }
           const sz = statSizes[idx];
           if (sz !== null && sz > maxBytesPerFile && entry.offset === undefined && entry.limit === undefined) {
             let fh: FileHandle | null = null;
             try {
               fh = await open(readPath.absolutePath, "r");
-              const buf = Buffer.alloc(maxBytesPerFile + 1024);
+              const buf = Buffer.allocUnsafe(maxBytesPerFile + 1024);
               const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
               const text = buf.subarray(0, bytesRead).toString("utf8");
               const { content, truncated, bytes } = truncateUtf8Safe(text, maxBytesPerFile);
