@@ -72,7 +72,9 @@ export class GatewayExecutionRouter {
     if (canonical.length !== 1) {
       throw new Error("Gateway requires exactly one canonical machine");
     }
-    this.canonical = canonical[0]!;
+    const canonicalMachine = canonical[0];
+    if (!canonicalMachine) throw new Error("Gateway requires exactly one canonical machine");
+    this.canonical = canonicalMachine;
 
     for (const machine of machines) {
       const id = normalizeMachineName(machine.id);
@@ -178,11 +180,12 @@ export class GatewayExecutionRouter {
     if (tool === "multi_read" && Array.isArray((rewrittenResult.structuredContent as unknown as { results?: unknown[] })?.results)) {
       const results = (rewrittenResult.structuredContent as unknown as { results: Array<{ path: string; status: string }> }).results;
       for (let idx = 0; idx < results.length; idx++) {
-        const r = results[idx]!;
+        const r = results[idx];
+        if (!r) continue;
         const sanitized = r.path.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "file";
         const fileOpId = `${operationId}:${sanitized}:${idx}`;
         // Per-file duration estimated as equal split of total duration for simplicity; advisory only (RV-003)
-        const perFileMs = Math.round((Date.now() - startedMs) / results.length);
+        const perFileMs = Math.round((Date.now() - startedMs) / Math.max(1, results.length));
         this.appendActivity({
           workspaceId: publicWorkspaceId,
           operationId: fileOpId,

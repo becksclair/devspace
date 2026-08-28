@@ -1,4 +1,4 @@
-import { open, stat } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import type { ServerConfig } from "./config.js";
 import { commandPreview, logEvent } from "./logger.js";
 import { editFileTool, findFilesTool, grepFilesTool, listDirectoryTool, readFileTool, runShellTool, writeFileTool, type ToolResponse } from "./pi-tools.js";
@@ -6,7 +6,7 @@ import { createReviewCheckpointManager, type ReviewCheckpointManager } from "./r
 import { formatPathForPrompt } from "./skills.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { parseToolArguments, type ToolArguments, type ToolName } from "./tool-contract.js";
-import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
+import { formatAgentsPath, type WorkspaceReadPath, WorkspaceRegistry } from "./workspaces.js";
 import { createWorkspaceStore, type WorkspaceStore } from "./workspace-store.js";
 
 export interface ExecutorRequestOptions { requestId: string; signal?: AbortSignal }
@@ -429,12 +429,12 @@ export class LocalExecutor {
           const readPath = this.workspaces.resolveReadPath(workspace, entry.path);
           const sz = statSizes[idx];
           if (sz !== null && sz > maxBytesPerFile && entry.offset === undefined && entry.limit === undefined) {
-            let fh: any = null;
+            let fh: FileHandle | null = null;
             try {
               fh = await open(readPath.absolutePath, "r");
               const buf = Buffer.alloc(maxBytesPerFile + 1024);
               const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-              let text = buf.subarray(0, bytesRead).toString("utf8");
+              const text = buf.subarray(0, bytesRead).toString("utf8");
               const { content, truncated, bytes } = truncateUtf8Safe(text, maxBytesPerFile);
               // Preserve truncation flag from the fast path; second truncation below must not re-derive it.
               rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: content, truncated, bytes, t0 });
@@ -466,7 +466,11 @@ export class LocalExecutor {
     for (let idx = 0; idx < input.reads.length; idx++) {
       const pre = preSkipped.get(idx);
       if (pre) {
-        const entry = input.reads[idx]!;
+        const entry = input.reads[idx];
+        if (!entry) {
+          results.push({ path: String(idx), status: "error", error: pre });
+          continue;
+        }
         const t0 = perFileStarted[idx] ?? startedAt;
         results.push({ path: entry.path, status: "error", error: pre });
         this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: entry.path }, false, t0, pre.message.slice(0, 240));
@@ -474,7 +478,11 @@ export class LocalExecutor {
       }
       const raw = rawByIdx.get(idx);
       if (!raw) {
-        const entry = input.reads[idx]!;
+        const entry = input.reads[idx];
+        if (!entry) {
+          results.push({ path: String(idx), status: "error", error: { code: "read_error", message: "skipped" } });
+          continue;
+        }
         const t0 = perFileStarted[idx] ?? startedAt;
         results.push({ path: entry.path, status: "error", error: { code: "read_error", message: "skipped" } });
         this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: entry.path }, false, t0, "skipped");
@@ -506,8 +514,9 @@ export class LocalExecutor {
         continue;
       }
       totalBytes += bytes;
-      if (raw.readPath) this.workspaces.markReadPathLoaded(workspace, raw.readPath as any);
-      results.push({ path: raw.entry.path, canonicalPath: (raw.readPath as { absolutePath: string }).absolutePath, status: "ok", content, truncated, bytes });
+      if (raw.readPath) this.workspaces.markReadPathLoaded(workspace, raw.readPath as WorkspaceReadPath);
+      const canonicalPath = raw.readPath ? raw.readPath.absolutePath : raw.entry.path;
+      results.push({ path: raw.entry.path, canonicalPath, status: "ok", content, truncated, bytes });
       this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path, offset: raw.entry.offset, limit: raw.entry.limit }, true, t0);
       if (options.signal?.aborted) throw new Error("Request cancelled");
     }

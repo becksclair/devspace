@@ -44,14 +44,14 @@ const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
 // sky-cua bridge singleton: lazily created stdio MCP client that proxies sky-cua's tools/list live.
 // Keyed by binPath so changing DEVSPACE_SKY_CUA_BIN without restart does not reuse stale binary.
 // Unhealthy bridges are not cached - next enabled session retries.
-let skyBridgeCache = new Map<string, Promise<import("./sky-cua/bridge.js").SkyBridge | null>>();
+const skyBridgeCache = new Map<string, Promise<import("./sky-cua/bridge.js").SkyBridge | null>>();
 
 // node_repl per-session bridges: one process per MCP session for isolation (UR-REV-004).
 // Keyed by sessionId, sweep alongside transports. Cap via config.nodeRepl.maxPerHost.
 const sessionNodeReplBridges = new Map<string, import("./node-repl-bridge.js").NodeReplBridge>();
 const serverNodeReplBridge = new WeakMap<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, import("./node-repl-bridge.js").NodeReplBridge>();
 let pendingNodeReplCreates = 0;
-const serverTransportMap = new WeakMap<object, any>();
+const serverTransportMap = new WeakMap<object, unknown>();
 async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bridge.js").SkyBridge | null> {
   const disabled = config.disabledCapabilities ?? new Set<string>();
   if (isCapabilityDisabled(disabled, "sky-cua")) return null;
@@ -63,7 +63,7 @@ async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bri
     try {
       const mod = await import("./sky-cua/bridge.js");
       const bridge = await mod.createSkyBridge(skyCua);
-      if (!bridge || !bridge.healthy) {
+      if (!bridge?.healthy) {
         skyBridgeCache.delete(key);
         return bridge;
       }
@@ -453,7 +453,7 @@ function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, 
     toolName === "list_resources" ||
     toolName === "status";
   if (!isPhoneSelectorTool) return args;
-  let out: Record<string, unknown> = { ...args };
+  const out: Record<string, unknown> = { ...args };
   const selectors = ["session_id", "device_id", "alias", "serial"].filter(has);
   if (selectors.length > 1) {
     // Prefer session_id > device_id > alias > serial
@@ -598,7 +598,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
     ? ""
     : " sky-cua desktop/browser/phone (sky-cua) tools are available: desktop/browser observe/capture/input plus phone Companion (aliases phone=default + tablet) via status/list_resources(surface=phone)/phone_connection/observe(surface=phone)/phone_pointer etc. Phone sessions are epoch-fenced — use connect, not refresh, after a drop; list_resources is the ground truth. When a task matches browser-use/computer-use/phone-use, read that SKILL.md before acting and follow its AppShot/phone_snapshot_id contract.";
 
-  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode=\"isolated\" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}`;
+  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode="isolated" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}`;
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -1675,7 +1675,7 @@ async function createMcpServer(
     const maxPerHost = config.nodeRepl?.maxPerHost ?? 12;
     let lazyBridge: import("./node-repl-bridge.js").NodeReplBridge | null = null;
     let lazyBridgePromise: Promise<import("./node-repl-bridge.js").NodeReplBridge> | null = null;
-    const getOrCreateBridge = async (signal?: AbortSignal): Promise<import("./node-repl-bridge.js").NodeReplBridge> => {
+    const getOrCreateBridge = async (_signal?: AbortSignal): Promise<import("./node-repl-bridge.js").NodeReplBridge> => {
       if (lazyBridge) return lazyBridge;
       if (lazyBridgePromise) return lazyBridgePromise;
       if (sessionNodeReplBridges.size + pendingNodeReplCreates >= maxPerHost) throw new Error(`node_repl per-host cap ${maxPerHost} reached`);
@@ -1687,8 +1687,8 @@ async function createMcpServer(
         if (sessionNodeReplBridges.size >= maxPerHost) { try { await b.close(); } catch {} throw new Error(`node_repl per-host cap ${maxPerHost} reached`); }
         lazyBridge = b;
         serverNodeReplBridge.set(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, b);
-        const maybeTransport: any = serverTransportMap.get(server as unknown as object);
-        const sid: string | undefined = maybeTransport?.sessionId;
+        const maybeTransport: unknown = serverTransportMap.get(server as unknown as object);
+        const sid: string | undefined = (maybeTransport as { sessionId?: string } | undefined)?.sessionId;
         if (sid) sessionNodeReplBridges.set(sid, b);
         return b;
       })();
@@ -1739,7 +1739,7 @@ async function createMcpServer(
   }
   if (!isSkyCuaDisabled(effectiveSet)) {
     const bridge = await getSkyBridge(config);
-    if (bridge && bridge.healthy) {
+    if (bridge?.healthy) {
       for (const tool of bridge.tools) {
         // sky-cua tools are not workspace-scoped. Force non-destructive so ChatGPT/Hermes platform safety never
         // blocks any of them (phone/desktop/browser). Underlying sky-cua service still enforces its own safety;
@@ -2026,7 +2026,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
                   transport.onclose = () => {
                     const b = sessionNodeReplBridges.get(newSessionId);
                     if (b) { void b.close().catch(() => {}); sessionNodeReplBridges.delete(newSessionId); }
-                    serverNodeReplBridge.delete(serverForBridge!);
+                    if (serverForBridge) serverNodeReplBridge.delete(serverForBridge);
                     if (prevOnClose) prevOnClose();
                     else {
                       transports.delete(newSessionId);
@@ -2212,13 +2212,16 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
   const localExecutors: LocalExecutor[] = [];
   for (const machine of roleConfig.machines) {
     if (machine.kind === "local") {
+      const stateDir = machine.stateDir;
+      const worktreeRoot = machine.worktreeRoot;
+      if (!stateDir || !worktreeRoot) throw new Error(`Missing stateDir or worktreeRoot for machine ${machine.id}`);
       const rootPolicies = normalizeRootPolicies(machine.roots ?? rootPoliciesFromStrings(machine.allowedRoots ?? []));
       const executorConfig: ServerConfig = {
         ...publicConfig,
         allowedRoots: configuredLogicalRoots(rootPolicies),
         rootPolicies,
-        stateDir: machine.stateDir!,
-        worktreeRoot: machine.worktreeRoot!,
+        stateDir,
+        worktreeRoot,
         shell: {
           path: machine.shell?.path,
           mode: machine.shell?.mode ?? "service",
@@ -2226,11 +2229,11 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
         },
         secretNames: Array.from(new Set([
           ...publicConfig.secretNames,
-          ...roleConfig.machines.filter((entry) => entry.kind === "remote").map((entry) => entry.nodeTokenEnv!),
+          ...roleConfig.machines.filter((entry) => entry.kind === "remote" && typeof entry.nodeTokenEnv === "string" && entry.nodeTokenEnv.length > 0).map((entry) => entry.nodeTokenEnv as string),
         ])),
         terminals: {
           backend: machine.terminals?.backend ?? "tmux",
-          runtimeDir: machine.terminals?.runtimeDir ?? `${machine.stateDir!}/terminal-runtime`,
+          runtimeDir: machine.terminals?.runtimeDir ?? `${stateDir}/terminal-runtime`,
           maxPerWorkspace: machine.terminals?.maxPerWorkspace ?? 4,
           maxTotal: machine.terminals?.maxTotal ?? 12,
           idleTtlSeconds: machine.terminals?.idleTtlSeconds ?? 8 * 60 * 60,
@@ -2245,11 +2248,16 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
       });
       continue;
     }
-    targets.set(machine.id, new RemoteNodeClient({
-      machineId: machine.id,
-      url: machine.url!,
-      nodeToken: envSecret(machine.nodeTokenEnv!),
-    }));
+    {
+      const url = machine.url;
+      const nodeTokenEnv = machine.nodeTokenEnv;
+      if (!url || !nodeTokenEnv) throw new Error(`Missing url or nodeTokenEnv for remote machine ${machine.id}`);
+      targets.set(machine.id, new RemoteNodeClient({
+        machineId: machine.id,
+        url,
+        nodeToken: envSecret(nodeTokenEnv),
+      }));
+    }
   }
   const router = new GatewayExecutionRouter(
     roleConfig.machines.map((machine) => ({

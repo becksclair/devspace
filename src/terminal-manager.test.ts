@@ -43,7 +43,8 @@ try {
     firstRead = await manager.read({ workspaceId: "ws_terminal", terminalId: id, mode: "screen" });
     return /hello terminal/.test(firstRead.output);
   });
-  assert.match(firstRead!.output, /hello terminal/);
+  assert.ok(firstRead);
+  assert.match(firstRead.output, /hello terminal/);
 
   const resized = await manager.resize({ workspaceId: "ws_terminal", terminalId: id, cols: 120, rows: 40 });
   assert.equal(resized.cols, 120);
@@ -59,7 +60,8 @@ try {
     recoveredRead = await manager.read({ workspaceId: "ws_terminal", terminalId: id, mode: "history", lines: 100 });
     return /hello terminal/.test(recoveredRead.output);
   });
-  assert.match(recoveredRead!.output, /hello terminal/);
+  assert.ok(recoveredRead);
+  assert.match(recoveredRead.output, /hello terminal/);
 
   const closed = await manager.close({ workspaceId: "ws_terminal", terminalId: id });
   assert.equal(closed.status, "closed");
@@ -89,8 +91,8 @@ try {
   // Use session_name format to avoid matching on window counts; host tmux configs (e.g. continuum) may restore extra sessions.
   const leakedNames = await execFileAsync("tmux", ["-S", join(failureRuntimeDir, "tmux.sock"), "list-sessions", "-F", "#{session_name}"])
     .then(({ stdout }) => stdout.trim().split("\n").map((s) => s.trim()).filter(Boolean))
-    .catch((e: any) => {
-      if (e?.code === 1) return [] as string[];
+    .catch((e: unknown) => {
+      if (e !== null && typeof e === "object" && "code" in e && (e as { code?: unknown }).code === 1) return [] as string[];
       throw e;
     });
   const hasLeakedDsp = leakedNames.some((n) => n.startsWith("dsp-"));
@@ -104,10 +106,10 @@ try {
   const wrapperTmux = join(wrapperBin, "tmux");
   await writeFile(wrapperTmux, [
     "#!/bin/sh",
-    "for arg in \"$@\"; do",
-    "  [ \"$arg\" = kill-session ] && exit 2",
+    'for arg in "$@"; do',
+    '  [ "$arg" = kill-session ] && exit 2',
     "done",
-    `exec ${realTmux} \"$@\"`,
+    `exec ${realTmux} "$@"`,
     "",
   ].join("\n"));
   await chmod(wrapperTmux, 0o755);

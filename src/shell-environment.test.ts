@@ -60,6 +60,7 @@ try {
   assert.deepEqual(serviceRuntime.environment.PATH?.split(delimiter).slice(0, expectedUserPaths.length), expectedUserPaths);
   const serviceResult = await runConfiguredShell(
     serviceRuntime,
+    // eslint-disable-next-line no-template-curly-in-string
     "printf 'tool=%s\\n' \"$(command -v devspace-user-tool)\"; printf 'profile=%s\\n' \"${DEVSPACE_PROFILE_SOURCED-unset}\"; printf 'oauth=%s\\n' \"${DEVSPACE_OAUTH_OWNER_TOKEN-unset}\"",
     root,
   );
@@ -91,6 +92,7 @@ try {
   const loginRuntime = createShellRuntime({ path: "/bin/bash", mode: "login" }, secretNames, baseEnvironment);
   const loginResult = await runConfiguredShell(
     loginRuntime,
+    // eslint-disable-next-line no-template-curly-in-string
     "printf 'tool=%s\\n' \"$(command -v devspace-user-tool)\"; printf 'profile=%s\\n' \"${DEVSPACE_PROFILE_SOURCED-unset}\"; printf 'oauth=%s\\n' \"${DEVSPACE_OAUTH_OWNER_TOKEN-unset}\"; printf 'node=%s\\n' \"${DEVSPACE_ASGARD_NODE_TOKEN-unset}\"; printf 'dev=%s\\n' \"${DEVELOPMENT_API_TOKEN-unset}\"",
     root,
   );
@@ -107,6 +109,7 @@ try {
     '',
   ].join("\n"));
   await assert.rejects(
+    // eslint-disable-next-line no-template-curly-in-string
     () => runConfiguredShell(loginRuntime, "printf 'oauth=%s\\n' \"${DEVSPACE_OAUTH_OWNER_TOKEN-unset}\"", root),
     (error: unknown) => error instanceof Error && "code" in error && (error as { code?: unknown }).code === 126,
   );
