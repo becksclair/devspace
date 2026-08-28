@@ -14,13 +14,17 @@ const RELEASE_MARKER_PATTERN =
   /<!-- devspace-release: version=([^\s]+) commit=([0-9a-f]{40}) -->/;
 const RELEASE_METADATA_PATHS = new Set([
   "CHANGELOG.md",
-  "package-lock.json",
   "package.json",
+  "package-lock.json",
+  "bun.lock",
+  "bun.lockb",
 ]);
 const BUILD_INPUT_PATHS = new Set([
   "CHANGELOG.md",
-  "package-lock.json",
   "package.json",
+  "package-lock.json",
+  "bun.lock",
+  "bun.lockb",
   "tsconfig.build.json",
   "tsconfig.json",
   "vite.config.ts",
@@ -112,17 +116,37 @@ export function prependRelease(changelog, section) {
 
 export function updatePackageVersions(packagePath, packageLockPath, version) {
   const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
-  const packageLock = JSON.parse(readFileSync(packageLockPath, "utf8"));
-
   packageJson.version = version;
+  writeJson(packagePath, packageJson);
+
+  if (!packageLockPath || !existsSync(packageLockPath)) return;
+
+  // bun.lock / bun.lockb are not simple JSON package-lock files; only
+  // update version for npm-style package-lock.json. Bun's lockfile does not
+  // require a version bump to stay consistent.
+  if (packageLockPath.endsWith("bun.lockb")) return;
+  if (packageLockPath.endsWith("bun.lock")) {
+    // bun.lock is JSONC (trailing commas) and does not store root version;
+    // no update needed.
+    return;
+  }
+
+  const packageLock = JSON.parse(readFileSync(packageLockPath, "utf8"));
   packageLock.version = version;
   if (!packageLock.packages?.[""]) {
     throw new Error("package-lock.json is missing the root package metadata");
   }
   packageLock.packages[""].version = version;
-
-  writeJson(packagePath, packageJson);
   writeJson(packageLockPath, packageLock);
+}
+
+export function resolveLockfilePath(repoRoot) {
+  const candidates = ["bun.lock", "bun.lockb", "package-lock.json"];
+  for (const candidate of candidates) {
+    const full = join(repoRoot, candidate);
+    if (existsSync(full)) return full;
+  }
+  return join(repoRoot, "bun.lock");
 }
 
 export function withFileRollback(paths, action) {

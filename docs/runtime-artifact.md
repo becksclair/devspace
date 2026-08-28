@@ -1,6 +1,6 @@
 # DevSpace runtime artifact
 
-`npm run package:runtime-artifact -- <full-commit>` creates
+`bun run package:runtime-artifact -- <full-commit>` creates
 `.artifacts/devspace-linux-amd64-<full-commit>.tar.gz` and its SHA-256 sidecar.
 The archive contains `dist`, production-only `node_modules`, package manifests,
 and `artifact.json`. GNU tar and gzip metadata are normalized so repeated runs

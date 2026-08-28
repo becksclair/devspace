@@ -22,12 +22,13 @@ DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and r
 
 ## Installation
 
-DevSpace requires Node `>=20.12 <27`. Node 22 LTS is recommended.
+DevSpace requires Node `>=24 <27` and Bun `>=1.4`. Node 24 LTS is recommended.
 
 Install the DevSpace CLI:
 
 ```bash
-npm install -g @waishnav/devspace
+bun install -g @waishnav/devspace
+# or: npm install -g @waishnav/devspace
 ```
 
 Then initialize and start the server:
@@ -160,8 +161,8 @@ shell.
 
 | Platform                                          | Status            | Notes                                          |
 | ------------------------------------------------- | ----------------- | ---------------------------------------------- |
-| Linux                                             | Supported         | Requires Node, npm, Git, and Bash.             |
-| macOS                                             | Supported         | Requires Node, npm, Git, and Bash.             |
+| Linux                                             | Supported         | Requires Node, Bun, Git, and Bash.             |
+| macOS                                             | Supported         | Requires Node, Bun, Git, and Bash.             |
 | Windows with Git Bash, WSL, MSYS2, or Cygwin Bash | Supported         | Git Bash is the simplest native Windows setup. |
 | Windows PowerShell or `cmd.exe` only              | Not supported yet | Install Git Bash or use WSL.                   |
 
@@ -209,17 +210,17 @@ between, come hang out with me on [X](https://x.com/wshxnv).
 For working on DevSpace itself:
 
 ```bash
-npm install --include=dev
-npm run dev
-npm run typecheck
-npm test
-npm run build:check
-npm run build # versioned build: bumps patch and updates CHANGELOG.md
-npm run rebuild:local # versioned build, restart devspace.service, verify /healthz
-npm run start
+bun install
+bun run dev
+bun run typecheck
+bun test # or: bun run test
+bun run build:check
+bun run build # versioned build: bumps patch and updates CHANGELOG.md
+bun run rebuild:local # versioned build, restart devspace.service, verify /healthz
+bun run start
 ```
 
-Use `npm run build -- --bump minor` or `npm run build -- --bump major` when a
+Use `bun run build -- --bump minor` or `bun run build -- --bump major` when a
 patch increment is not appropriate. Versioned builds require committed build
 inputs; `build:check` is the non-versioning validation path for work in progress
 and prepares the initial `dist` required by `rebuild:local`.

@@ -1,73 +1,73 @@
 {
-  "name": "@waishnav/devspace",
-  "version": "2.0.0",
-  "description": "Expose a secure local coding workspace through an MCP server.",
-  "type": "module",
-  "main": "dist/server.js",
-  "engines": {
-    "node": ">=24 <27"
-  },
-  "bin": {
-    "devspace": "dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "docs",
-    "scripts",
-    "README.md",
-    "CHANGELOG.md"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
-  "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "node scripts/versioned-build.mjs",
-    "build:compile": "npm run clean && npm run build:app && tsc -p tsconfig.build.json",
-    "build:check": "npm run build:compile",
-    "build:app": "vite build",
-    "package:runtime-artifact": "node scripts/package-runtime-artifact.mjs",
-    "smoke:runtime-artifact": "node scripts/smoke-runtime-artifact.mjs",
-    "rebuild:local": "node scripts/rebuild-local.mjs",
-    "dev": "node scripts/dev-server.mjs",
-    "start": "node dist/cli.js serve",
-    "test": "node --test scripts/release-utils.test.mjs && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/shell-environment.test.ts && tsx src/terminal-manager.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-store.test.ts && tsx src/workspace-lifecycle.test.ts && tsx src/workspace-maintenance.test.ts && tsx src/workspace-terminal-maintenance.test.ts && tsx src/executor-root-policy.test.ts && tsx src/executor-maintenance.test.ts && tsx src/review-checkpoints.test.ts && tsx src/oauth-provider.test.ts && tsx src/headless-auth.test.ts && tsx src/server-widget-metadata.test.ts && tsx src/server-workspace-mode.test.ts && tsx src/server-mcp-logging.test.ts && tsx src/server-mcp-routing.test.ts && tsx src/server-session-eviction.test.ts && tsx src/tool-contract.test.ts && tsx src/gateway-workspace-store.test.ts && tsx src/gateway-router.test.ts && tsx src/server-gateway-results.test.ts && tsx src/ui/card-types.test.ts && tsx src/role-config.test.ts && tsx src/node-server.test.ts && tsx src/remote-node-client.test.ts && tsx src/static-key-provider.test.ts && tsx src/workspace-activity.test.ts && tsx src/workspaces-optimized.test.ts && tsx src/executor-multi-read.test.ts",
-    "test:protocol": "tsx src/role-config.test.ts && tsx src/node-server.test.ts && tsx src/remote-node-client.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "@clack/prompts": "^1.5.1",
-    "@earendil-works/pi-coding-agent": "^0.79.4",
-    "@modelcontextprotocol/ext-apps": "^1.7.2",
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@pierre/diffs": "^1.2.5",
-    "better-sqlite3": "^12.10.0",
-    "drizzle-orm": "^0.45.2",
-    "express": "^5.2.1",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "semver": "^7.8.4",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3",
-    "express-rate-limit": "^7.5.0"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
-    "@types/react-dom": "^19.2.3",
-    "@types/semver": "^7.7.1",
-    "@vitejs/plugin-react": "^6.0.2",
-    "tsx": "^4.22.3",
-    "typescript": "^6.0.3",
-    "vite": "^8.0.14"
-  },
-  "overrides": {
-    "protobufjs": "7.6.4",
-    "ws": "8.21.0"
-  }
+	"name": "@waishnav/devspace",
+	"version": "2.0.0",
+	"description": "Expose a secure local coding workspace through an MCP server.",
+	"type": "module",
+	"main": "dist/server.js",
+	"engines": {
+		"node": ">=24 <27"
+	},
+	"bin": {
+		"devspace": "dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"docs",
+		"scripts",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+		"build": "node scripts/versioned-build.mjs",
+		"build:compile": "bun run clean && bun run build:app && tsc -p tsconfig.build.json",
+		"build:check": "bun run build:compile",
+		"build:app": "vite build",
+		"package:runtime-artifact": "node scripts/package-runtime-artifact.mjs",
+		"smoke:runtime-artifact": "node scripts/smoke-runtime-artifact.mjs",
+		"rebuild:local": "node scripts/rebuild-local.mjs",
+		"dev": "node scripts/dev-server.mjs",
+		"start": "node dist/cli.js serve",
+		"test": "node --test scripts/release-utils.test.mjs && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/shell-environment.test.ts && tsx src/terminal-manager.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-store.test.ts && tsx src/workspace-lifecycle.test.ts && tsx src/workspace-maintenance.test.ts && tsx src/workspace-terminal-maintenance.test.ts && tsx src/executor-root-policy.test.ts && tsx src/executor-maintenance.test.ts && tsx src/review-checkpoints.test.ts && tsx src/oauth-provider.test.ts && tsx src/headless-auth.test.ts && tsx src/server-widget-metadata.test.ts && tsx src/server-workspace-mode.test.ts && tsx src/server-mcp-logging.test.ts && tsx src/server-mcp-routing.test.ts && tsx src/server-session-eviction.test.ts && tsx src/tool-contract.test.ts && tsx src/gateway-workspace-store.test.ts && tsx src/gateway-router.test.ts && tsx src/server-gateway-results.test.ts && tsx src/ui/card-types.test.ts && tsx src/role-config.test.ts && tsx src/node-server.test.ts && tsx src/remote-node-client.test.ts && tsx src/static-key-provider.test.ts && tsx src/workspace-activity.test.ts && tsx src/workspaces-optimized.test.ts && tsx src/executor-multi-read.test.ts",
+		"test:protocol": "tsx src/role-config.test.ts && tsx src/node-server.test.ts && tsx src/remote-node-client.test.ts",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "MIT",
+	"dependencies": {
+		"@clack/prompts": "^1.5.1",
+		"@earendil-works/pi-coding-agent": "^0.79.4",
+		"@modelcontextprotocol/ext-apps": "^1.7.2",
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@pierre/diffs": "^1.2.5",
+		"better-sqlite3": "^12.10.0",
+		"drizzle-orm": "^0.45.2",
+		"express": "^5.2.1",
+		"react": "^19.2.6",
+		"react-dom": "^19.2.6",
+		"semver": "^7.8.4",
+		"yaml": "^2.9.0",
+		"zod": "^4.4.3",
+		"express-rate-limit": "^7.5.0"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/express": "^5.0.6",
+		"@types/node": "^25.9.1",
+		"@types/react": "^19.2.15",
+		"@types/react-dom": "^19.2.3",
+		"@types/semver": "^7.7.1",
+		"@vitejs/plugin-react": "^6.0.2",
+		"tsx": "^4.22.3",
+		"typescript": "^6.0.3",
+		"vite": "^8.0.14"
+	},
+	"overrides": {
+		"protobufjs": "7.6.4",
+		"ws": "8.21.0"
+	}
 }

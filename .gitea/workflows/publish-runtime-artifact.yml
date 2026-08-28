@@ -20,18 +20,24 @@ jobs:
       - name: Install test system dependencies
         run: |
           apt-get update
-          apt-get install --yes --no-install-recommends tmux
+          apt-get install --yes --no-install-recommends tmux curl unzip
           rm -rf /var/lib/apt/lists/*
           chown -R node:node "$GITHUB_WORKSPACE"
+      - name: Install Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          mv /root/.bun/bin/bun /usr/local/bin/bun
+          chmod +x /usr/local/bin/bun
+          bun --version
       - name: Validate and build as unprivileged user
         run: |
           runuser --user node -- bash -lc '
             set -Eeuo pipefail
             cd "$GITHUB_WORKSPACE"
-            npm ci
-            npm test
-            npm run typecheck
-            npm run build:check
+            bun install --frozen-lockfile
+            bun run test
+            bun run typecheck
+            bun run build:check
           '
       - name: Package deterministic artifact
         id: package
@@ -40,9 +46,9 @@ jobs:
             set -Eeuo pipefail
             cd "$GITHUB_WORKSPACE"
             export OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts"
-            npm run package:runtime-artifact -- "$GITHUB_SHA"
+            bun run package:runtime-artifact -- "$GITHUB_SHA"
             archive=".artifacts/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
-            OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts-repeat" npm run package:runtime-artifact -- "$GITHUB_SHA"
+            OUTPUT_DIR="$GITHUB_WORKSPACE/.artifacts-repeat" bun run package:runtime-artifact -- "$GITHUB_SHA"
             cmp "$archive" ".artifacts-repeat/devspace-linux-amd64-${GITHUB_SHA}.tar.gz"
             (cd "$(dirname "$archive")" && sha256sum --check "$(basename "$archive").sha256")
           '
