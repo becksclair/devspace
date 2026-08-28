@@ -179,13 +179,13 @@ export class GatewayExecutionRouter {
     // RV-003 per-file fan-out for multi_read so gateway UI/audit shows per-file granularity
     if (tool === "multi_read" && Array.isArray((rewrittenResult.structuredContent as unknown as { results?: unknown[] })?.results)) {
       const results = (rewrittenResult.structuredContent as unknown as { results: Array<{ path: string; status: string }> }).results;
+      const perFileMs = Math.round((Date.now() - startedMs) / Math.max(1, results.length));
+      const fanoutCreatedAt = new Date().toISOString();
       for (let idx = 0; idx < results.length; idx++) {
         const r = results[idx];
         if (!r) continue;
         const sanitized = r.path.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "file";
         const fileOpId = `${operationId}:${sanitized}:${idx}`;
-        // Per-file duration estimated as equal split of total duration for simplicity; advisory only (RV-003)
-        const perFileMs = Math.round((Date.now() - startedMs) / Math.max(1, results.length));
         this.appendActivity({
           workspaceId: publicWorkspaceId,
           operationId: fileOpId,
@@ -196,7 +196,7 @@ export class GatewayExecutionRouter {
           detail: r.status,
           startedAt,
           durationMs: perFileMs,
-          createdAt: new Date().toISOString(),
+          createdAt: fanoutCreatedAt,
         });
       }
     }
@@ -266,8 +266,11 @@ export class GatewayExecutionRouter {
     const seq = this.activityNextSeq.get(event.workspaceId) ?? 1;
     const events = this.activityEvents.get(event.workspaceId) ?? [];
     events.push({ ...event, seq });
-    if (events.length > 400) events.splice(0, events.length - 400);
-    this.activityEvents.set(event.workspaceId, events);
+    if (events.length > 400) {
+      this.activityEvents.set(event.workspaceId, events.slice(-400));
+    } else {
+      this.activityEvents.set(event.workspaceId, events);
+    }
     this.activityNextSeq.set(event.workspaceId, seq + 1);
     if (event.status === "running") {
       this.activityOperationTotals.set(
