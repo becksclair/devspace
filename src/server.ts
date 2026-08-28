@@ -1872,14 +1872,14 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
 
   const authorizeLimiter = rateLimit({
     windowMs: 60_000,
-    max: 10,
+    limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "too_many_requests", error_description: "Too many authorization attempts" },
   });
   const tokenLimiter = rateLimit({
     windowMs: 60_000,
-    max: 30,
+    limit: 30,
     standardHeaders: true,
     legacyHeaders: false,
   });
