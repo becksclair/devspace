@@ -5,8 +5,8 @@ projects through DevSpace.
 
 ## Requirements
 
-- Node `>=20.12 <27`; Node 22 LTS is recommended
-- npm
+- Node `>=24 <27`; Node 24 LTS is recommended
+- Bun `>=1.4`
 - Git
 - Bash, including Git Bash or WSL on Windows
 - a public HTTPS URL that forwards to the local DevSpace server
@@ -125,8 +125,8 @@ Git, Bash, public URL, allowed hosts, and SQLite native dependency status.
 If you are developing DevSpace itself instead of using the published package:
 
 ```bash
-npm install --include=dev
-npm run dev
+bun install
+bun run dev
 ```
 
 The same setup rules apply.

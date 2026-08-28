@@ -15,16 +15,17 @@ If you installed globally, confirm npm's global bin directory is on `PATH`.
 
 ## Unsupported Node Version
 
-DevSpace requires Node `>=20.12 <27`.
+DevSpace requires Node `>=24 <27` and Bun `>=1.4`.
 
 Check:
 
 ```bash
 node --version
+bun --version
 ```
 
-Install Node 22 LTS with your preferred version manager such as `nvm`, `fnm`, or
-`mise`.
+Install Node 24 LTS with your preferred version manager such as `nvm`, `fnm`, or
+`mise`, and Bun via `curl -fsSL https://bun.sh/install | bash`.
 
 ## `better-sqlite3` Could Not Load
 
@@ -34,7 +35,8 @@ runtime.
 Try:
 
 ```bash
-npm rebuild better-sqlite3
+bun pm rebuild better-sqlite3
+# or: npm rebuild better-sqlite3
 ```
 
 Then run:

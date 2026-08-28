@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,7 +15,15 @@ if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("source commit must be a ful
 const output = resolve(process.env.OUTPUT_DIR || join(root, ".artifacts"));
 mkdirSync(output, { recursive: true });
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const lockBytes = readFileSync(join(root, "package-lock.json"));
+function resolveLockfile() {
+  for (const candidate of ["bun.lock", "bun.lockb", "package-lock.json"]) {
+    const full = join(root, candidate);
+    if (existsSync(full)) return full;
+  }
+  throw new Error("No lockfile found (expected bun.lock, bun.lockb, or package-lock.json)");
+}
+const lockfilePath = resolveLockfile();
+const lockBytes = readFileSync(lockfilePath);
 const lockHash = `sha256:${createHash("sha256").update(lockBytes).digest("hex")}`;
 const toolContractHash = readToolContractHash();
 const manifest = {
@@ -31,11 +39,14 @@ mkdirSync(stage, { recursive: true });
 try {
   cpSync(join(root, "dist"), join(stage, "dist"), { recursive: true });
   cpSync(join(root, "package.json"), join(stage, "package.json"));
-  cpSync(join(root, "package-lock.json"), join(stage, "package-lock.json"));
+  cpSync(lockfilePath, join(stage, basename(lockfilePath)));
   writeFileSync(join(stage, "dist/build-metadata.js"), `export const PROTOCOL_MAJOR = 1;\nexport function toolContractHash() { return ${JSON.stringify(toolContractHash)}; }\nexport function getBuildMetadata(role) { return { protocolMajor: 1, packageVersion: ${JSON.stringify(packageJson.version)}, sourceCommit: ${JSON.stringify(commit)}, toolContractHash: ${JSON.stringify(toolContractHash)}, ...(role ? { role } : {}) }; }\n`);
-  const install = spawnSync(process.env.npm_execpath ? process.execPath : "npm", process.env.npm_execpath
-    ? [process.env.npm_execpath, "ci", "--omit=dev", "--ignore-scripts=false"]
-    : ["ci", "--omit=dev", "--ignore-scripts=false"], { cwd: stage, stdio: "inherit" });
+  const isBunLock = lockfilePath.endsWith("bun.lock") || lockfilePath.endsWith("bun.lockb");
+  const install = isBunLock
+    ? spawnSync("bun", ["install", "--production", "--frozen-lockfile"], { cwd: stage, stdio: "inherit" })
+    : spawnSync(process.env.npm_execpath ? process.execPath : "npm", process.env.npm_execpath
+      ? [process.env.npm_execpath, "ci", "--omit=dev", "--ignore-scripts=false"]
+      : ["ci", "--omit=dev", "--ignore-scripts=false"], { cwd: stage, stdio: "inherit" });
   if (install.status !== 0) throw new Error(`production dependency install failed (${install.status ?? "signal"})`);
   writeFileSync(join(stage, "artifact.json"), `${JSON.stringify(manifest)}\n`);
   const smoke = spawnSync(process.execPath, [join(root, "scripts/smoke-runtime-artifact.mjs"), stage], { stdio: "inherit" });
@@ -70,7 +81,7 @@ try {
 
 function readToolContractHash() {
   const file = join(root, "dist/tool-contract.js");
-  if (!existsSync(file)) throw new Error("dist/tool-contract.js is missing; run npm run build:check first");
+  if (!existsSync(file)) throw new Error("dist/tool-contract.js is missing; run bun run build:check first");
   // Importing the built module is the authoritative, stable contract implementation.
   const hash = execFileSync(process.execPath, ["--input-type=module", "-e", 'import { TOOL_CONTRACT_HASH } from "./dist/tool-contract.js"; console.log(TOOL_CONTRACT_HASH)'], { cwd: root, encoding: "utf8" }).trim();
   const bare = hash.startsWith("sha256:") ? hash.slice(7) : hash;

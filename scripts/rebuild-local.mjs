@@ -13,9 +13,16 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distPath = join(repoRoot, "dist");
+function resolveLockfilePath() {
+  for (const candidate of ["bun.lock", "bun.lockb", "package-lock.json"]) {
+    const full = join(repoRoot, candidate);
+    if (existsSync(full)) return full;
+  }
+  return join(repoRoot, "bun.lock");
+}
 const metadataPaths = [
   join(repoRoot, "package.json"),
-  join(repoRoot, "package-lock.json"),
+  resolveLockfilePath(),
   join(repoRoot, "CHANGELOG.md"),
 ];
 const healthUrl =
@@ -37,7 +44,7 @@ try {
   let buildSucceeded = false;
   let deployedVersion;
   try {
-    const buildResult = spawnNpm(["run", "build", "--", ...process.argv.slice(2)], {
+    const buildResult = spawnPm(["run", "build", "--", ...process.argv.slice(2)], {
       cwd: repoRoot,
       env: process.env,
       stdio: "inherit",
@@ -93,7 +100,7 @@ try {
 
 function assertPreviousBuild() {
   if (!existsSync(distPath)) {
-    throw new Error("rebuild:local requires an existing dist; run npm run build:check first");
+    throw new Error("rebuild:local requires an existing dist; run bun run build:check first");
   }
 }
 
@@ -146,10 +153,12 @@ function assertCommandSucceeded(result, label) {
   }
 }
 
-function spawnNpm(args, options) {
+function spawnPm(args, options) {
   if (process.env.npm_execpath) {
     return spawnSync(process.execPath, [process.env.npm_execpath, ...args], options);
   }
+  const hasBunLock = existsSync(join(repoRoot, "bun.lock")) || existsSync(join(repoRoot, "bun.lockb"));
+  if (hasBunLock) return spawnSync("bun", args, options);
   return spawnSync("npm", args, options);
 }
 

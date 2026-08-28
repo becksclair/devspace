@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,6 +11,7 @@ import {
   parseLatestRelease,
   prependRelease,
   releaseNotesFromCommits,
+  resolveLockfilePath,
   updatePackageVersions,
   withDirectoryRollback,
   withFileRollback,
@@ -18,7 +19,7 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagePath = join(repoRoot, "package.json");
-const packageLockPath = join(repoRoot, "package-lock.json");
+const packageLockPath = resolveLockfilePath(repoRoot);
 const changelogPath = join(repoRoot, "CHANGELOG.md");
 const distPath = join(repoRoot, "dist");
 const backupRoot = join(repoRoot, "releases");
@@ -57,7 +58,7 @@ try {
     writeFileSync(changelogPath, prependRelease(changelog, section));
 
     withDirectoryRollback(distPath, backupRoot, () => {
-      const result = spawnNpm(["run", "build:compile"], {
+      const result = spawnPm(["run", "build:compile"], {
         cwd: repoRoot,
         env: process.env,
         stdio: "inherit",
@@ -90,7 +91,7 @@ function assertCommittedBuildInputs() {
 
   if (dirtyInputs.length > 0) {
     throw new Error(
-      `Versioned builds require committed build inputs. Commit these files or use npm run build:check:\n${dirtyInputs
+      `Versioned builds require committed build inputs. Commit these files or use bun run build:check:\n${dirtyInputs
         .map((path) => `  ${path}`)
         .join("\n")}`,
     );
@@ -114,9 +115,14 @@ function lines(value) {
   return value ? value.split("\n").filter(Boolean) : [];
 }
 
-function spawnNpm(args, options) {
+function spawnPm(args, options) {
   if (process.env.npm_execpath) {
     return spawnSync(process.execPath, [process.env.npm_execpath, ...args], options);
+  }
+
+  const hasBunLock = existsSync(join(repoRoot, "bun.lock")) || existsSync(join(repoRoot, "bun.lockb"));
+  if (hasBunLock) {
+    return spawnSync("bun", args, options);
   }
 
   return spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", args, {
