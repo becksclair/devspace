@@ -175,6 +175,7 @@ devspace doctor
 ## Documentation
 
 - [Setup Guide](docs/setup.md)
+- [Asgard gateway and return to Saga](docs/asgard-gateway.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
 - [Security Model](docs/security.md)
