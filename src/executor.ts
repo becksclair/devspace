@@ -538,9 +538,10 @@ export class LocalExecutor {
       return `ERROR ${r.path}: ${(r.error as { message: string }).message}`;
     }).join("\n");
     void startedAt;
+    const text = `${summary}\n${details}`;
     return {
-      content: [{ type: "text", text: `${summary}\n${details}` }],
-      structuredContent: { results, totalBytes },
+      content: [{ type: "text", text }],
+      structuredContent: { result: text, results, totalBytes },
       isError: results.every((r) => r.status === "error"),
     };
   }
