@@ -96,6 +96,8 @@ Login mode remains an explicit semantic choice for commands that genuinely requi
 
 The public MCP endpoint requires OAuth approval with the owner password. Keep the owner password private and use a stable HTTPS tunnel or reverse proxy.
 
+Owner-password guessing is bounded by two independent limits. `/authorize` is rate-limited per client IP, which depends on correct proxy attribution (`DEVSPACE_TRUST_PROXY`). In addition, the server counts wrong owner-password approvals process-wide: after 20 failures within 15 minutes, every approval attempt from any client receives `429` with `Retry-After` until the oldest failure leaves the window. Successful approvals and CSRF rejections are not counted. The cap holds even if a misconfigured proxy lets clients choose their `X-Forwarded-For` address; the tradeoff is that a sustained wrong-password flood also delays the owner's own approval for up to 15 minutes. The cap is fixed, not configurable, and resets on restart.
+
 The Saga multi-machine gateway uses a separate node bearer for each remote executor. Node endpoints require that bearer on every request and bind loopback behind their dedicated tunnel. OAuth, tunnel credentials, and node bearers are independent authorities.
 
 Host headers remain allowlisted from the configured public URL. Use `DEVSPACE_ALLOWED_HOSTS=*` only for intentional local debugging.

@@ -8,7 +8,12 @@ import type {
   OAuthClientInformationFull,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { SingleUserOAuthProvider, type OAuthConfig, CSRF_COOKIE_NAME } from "./oauth-provider.js";
+import {
+  SingleUserOAuthProvider,
+  FailedApprovalLimiter,
+  type OAuthConfig,
+  CSRF_COOKIE_NAME,
+} from "./oauth-provider.js";
 import { SqliteOAuthStateStore, InMemoryOAuthStateStore } from "./oauth-store.js";
 
 const stateDir = await mkdtemp(join(tmpdir(), "devspace-oauth-test-"));
@@ -111,8 +116,14 @@ try {
   };
 
   // helper to call authorize and capture result
-  async function callAuthorize(opts: { csrfBody?: string; csrfCookie?: string; ownerToken?: string }): Promise<{ status?: number; body?: string; redirect?: string; setCookie?: string[] }> {
+  async function callAuthorize(opts: {
+    csrfBody?: string;
+    csrfCookie?: string;
+    ownerToken?: string;
+    provider?: SingleUserOAuthProvider;
+  }): Promise<{ status?: number; body?: string; redirect?: string; setCookie?: string[]; retryAfter?: string }> {
     let status: number | undefined;
+    let retryAfter: string | undefined;
     let body: string | undefined;
     let redirect: string | undefined;
     const setCookies: string[] = [];
@@ -134,6 +145,7 @@ try {
           if (Array.isArray(value)) setCookies.push(...value.map(String));
           else setCookies.push(String(value));
         }
+        if (name.toLowerCase() === "retry-after") retryAfter = String(value);
         return this;
       },
       getHeader(name: string) {
@@ -145,8 +157,8 @@ try {
       cookie() { return this; },
       clearCookie() { return this; },
     } as unknown as Response;
-    await csrfProvider.authorize(csrfClient!, csrfParams, res);
-    return { status, body, redirect, setCookie: setCookies };
+    await (opts.provider ?? csrfProvider).authorize(csrfClient!, csrfParams, res);
+    return { status, body, redirect, setCookie: setCookies, retryAfter };
   }
 
   // rejects without csrf_token
@@ -228,6 +240,38 @@ try {
     assert.equal(result.status, 400);
     assert.ok(!result.body?.includes(csrf));
     assert.ok(!result.body?.includes("wrong") || result.body?.includes("Invalid request"));
+  }
+
+  // global cap on failed owner approvals: only wrong tokens count, and the window resets
+  {
+    let clock = 1_000_000;
+    const limitedApprovals = new FailedApprovalLimiter({ limit: 3, windowMs: 60_000, now: () => clock });
+    const capProvider = new SingleUserOAuthProvider(config, mcpUrl, csrfStore, limitedApprovals);
+    const attempt = (ownerToken: string, csrfBody?: string) => {
+      const csrf = randomBytes(32).toString("hex");
+      return callAuthorize({ provider: capProvider, csrfBody: csrfBody ?? csrf, csrfCookie: csrf, ownerToken });
+    };
+
+    for (let i = 0; i < 5; i++) {
+      assert.equal((await attempt(config.ownerToken)).status, 302, "correct-token approvals are not counted");
+    }
+    assert.equal((await attempt(config.ownerToken, "bad-csrf")).status, 400, "CSRF failures are rejected first");
+    assert.equal((await attempt("wrong-1")).status, 401);
+    assert.equal((await attempt("wrong-2")).status, 401);
+    assert.equal((await attempt(config.ownerToken)).status, 302, "correct token still succeeds below the cap");
+    assert.equal((await attempt("wrong-3")).status, 401);
+
+    const blocked = await attempt("wrong-4");
+    assert.equal(blocked.status, 429, "failures beyond the cap are rejected");
+    assert.equal(blocked.retryAfter, "60");
+    assert.ok(blocked.body?.includes("Too many failed approval attempts"));
+    assert.equal((await attempt(config.ownerToken)).status, 429, "the cap blocks correct tokens until the window passes");
+
+    clock += 59_999;
+    assert.equal((await attempt(config.ownerToken)).status, 429, "still blocked just before the window ends");
+    clock += 1;
+    assert.equal((await attempt(config.ownerToken)).status, 302, "counter resets after the window");
+    assert.equal((await attempt("wrong-5")).status, 401, "fresh window accepts new failures");
   }
 
 } finally {
