@@ -178,7 +178,10 @@ npx @waishnav/devspace serve
 (cloudflared, Tailscale serve, a local Caddy), so the client address is the
 right-most non-loopback `X-Forwarded-For` hop. `1` trusts exactly one proxy hop
 of any address; use it when the proxy runs on another host. `0` disables proxy
-trust. OAuth rate limits and logged client IPs follow this setting.
+trust. Per-IP OAuth rate limits and logged client IPs follow this setting. The
+separate process-wide cap on failed owner-password approvals (20 per 15
+minutes) does not depend on client IPs and is not configurable; see
+[Security](security.md#oauth-and-network-exposure).
 
 Set `DEVSPACE_LOG_FORMAT=pretty` for local debugging.
 
