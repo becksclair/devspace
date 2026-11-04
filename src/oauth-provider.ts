@@ -36,6 +36,43 @@ const DEFAULT_MAX_RETAINED_CLIENTS = 500;
 export const CSRF_COOKIE_NAME = "__Host-devspace-csrf";
 const CSRF_TOKEN_BYTES = 32;
 const CSRF_MAX_AGE_SECONDS = 600;
+const FAILED_APPROVAL_LIMIT = 20;
+const FAILED_APPROVAL_WINDOW_MS = 15 * 60 * 1000;
+
+export interface FailedApprovalLimiterOptions {
+  limit?: number;
+  windowMs?: number;
+  now?: () => number;
+}
+
+/**
+ * Process-wide cap on wrong owner-token approvals. Independent of client IP so
+ * guessing stays bounded even when per-IP attribution is spoofable upstream.
+ */
+export class FailedApprovalLimiter {
+  private readonly limit: number;
+  private readonly windowMs: number;
+  private readonly now: () => number;
+  private failures: number[] = [];
+
+  constructor(options: FailedApprovalLimiterOptions = {}) {
+    this.limit = options.limit ?? FAILED_APPROVAL_LIMIT;
+    this.windowMs = options.windowMs ?? FAILED_APPROVAL_WINDOW_MS;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** Milliseconds until another attempt is allowed, or 0 when not blocked. */
+  retryAfterMs(): number {
+    const now = this.now();
+    this.failures = this.failures.filter((at) => at + this.windowMs > now);
+    if (this.failures.length < this.limit) return 0;
+    return this.failures[0] + this.windowMs - now;
+  }
+
+  recordFailure(): void {
+    this.failures.push(this.now());
+  }
+}
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
@@ -243,6 +280,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     private readonly config: OAuthConfig,
     resourceServerUrl: URL,
     stateStore: OAuthStateStore = new InMemoryOAuthStateStore(),
+    private readonly failedApprovals = new FailedApprovalLimiter(),
   ) {
     const maxRetainedClients = config.maxRetainedClients ?? DEFAULT_MAX_RETAINED_CLIENTS;
     if (!Number.isSafeInteger(maxRetainedClients) || maxRetainedClients <= 0 ||
@@ -286,38 +324,39 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       return;
     }
 
-    const cookieCsrf = getCsrfCookie(res.req);
-    const bodyCsrf = String((res.req.body as Record<string, unknown>)?.csrf_token ?? "");
-    if (!cookieCsrf || !bodyCsrf || !safeEquals(bodyCsrf, cookieCsrf)) {
+    const rejectWithForm = (status: number, error: string): void => {
       const nextCsrf = generateCsrfToken();
       setCsrfCookie(res, nextCsrf, secure);
-      res.status(400).setHeader("Content-Type", "text/html; charset=utf-8");
+      res.status(status).setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
         formHtml({
-          error: "Invalid request.",
+          error,
           clientName: client.client_name ?? client.client_id,
           scopes: params.scopes ?? this.config.scopes,
           resource: params.resource,
           fields: { ...authorizationFormFields(client, params), csrf_token: nextCsrf },
         }),
       );
+    };
+
+    const cookieCsrf = getCsrfCookie(res.req);
+    const bodyCsrf = String((res.req.body as Record<string, unknown>)?.csrf_token ?? "");
+    if (!cookieCsrf || !bodyCsrf || !safeEquals(bodyCsrf, cookieCsrf)) {
+      rejectWithForm(400, "Invalid request.");
+      return;
+    }
+
+    const retryAfterMs = this.failedApprovals.retryAfterMs();
+    if (retryAfterMs > 0) {
+      res.setHeader("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+      rejectWithForm(429, "Too many failed approval attempts. Try again later.");
       return;
     }
 
     const providedToken = String(res.req.body?.owner_token ?? "");
     if (!safeEquals(providedToken, this.config.ownerToken)) {
-      const nextCsrf = generateCsrfToken();
-      setCsrfCookie(res, nextCsrf, secure);
-      res.status(401).setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(
-        formHtml({
-          error: "The Owner password was not accepted.",
-          clientName: client.client_name ?? client.client_id,
-          scopes: params.scopes ?? this.config.scopes,
-          resource: params.resource,
-          fields: { ...authorizationFormFields(client, params), csrf_token: nextCsrf },
-        }),
-      );
+      this.failedApprovals.recordFailure();
+      rejectWithForm(401, "The Owner password was not accepted.");
       return;
     }
 
