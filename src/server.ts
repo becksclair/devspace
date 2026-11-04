@@ -683,7 +683,7 @@ function sendJsonRpcError(
 
 function requestLogFields(req: Request, config: ServerConfig): Record<string, unknown> {
   return {
-    ip: requestIp(req, config.logging.trustProxy),
+    ip: requestIp(req),
     host: req.header("host"),
     userAgent: req.header("user-agent"),
     origin: req.header("origin"),
@@ -2235,10 +2235,6 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
           mode: machine.shell?.mode ?? "service",
           environment: machine.shell?.environment,
         },
-        secretNames: Array.from(new Set([
-          ...publicConfig.secretNames,
-          ...roleConfig.machines.filter((entry) => entry.kind === "remote" && typeof entry.nodeTokenEnv === "string" && entry.nodeTokenEnv.length > 0).map((entry) => entry.nodeTokenEnv as string),
-        ])),
         terminals: {
           backend: machine.terminals?.backend ?? "tmux",
           runtimeDir: machine.terminals?.runtimeDir ?? `${stateDir}/terminal-runtime`,
