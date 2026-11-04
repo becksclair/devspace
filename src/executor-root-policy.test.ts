@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +59,13 @@ try {
 
     await executor.execute("write_file", { workspaceId, path: "created.txt", content: "created\n" }, { requestId: "write" });
     assert.equal(await readFile(join(project, "created.txt"), "utf8"), "created\n");
+
+    await symlink(join(undeclared, "planted.txt"), join(project, "planted"));
+    await assert.rejects(
+      () => executor.execute("write_file", { workspaceId, path: "planted", content: "x\n" }, { requestId: "write-dangling" }),
+      /outside permitted write roots/,
+    );
+    assert.equal(existsSync(join(undeclared, "planted.txt")), false);
 
     const shell = await executor.execute(
       "run_shell",
