@@ -200,3 +200,13 @@ function removeBackupBestEffort(path) {
     );
   }
 }
+
+export function packageManagerCommand(args, { npmExecPath, execPath, platform, hasBunLock }) {
+  if (npmExecPath) {
+    if (/\.(c|m)?js$/i.test(npmExecPath)) return { command: execPath, args: [npmExecPath, ...args], shell: false };
+    return { command: npmExecPath, args, shell: false };
+  }
+  if (hasBunLock) return { command: "bun", args, shell: false };
+  if (platform === "win32") return { command: "npm.cmd", args, shell: true };
+  return { command: "npm", args, shell: false };
+}

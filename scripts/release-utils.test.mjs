@@ -17,6 +17,7 @@ import {
   formatReleaseSection,
   incrementVersion,
   isBuildInputPath,
+  packageManagerCommand,
   parseBuildArgs,
   parseLatestRelease,
   prependRelease,
@@ -258,3 +259,31 @@ function mkdir(path) {
   mkdirSync(path, { recursive: true });
   return path;
 }
+
+test("package-manager command honours JS and native npm_execpath", () => {
+  const base = { execPath: "/usr/bin/node", platform: "linux", hasBunLock: true };
+  assert.deepEqual(
+    packageManagerCommand(["run", "x"], { ...base, npmExecPath: "/usr/lib/node_modules/npm/bin/npm-cli.js" }),
+    { command: "/usr/bin/node", args: ["/usr/lib/node_modules/npm/bin/npm-cli.js", "run", "x"], shell: false },
+  );
+  assert.deepEqual(
+    packageManagerCommand(["run", "x"], { ...base, npmExecPath: "/opt/pnpm/bin/pnpm.cjs" }),
+    { command: "/usr/bin/node", args: ["/opt/pnpm/bin/pnpm.cjs", "run", "x"], shell: false },
+  );
+  assert.deepEqual(
+    packageManagerCommand(["run", "x"], { ...base, npmExecPath: "/home/u/.bun/bin/bun" }),
+    { command: "/home/u/.bun/bin/bun", args: ["run", "x"], shell: false },
+  );
+  assert.deepEqual(
+    packageManagerCommand(["run", "x"], { ...base, npmExecPath: undefined }),
+    { command: "bun", args: ["run", "x"], shell: false },
+  );
+  assert.deepEqual(
+    packageManagerCommand(["run", "x"], { ...base, npmExecPath: undefined, hasBunLock: false, platform: "win32" }),
+    { command: "npm.cmd", args: ["run", "x"], shell: true },
+  );
+  assert.deepEqual(
+    packageManagerCommand(["run", "x"], { ...base, npmExecPath: undefined, hasBunLock: false }),
+    { command: "npm", args: ["run", "x"], shell: false },
+  );
+});
