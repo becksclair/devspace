@@ -289,6 +289,77 @@ try {
     assert.equal(lastNodeInstanceId, secondInstanceId, "resumable bust uses fresh nodeInstanceId from new hello");
   }
 
+  // Node restart between calls: first-attempt epoch mismatch refreshes the cached hello
+  {
+    let helloCount = 0;
+    const instanceA = "33333333-3333-4333-8333-333333333333";
+    const instanceB = "44444444-4444-4444-8444-444444444444";
+    let currentInstance = instanceA;
+    const sentInstances: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/hello")) {
+        helloCount += 1;
+        return jsonResponse({ ...resumableHello(), nodeInstanceId: currentInstance });
+      }
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      sentInstances.push(String(body.nodeInstanceId));
+      if (body.nodeInstanceId !== currentInstance) {
+        return jsonResponse({ ok: false, error: { code: "operation_epoch_mismatch", message: "Remote node instance changed while the operation result was uncertain" } }, 409);
+      }
+      return jsonResponse(successEnvelope());
+    }) as typeof fetch;
+    const client = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t" });
+    await client.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "before-restart", signal: AbortSignal.timeout(1000) });
+    currentInstance = instanceB; // node restarted; client's cached hello still says A
+    const after = await client.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "after-restart", signal: AbortSignal.timeout(1000) });
+    assert.equal(textResult(after), "ok");
+    assert.equal(helloCount, 2, "epoch mismatch on first attempt refreshes hello once");
+    assert.deepEqual(sentInstances, [instanceA, instanceA, instanceB]);
+  }
+
+  // One caller's abort does not fail a concurrent caller sharing the cold hello
+  {
+    let releaseHello: (() => void) | undefined;
+    let sharedHelloCount = 0;
+    const helloGate = new Promise<void>((resolve) => { releaseHello = resolve; });
+    globalThis.fetch = (async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/hello")) {
+        sharedHelloCount += 1;
+        // Honour the request's abort signal like real fetch does.
+        await Promise.race([helloGate, rejectWhenAborted(init?.signal)]);
+        return jsonResponse(resumableHello());
+      }
+      return jsonResponse(successEnvelope());
+    }) as typeof fetch;
+    const client = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t" });
+    const cancelled = new AbortController();
+    const first = client.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "first", signal: cancelled.signal });
+    const second = client.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "second", signal: AbortSignal.timeout(2000) });
+    cancelled.abort(new Error("user cancelled"));
+    await assert.rejects(first, /user cancelled/);
+    releaseHello?.();
+    assert.equal(textResult(await second), "ok");
+    assert.equal(sharedHelloCount, 1, "concurrent callers share one hello despite the first caller's abort");
+  }
+
+  // A pre-aborted caller on a cold cache must not orphan a failing shared hello
+  {
+    let preAbortedFetches = 0;
+    globalThis.fetch = (async () => { preAbortedFetches += 1; throw new TypeError("node down"); }) as typeof fetch;
+    const client = new RemoteNodeClient({ machineId: "m", url: "https://remote.test", nodeToken: "t", timeoutMs: 50 });
+    const aborted = new AbortController();
+    aborted.abort(new Error("already cancelled"));
+    await assert.rejects(
+      client.execute("read_file", { workspaceId: "w", path: "x" }, { requestId: "pre-aborted", signal: aborted.signal }),
+      /already cancelled/,
+    );
+    // An unhandled rejection from an orphaned shared hello would terminate the script in this window.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(preAbortedFetches, 0, "a pre-aborted caller must not start a shared hello");
+  }
+
   let deadlineCancelCalls = 0;
   let deadlineCancelBody: Record<string, unknown> | undefined;
   globalThis.fetch = (async (input, init) => {
