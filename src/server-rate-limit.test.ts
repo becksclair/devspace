@@ -93,6 +93,45 @@ try {
     429,
     "a trailing loopback hop is skipped: still client A's bucket (fails under trust proxy = 1)",
   );
+
+  // Failed owner approvals are capped process-wide, so rotating X-Forwarded-For
+  // (a fresh per-IP bucket for every request) cannot extend password guessing.
+  const registration = await fetch(`${baseUrl}/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.250" },
+    body: JSON.stringify({ redirect_uris: ["http://localhost:9999/callback"], client_name: "rate-limit-test" }),
+  });
+  assert.equal(registration.status, 201);
+  const { client_id: clientId } = (await registration.json()) as { client_id: string };
+  const approve = (ownerToken: string, xff: string) => {
+    const csrf = "a".repeat(64);
+    return fetch(`${baseUrl}/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: `__Host-devspace-csrf=${csrf}`,
+        "x-forwarded-for": xff,
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: "http://localhost:9999/callback",
+        response_type: "code",
+        code_challenge: "test-code-challenge",
+        code_challenge_method: "S256",
+        resource: `${publicBaseUrl}/mcp`,
+        csrf_token: csrf,
+        owner_token: ownerToken,
+      }),
+    });
+  };
+
+  assert.equal((await approve(config.oauth.ownerToken, "192.0.2.200")).status, 302, "correct token is approved");
+  for (let i = 0; i < 20; i++) {
+    assert.equal((await approve("wrong-owner-token", `192.0.2.${i + 1}`)).status, 401, `failure ${i + 1} is rejected normally`);
+  }
+  assert.equal((await approve("wrong-owner-token", "192.0.2.100")).status, 429, "21st failure from a fresh IP is capped");
+  assert.equal((await approve(config.oauth.ownerToken, "192.0.2.101")).status, 429, "cap holds for every IP during the window");
 } finally {
   await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   await rm(stateDir, { recursive: true, force: true });
