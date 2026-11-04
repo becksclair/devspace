@@ -7,6 +7,7 @@ import {
   formatReleaseSection,
   incrementVersion,
   isBuildInputPath,
+  packageManagerCommand,
   parseBuildArgs,
   parseLatestRelease,
   prependRelease,
@@ -116,17 +117,11 @@ function lines(value) {
 }
 
 function spawnPm(args, options) {
-  if (process.env.npm_execpath) {
-    return spawnSync(process.execPath, [process.env.npm_execpath, ...args], options);
-  }
-
-  const hasBunLock = existsSync(join(repoRoot, "bun.lock")) || existsSync(join(repoRoot, "bun.lockb"));
-  if (hasBunLock) {
-    return spawnSync("bun", args, options);
-  }
-
-  return spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", args, {
-    ...options,
-    shell: process.platform === "win32",
+  const resolved = packageManagerCommand(args, {
+    npmExecPath: process.env.npm_execpath,
+    execPath: process.execPath,
+    platform: process.platform,
+    hasBunLock: existsSync(join(repoRoot, "bun.lock")) || existsSync(join(repoRoot, "bun.lockb")),
   });
+  return spawnSync(resolved.command, resolved.args, { ...options, shell: resolved.shell });
 }
