@@ -244,7 +244,7 @@ function parseAnnotationProfile(value: string | undefined): AnnotationProfile {
   throw new Error(`Invalid DEVSPACE_ANNOTATION_PROFILE: ${value}`);
 }
 
-function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
+function parseLoggingConfig(env: NodeJS.ProcessEnv, host: string): LoggingConfig {
   return {
     level: parseLogLevel(env.DEVSPACE_LOG_LEVEL),
     format: parseLogFormat(env.DEVSPACE_LOG_FORMAT),
@@ -252,8 +252,20 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
     assets: parseBoolean(env.DEVSPACE_LOG_ASSETS),
     toolCalls: env.DEVSPACE_LOG_TOOL_CALLS === undefined ? true : parseBoolean(env.DEVSPACE_LOG_TOOL_CALLS),
     shellCommands: parseBoolean(env.DEVSPACE_LOG_SHELL_COMMANDS),
-    trustProxy: parseBoolean(env.DEVSPACE_TRUST_PROXY),
+    trustProxy: parseTrustProxy(env.DEVSPACE_TRUST_PROXY, host),
   };
+}
+
+function parseTrustProxy(value: string | undefined, host: string): boolean | "loopback" {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (normalized === "") return isLoopbackHost(host) ? "loopback" : false;
+  if (normalized === "loopback") return "loopback";
+  return parseBoolean(normalized);
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "localhost" || normalized === "::1" || /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }
 
 function parseTerminalBackend(value: string | undefined): TerminalConfig["backend"] {
@@ -392,7 +404,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     globalInstructionsFile: resolve(expandHomePath(
       env.DEVSPACE_GLOBAL_INSTRUCTIONS_FILE ?? files.config.globalInstructionsFile ?? defaultGlobalInstructionsFile(),
     )),
-    logging: parseLoggingConfig(env),
+    logging: parseLoggingConfig(env, host),
     shell: {
       path: env.DEVSPACE_SHELL_PATH ?? files.config.shell?.path,
       mode: parseShellMode(env.DEVSPACE_SHELL_MODE ?? files.config.shell?.mode),

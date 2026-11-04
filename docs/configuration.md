@@ -172,7 +172,13 @@ npx @waishnav/devspace serve
 | `DEVSPACE_LOG_ASSETS` | `0` |
 | `DEVSPACE_LOG_TOOL_CALLS` | `1` |
 | `DEVSPACE_LOG_SHELL_COMMANDS` | `0` |
-| `DEVSPACE_TRUST_PROXY` | `0` |
+| `DEVSPACE_TRUST_PROXY` | `loopback` when `HOST` is loopback, otherwise `0` |
+
+`DEVSPACE_TRUST_PROXY=loopback` trusts only proxies on the local machine
+(cloudflared, Tailscale serve, a local Caddy), so the client address is the
+right-most non-loopback `X-Forwarded-For` hop. `1` trusts exactly one proxy hop
+of any address; use it when the proxy runs on another host. `0` disables proxy
+trust. OAuth rate limits and logged client IPs follow this setting.
 
 Set `DEVSPACE_LOG_FORMAT=pretty` for local debugging.
 
