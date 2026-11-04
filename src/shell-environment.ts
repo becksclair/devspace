@@ -46,6 +46,25 @@ export function createShellRuntime(
   };
 }
 
+const BRIDGE_ALWAYS_STRIPPED = new Set(["DEVSPACE_OAUTH_OWNER_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]);
+
+export function bridgeChildEnvironment(baseEnvironment: NodeJS.ProcessEnv, secretNames: string[]): Record<string, string> {
+  const configured = new Set<string>();
+  for (const raw of secretNames) {
+    const name = raw.trim();
+    if (!name) continue;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid DevSpace infrastructure secret name: ${name}`);
+    configured.add(name);
+  }
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(baseEnvironment)) {
+    if (typeof value !== "string") continue;
+    if (BRIDGE_ALWAYS_STRIPPED.has(name) || name.endsWith("_NODE_TOKEN") || configured.has(name)) continue;
+    env[name] = value;
+  }
+  return env;
+}
+
 export function createDevspaceShellSpawnHook(runtime: ShellRuntime): BashSpawnHook {
   return ({ command, cwd }) => ({
     command: runtime.mode === "login"

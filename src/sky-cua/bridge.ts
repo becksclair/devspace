@@ -4,6 +4,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import * as z from "zod/v4";
 import type { SkyCuaConfig } from "../config.js";
 import { jsonSchemaToZod, normalizeAnnotations } from "../mcp-bridge-utils.js";
+import { bridgeChildEnvironment } from "../shell-environment.js";
 
 export interface SkyToolDef {
   name: string;
@@ -23,7 +24,7 @@ export interface SkyBridge {
   callTool(name: string, args: unknown, signal?: AbortSignal): Promise<{ content: unknown[]; structuredContent?: unknown; isError?: boolean }>;
 }
 
-export async function createSkyBridge(config: SkyCuaConfig): Promise<SkyBridge> {
+export async function createSkyBridge(config: SkyCuaConfig, secretNames: string[]): Promise<SkyBridge> {
   const binPath = config.binPath;
   if (!existsSync(binPath)) {
     return {
@@ -38,12 +39,7 @@ export async function createSkyBridge(config: SkyCuaConfig): Promise<SkyBridge> 
     };
   }
 
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v !== "string") continue;
-    if (k === "DEVSPACE_OAUTH_OWNER_TOKEN" || k === "GH_TOKEN" || k === "GITHUB_TOKEN" || k.endsWith("_NODE_TOKEN")) continue;
-    env[k] = v;
-  }
+  const env = bridgeChildEnvironment(process.env, secretNames);
   // System services (devspace.service User=ubuntu) don't inherit XDG_RUNTIME_DIR, so sky-cua falls back to /run/saga-brave-origin and times out 24s.
   // Ensure a sane default so initialize is <1s even when the parent has no XDG_RUNTIME_DIR.
   if (!env.XDG_RUNTIME_DIR) {

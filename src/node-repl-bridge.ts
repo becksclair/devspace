@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import * as z from "zod/v4";
 import { jsonSchemaToZod, normalizeAnnotations } from "./mcp-bridge-utils.js";
 import { expandHomePath } from "./roots.js";
+import { bridgeChildEnvironment } from "./shell-environment.js";
 
 export interface NodeReplToolDef {
   name: string;
@@ -38,7 +39,7 @@ export function nodeReplCwd(): string {
   return resolve(expandHomePath("~/.local/share/sky-cua"));
 }
 
-export async function createNodeReplBridge(config?: { nodeRepl?: { binPath: string; cwd: string } }): Promise<NodeReplBridge> {
+export async function createNodeReplBridge(config: { nodeRepl?: { binPath: string; cwd: string } } | undefined, secretNames: string[]): Promise<NodeReplBridge> {
   const binPath = config?.nodeRepl?.binPath ?? nodeReplBinPath();
   const cwd = config?.nodeRepl?.cwd ?? nodeReplCwd();
   if (!existsSync(binPath)) {
@@ -48,12 +49,7 @@ export async function createNodeReplBridge(config?: { nodeRepl?: { binPath: stri
       async callTool() { return { content: [{ type: "text", text: `node_repl binary not found at ${binPath}` }], isError: true }; },
     };
   }
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v !== "string") continue;
-    if (k === "DEVSPACE_OAUTH_OWNER_TOKEN" || k === "GH_TOKEN" || k === "GITHUB_TOKEN" || k.endsWith("_NODE_TOKEN")) continue;
-    env[k] = v;
-  }
+  const env = bridgeChildEnvironment(process.env, secretNames);
   const transport = new StdioClientTransport({ command: binPath, args: [], cwd, env, stderr: "inherit" } as never);
   const client = new Client({ name: "devspace-node-repl-bridge", version: "1.0.0" }, { capabilities: {} });
   try { await client.connect(transport); } catch (e) {

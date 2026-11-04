@@ -62,7 +62,7 @@ async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bri
   const promise = (async () => {
     try {
       const mod = await import("./sky-cua/bridge.js");
-      const bridge = await mod.createSkyBridge(skyCua);
+      const bridge = await mod.createSkyBridge(skyCua, config.secretNames);
       if (!bridge?.healthy) {
         skyBridgeCache.delete(key);
         return bridge;
@@ -1682,7 +1682,7 @@ async function createMcpServer(
       pendingNodeReplCreates++;
       lazyBridgePromise = (async () => {
         const mod = await import("./node-repl-bridge.js");
-        const b = await mod.createNodeReplBridge(config);
+        const b = await mod.createNodeReplBridge(config, config.secretNames);
         if (!b.healthy) throw new Error(b.error ?? "node_repl unavailable");
         if (sessionNodeReplBridges.size >= maxPerHost) { try { await b.close(); } catch {} throw new Error(`node_repl per-host cap ${maxPerHost} reached`); }
         lazyBridge = b;
@@ -2209,6 +2209,12 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
     publicConfig.disabledCapabilities = eff;
   }
   if (!publicConfig.disabledCapabilities) publicConfig.disabledCapabilities = new Set<string>();
+  publicConfig.secretNames = Array.from(new Set([
+    ...publicConfig.secretNames,
+    ...roleConfig.machines
+      .filter((entry) => entry.kind === "remote" && typeof entry.nodeTokenEnv === "string" && entry.nodeTokenEnv.length > 0)
+      .map((entry) => entry.nodeTokenEnv as string),
+  ]));
   const bindings = createGatewayWorkspaceStore(roleConfig.stateDir);
   const targets = new Map<string, ExecutionTarget>();
   const localExecutors: LocalExecutor[] = [];
