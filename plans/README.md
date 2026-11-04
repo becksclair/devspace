@@ -11,15 +11,15 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `ee8528
 | 003  | Harden OAuth owner approval with CSRF + rate limit | P1 | M | — | DONE |
 | 004  | Wire orphaned tests and fix terminal-manager flake so CI is trustworthy | P1 | S | — | DONE |
 | 005  | Cache gateway hello to remove extra RTT on every remote tool call | P2 | S | — | DONE |
-| 006  | Make multi_read succeed over MCP by satisfying its output schema | P1 | S | — | TODO |
-| 007  | Make multi_read return whole files up to its byte limit and report truncation truthfully | P1 | S–M | 006 | TODO |
-| 008  | Clear the high/critical advisories on the public HTTP/OAuth path by raising dependency floors | P1 | S | — | TODO |
-| 009  | Resolve dangling symlinks during canonical-path authorization so writes cannot escape root policy | P1 | S | — | TODO |
-| 010  | Make stdio MCP bridges scrub the same configured secret names as shells and terminals | P1 | S | — | TODO |
-| 011  | Fix the versioned build and local rebuild so they work when launched by Bun | P1 | S | — | TODO |
-| 012  | Recover from node restarts immediately, and stop one caller's cancellation from failing shared hellos | P1 | S | — | TODO |
-| 013  | Key OAuth rate limits on the real client when DevSpace sits behind a local tunnel | P1 | S | 008 | TODO |
-| 014  | Turn AGENTS.md into an accurate operating guide and add CLAUDE.md | P2 | S | — | TODO |
+| 006  | Make multi_read succeed over MCP by satisfying its output schema | P1 | S | — | DONE |
+| 007  | Make multi_read return whole files up to its byte limit and report truncation truthfully | P1 | S–M | 006 | DONE |
+| 008  | Clear the high/critical advisories on the public HTTP/OAuth path by raising dependency floors | P1 | S | — | DONE |
+| 009  | Resolve dangling symlinks during canonical-path authorization so writes cannot escape root policy | P1 | S | — | DONE |
+| 010  | Make stdio MCP bridges scrub the same configured secret names as shells and terminals | P1 | S | — | DONE |
+| 011  | Fix the versioned build and local rebuild so they work when launched by Bun | P1 | S | — | DONE |
+| 012  | Recover from node restarts immediately, and stop one caller's cancellation from failing shared hellos | P1 | S | — | DONE |
+| 013  | Key OAuth rate limits on the real client when DevSpace sits behind a local tunnel | P1 | S | 008 | DONE |
+| 014  | Turn AGENTS.md into an accurate operating guide and add CLAUDE.md | P2 | S | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
 
