@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageManagerCommand } from "./release-utils.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distPath = join(repoRoot, "dist");
@@ -154,12 +155,13 @@ function assertCommandSucceeded(result, label) {
 }
 
 function spawnPm(args, options) {
-  if (process.env.npm_execpath) {
-    return spawnSync(process.execPath, [process.env.npm_execpath, ...args], options);
-  }
-  const hasBunLock = existsSync(join(repoRoot, "bun.lock")) || existsSync(join(repoRoot, "bun.lockb"));
-  if (hasBunLock) return spawnSync("bun", args, options);
-  return spawnSync("npm", args, options);
+  const resolved = packageManagerCommand(args, {
+    npmExecPath: process.env.npm_execpath,
+    execPath: process.execPath,
+    platform: process.platform,
+    hasBunLock: existsSync(join(repoRoot, "bun.lock")) || existsSync(join(repoRoot, "bun.lockb")),
+  });
+  return spawnSync(resolved.command, resolved.args, { ...options, shell: resolved.shell });
 }
 
 function errorMessage(error) {
