@@ -180,6 +180,21 @@ test("preserves tab indentation when updating the package version", () => {
   });
 });
 
+test("preserves space indentation when updating the lockfile version", () => {
+  withTempDir((directory) => {
+    const packagePath = join(directory, "package.json");
+    const packageLockPath = join(directory, "package-lock.json");
+    writeFileSync(packagePath, '{"name":"devspace","version":"1.0.1"}\n');
+    const original =
+      '{\n    "name": "devspace",\n    "version": "1.0.1",\n    "packages": {\n        "": {\n            "version": "1.0.1"\n        }\n    }\n}\n';
+    writeFileSync(packageLockPath, original);
+
+    updatePackageVersions(packagePath, packageLockPath, "1.0.2");
+
+    assert.equal(readFileSync(packageLockPath, "utf8"), original.replaceAll('"1.0.1"', '"1.0.2"'));
+  });
+});
+
 test("restores release files when the wrapped action fails", () => {
   withTempDir((directory) => {
     const packagePath = join(directory, "package.json");
