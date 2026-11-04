@@ -412,7 +412,9 @@ export class LocalExecutor {
       let estTotal = 0;
       for (let idx = 0; idx < input.reads.length; idx++) {
         const sz = statSizes[idx];
-        const est = sz !== null ? Math.min(sz, maxBytesPerFile) : maxBytesPerFile;
+        const entry = input.reads[idx];
+        const sliced = entry?.offset !== undefined || entry?.limit !== undefined;
+        const est = sz !== null && !sliced ? Math.min(sz, maxBytesPerFile) : 0;
         if (estTotal + est > maxTotalBytes) {
           preSkipped.set(idx, { code: "total_limit_exceeded", message: `Total bytes limit ${maxTotalBytes} exceeded (pre-flight)` });
           continue;
@@ -422,7 +424,7 @@ export class LocalExecutor {
     }
     const rawByIdx = new Map<
       number,
-      | { entry: (typeof input.reads)[number]; readPath?: { absolutePath: string; readRoots: string[] }; status: "ok"; text: string; truncated?: boolean; bytes?: number; t0: number }
+      | { entry: (typeof input.reads)[number]; readPath?: { absolutePath: string; readRoots: string[] }; status: "ok"; text: string; truncated: boolean; bytes: number; t0: number }
       | { entry: (typeof input.reads)[number]; readPath?: { absolutePath: string; readRoots: string[] }; status: "error"; error: { code: string; message: string }; t0: number }
     >();
     await Promise.all(
@@ -440,15 +442,20 @@ export class LocalExecutor {
             resolvedReadPaths[idx] = readPath;
           }
           const sz = statSizes[idx];
-          if (sz !== null && sz > maxBytesPerFile && entry.offset === undefined && entry.limit === undefined) {
+          if (sz !== null && entry.offset === undefined && entry.limit === undefined) {
             let fh: FileHandle | null = null;
             try {
               fh = await open(readPath.absolutePath, "r");
               const buf = Buffer.allocUnsafe(maxBytesPerFile + 1024);
               const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+              const head = buf.subarray(0, Math.min(bytesRead, 8192));
+              if (head.includes(0)) {
+                rawByIdx.set(idx, { entry, readPath, status: "error" as const, error: { code: "binary_file", message: "Binary file; multi_read returns text only. Use read_file for images." }, t0 });
+                return;
+              }
               const text = buf.subarray(0, bytesRead).toString("utf8");
               const { content, truncated, bytes } = truncateUtf8Safe(text, maxBytesPerFile);
-              // Preserve truncation flag from the fast path; second truncation below must not re-derive it.
+              // Default path for whole-file reads: bounded raw read; truncated/bytes here are authoritative and must not be re-derived in the assembly loop.
               rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: content, truncated, bytes, t0 });
               return;
             } catch {} finally { if (fh) try { await fh.close(); } catch {} }
@@ -464,8 +471,10 @@ export class LocalExecutor {
             rawByIdx.set(idx, { entry, readPath, status: "error" as const, error: { code: "read_error", message: errText }, t0 });
             return;
           }
+          const piTruncated = (result.details as { truncation?: { truncated?: boolean } } | undefined)?.truncation?.truncated === true;
           const text = result.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n");
-          rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text, t0 });
+          const t = truncateUtf8Safe(text, maxBytesPerFile);
+          rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: t.content, truncated: t.truncated || piTruncated, bytes: t.bytes, t0 });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const code = message.includes("outside") || message.includes("denied") || message.includes("permitted") ? "access_denied" : "read_error";
@@ -507,19 +516,7 @@ export class LocalExecutor {
         this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path, offset: raw.entry.offset, limit: raw.entry.limit }, false, t0, (raw.error.message as string).slice(0, 240));
         continue;
       }
-      let content: string;
-      let truncated: boolean;
-      let bytes: number;
-      if (typeof (raw as unknown as { truncated?: unknown }).truncated === "boolean" && typeof (raw as unknown as { bytes?: unknown }).bytes === "number") {
-        content = raw.text;
-        truncated = (raw as unknown as { truncated: boolean }).truncated;
-        bytes = (raw as unknown as { bytes: number }).bytes;
-      } else {
-        const t = truncateUtf8Safe(raw.text, maxBytesPerFile);
-        content = t.content;
-        truncated = t.truncated;
-        bytes = t.bytes;
-      }
+      const { text: content, truncated, bytes } = raw;
       if (totalBytes + bytes > maxTotalBytes) {
         results.push({ path: raw.entry.path, status: "error", error: { code: "total_limit_exceeded", message: `Total bytes limit ${maxTotalBytes} exceeded` } });
         this.logToolExecution("read_file", { workspaceId: input.workspaceId, path: raw.entry.path }, false, t0, "total_limit_exceeded");
