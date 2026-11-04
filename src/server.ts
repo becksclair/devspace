@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { hostHeaderValidation, localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
+import { DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/sdk/server/requestBody.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -155,7 +156,7 @@ function toolAnnotationsForProfile(
 }
 
 interface RunningServer {
-  app: ReturnType<typeof createMcpExpressApp>;
+  app: express.Express;
   config: ServerConfig;
   close?: () => void;
 }
@@ -1800,6 +1801,29 @@ interface CreateServerOptions {
   healthCheck?: () => void;
 }
 
+/**
+ * Mirrors the SDK's createMcpExpressApp (Host header validation, then JSON body
+ * parsing), except that /mcp accepts bodies up to the SDK's Streamable HTTP limit
+ * instead of body-parser's 100kb default; every other route keeps the default.
+ */
+function createMcpApp(host: string, allowedHosts: string[] | undefined): express.Express {
+  const app = express();
+  if (allowedHosts) {
+    app.use(hostHeaderValidation(allowedHosts));
+  } else if (["127.0.0.1", "localhost", "::1"].includes(host)) {
+    app.use(localhostHostValidation());
+  } else if (host === "0.0.0.0" || host === "::") {
+    console.warn(
+      `Warning: Server is binding to ${host} without DNS rebinding protection. ` +
+        "Consider using the allowedHosts option to restrict allowed hosts, " +
+        "or use authentication to protect your server.",
+    );
+  }
+  app.use("/mcp", express.json({ limit: DEFAULT_MAX_REQUEST_BODY_SIZE }));
+  app.use(express.json());
+  return app;
+}
+
 export function createServer(config = loadConfig(), options: CreateServerOptions = {}): RunningServer {
   if (config.widgets === "workspace" && !options.gatewayRouter) {
     throw new Error("DEVSPACE_WIDGETS=workspace is only supported in gateway mode");
@@ -1807,10 +1831,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   const allowedHosts = config.allowedHosts.includes("*")
     ? undefined
     : Array.from(new Set([config.host, ...config.allowedHosts]));
-  const app = createMcpExpressApp({
-    host: config.host,
-    ...(allowedHosts ? { allowedHosts } : {}),
-  });
+  const app = createMcpApp(config.host, allowedHosts);
   const transports = new Map<string, Transport>();
   const lastActiveAt = new Map<string, number>();
   const inFlight = new Set<string>();
