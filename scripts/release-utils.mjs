@@ -115,9 +115,9 @@ export function prependRelease(changelog, section) {
 }
 
 export function updatePackageVersions(packagePath, packageLockPath, version) {
-  const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
-  packageJson.version = version;
-  writeJson(packagePath, packageJson);
+  updateJson(packagePath, (packageJson) => {
+    packageJson.version = version;
+  });
 
   if (!packageLockPath || !existsSync(packageLockPath)) return;
 
@@ -131,13 +131,13 @@ export function updatePackageVersions(packagePath, packageLockPath, version) {
     return;
   }
 
-  const packageLock = JSON.parse(readFileSync(packageLockPath, "utf8"));
-  packageLock.version = version;
-  if (!packageLock.packages?.[""]) {
-    throw new Error("package-lock.json is missing the root package metadata");
-  }
-  packageLock.packages[""].version = version;
-  writeJson(packageLockPath, packageLock);
+  updateJson(packageLockPath, (packageLock) => {
+    packageLock.version = version;
+    if (!packageLock.packages?.[""]) {
+      throw new Error("package-lock.json is missing the root package metadata");
+    }
+    packageLock.packages[""].version = version;
+  });
 }
 
 export function resolveLockfilePath(repoRoot) {
@@ -185,8 +185,13 @@ function isReleaseMetadataOnly(paths) {
   return paths.length > 0 && paths.every((path) => RELEASE_METADATA_PATHS.has(path));
 }
 
-function writeJson(path, value) {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+function updateJson(path, mutate) {
+  const source = readFileSync(path, "utf8");
+  const value = JSON.parse(source);
+  mutate(value);
+  // Keep the file's existing indentation so a version bump stays a one-line diff.
+  const indent = /^[ \t]+(?=")/m.exec(source)?.[0] ?? 2;
+  writeFileSync(path, `${JSON.stringify(value, null, indent)}\n`);
 }
 
 function removeBackupBestEffort(path) {

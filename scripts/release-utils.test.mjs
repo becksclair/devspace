@@ -168,6 +168,18 @@ test("updates package and lockfile versions", () => {
   });
 });
 
+test("preserves tab indentation when updating the package version", () => {
+  withTempDir((directory) => {
+    const packagePath = join(directory, "package.json");
+    const original = '{\n\t"name": "devspace",\n\t"version": "1.0.1",\n\t"scripts": {\n\t\t"build": "x"\n\t}\n}\n';
+    writeFileSync(packagePath, original);
+
+    updatePackageVersions(packagePath, undefined, "1.0.2");
+
+    assert.equal(readFileSync(packagePath, "utf8"), original.replace('"1.0.1"', '"1.0.2"'));
+  });
+});
+
 test("restores release files when the wrapped action fails", () => {
   withTempDir((directory) => {
     const packagePath = join(directory, "package.json");
