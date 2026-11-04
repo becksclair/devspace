@@ -52,7 +52,7 @@ export function logEvent(
   }
 }
 
-export function requestIp(req: Request, _trustProxy: boolean | "loopback"): string | undefined {
+export function requestIp(req: Request): string | undefined {
   // Express has already applied the configured `trust proxy` setting to req.ip.
   return req.ip ?? req.socket.remoteAddress;
 }

@@ -62,7 +62,7 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 ## Security invariants for contributors
 
 - File-tool path canonicalization lives in `src/roots.ts` (`canonicalTarget`).
-- Child-process environments must come from `createShellRuntime` in `src/shell-environment.ts`, which strips `config.secretNames`. Never copy `process.env` directly.
+- Child-process environments must come from `src/shell-environment.ts`: `createShellRuntime` for shell and terminal children (strips `config.secretNames`), `bridgeChildEnvironment` for MCP bridge children such as sky-cua and node_repl (additionally strips `GH_TOKEN`, `GITHUB_TOKEN`, and `*_NODE_TOKEN`). Never copy `process.env` directly.
 - Never log tokens or secret values.
 
 ## Environment notes

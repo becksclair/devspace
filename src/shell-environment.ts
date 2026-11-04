@@ -32,11 +32,8 @@ export function createShellRuntime(
     userExecutablePaths(environment),
     environment.PATH,
   ).join(delimiter);
-  const filteredSecretNames = Array.from(new Set(secretNames.map((name) => name.trim()).filter(Boolean))).sort();
-  for (const name of filteredSecretNames) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid DevSpace infrastructure secret name: ${name}`);
-    delete environment[name];
-  }
+  const filteredSecretNames = normalizeSecretNames(secretNames);
+  for (const name of filteredSecretNames) delete environment[name];
 
   return {
     shellPath,
@@ -48,14 +45,16 @@ export function createShellRuntime(
 
 const BRIDGE_ALWAYS_STRIPPED = new Set(["DEVSPACE_OAUTH_OWNER_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]);
 
-export function bridgeChildEnvironment(baseEnvironment: NodeJS.ProcessEnv, secretNames: string[]): Record<string, string> {
-  const configured = new Set<string>();
-  for (const raw of secretNames) {
-    const name = raw.trim();
-    if (!name) continue;
+function normalizeSecretNames(secretNames: string[]): string[] {
+  const names = Array.from(new Set(secretNames.map((name) => name.trim()).filter(Boolean))).sort();
+  for (const name of names) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid DevSpace infrastructure secret name: ${name}`);
-    configured.add(name);
   }
+  return names;
+}
+
+export function bridgeChildEnvironment(baseEnvironment: NodeJS.ProcessEnv, secretNames: string[]): Record<string, string> {
+  const configured = new Set(normalizeSecretNames(secretNames));
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(baseEnvironment)) {
     if (typeof value !== "string") continue;

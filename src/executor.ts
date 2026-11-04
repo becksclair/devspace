@@ -446,7 +446,8 @@ export class LocalExecutor {
             let fh: FileHandle | null = null;
             try {
               fh = await open(readPath.absolutePath, "r");
-              const buf = Buffer.allocUnsafe(maxBytesPerFile + 1024);
+              // Size the buffer from stat, with slack so growth after stat is still detected.
+              const buf = Buffer.allocUnsafe(Math.min(sz, maxBytesPerFile) + 1024);
               const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
               const head = buf.subarray(0, Math.min(bytesRead, 8192));
               if (head.includes(0)) {
@@ -454,7 +455,10 @@ export class LocalExecutor {
                 return;
               }
               const text = buf.subarray(0, bytesRead).toString("utf8");
-              const { content, truncated, bytes } = truncateUtf8Safe(text, maxBytesPerFile);
+              const t = truncateUtf8Safe(text, maxBytesPerFile);
+              // A completely filled buffer means the file grew past what was read: the content is a prefix.
+              const truncated = t.truncated || bytesRead === buf.length;
+              const { content, bytes } = t;
               // Default path for whole-file reads: bounded raw read; truncated/bytes here are authoritative and must not be re-derived in the assembly loop.
               rawByIdx.set(idx, { entry, readPath, status: "ok" as const, text: content, truncated, bytes, t0 });
               return;
