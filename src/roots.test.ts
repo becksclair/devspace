@@ -62,6 +62,20 @@ try {
     AccessDeniedError,
   );
 
+  await symlink(join(undeclared, "planted.txt"), join(project, "planted"));
+  assert.throws(() => authorizeWorkspaceTarget("planted", project, policies, "write"), AccessDeniedError);
+  await symlink(join(undeclared, "missing-dir"), join(project, "dangdir"));
+  assert.throws(() => authorizeWorkspaceTarget("dangdir/x.txt", project, policies, "write"), AccessDeniedError);
+  await symlink(join(project, "sub", "future.txt"), join(project, "inner"));
+  assert.equal(authorizeWorkspaceTarget("inner", project, policies, "write").canonicalPath, join(project, "sub", "future.txt"));
+  await symlink(join(project, "loop-b"), join(project, "loop-a"));
+  await symlink(join(project, "loop-a"), join(project, "loop-b"));
+  assert.throws(() => authorizeWorkspaceTarget("loop-a", project, policies, "write"), AccessDeniedError);
+  await symlink(join("..", "..", "..", "undeclared", "relative.txt"), join(project, "rel-planted"));
+  assert.throws(() => authorizeWorkspaceTarget("rel-planted", project, policies, "write"), AccessDeniedError);
+  await symlink(join("sub", "rel-future.txt"), join(project, "rel-inner"));
+  assert.equal(authorizeWorkspaceTarget("rel-inner", project, policies, "write").canonicalPath, join(project, "sub", "rel-future.txt"));
+
   const future = authorizeWorkspaceTarget("new-file.txt", project, policies, "write");
   assert.equal(future.canonicalPath, join(project, "new-file.txt"));
   assert.equal(canonicalTarget(join(alias, "project", "new-file.txt")), join(project, "new-file.txt"));
