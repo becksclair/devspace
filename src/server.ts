@@ -1838,8 +1838,10 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   });
   const executor = options.gatewayRouter ? undefined : new LocalExecutor({ config });
 
-  if (config.logging.trustProxy) {
+  if (config.logging.trustProxy === true) {
     app.set("trust proxy", 1);
+  } else if (config.logging.trustProxy === "loopback") {
+    app.set("trust proxy", "loopback");
   }
 
   app.use((_req, res, next) => {
@@ -2304,7 +2306,7 @@ if (await isMainModule()) {
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
     console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
-    console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
+    console.log(`trust proxy: ${config.logging.trustProxy === false ? "disabled" : config.logging.trustProxy === true ? "1 hop" : "loopback"}`);
   });
   const shutdown = () => httpServer.close(() => { close?.(); process.exit(0); });
   process.once("SIGINT", shutdown);
