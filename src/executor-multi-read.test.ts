@@ -178,6 +178,74 @@ try {
     assert.equal(Buffer.byteLength(sliced.content, "utf8"), sliced.bytes);
     assert.ok(sliced.content.includes("x"));
 
+    type ReadResult = { status: string; truncated: boolean; bytes: number; content: string; error?: { code: string } };
+    const resultsOf = (res: { structuredContent?: unknown }) =>
+      (res.structuredContent as { results: ReadResult[] }).results;
+
+    // 5. Mid-size file (above Pi's 50 KB / 2000-line page) is returned whole
+    const midContent = Array.from({ length: 3000 }, (_, i) => `line ${i} ${"y".repeat(20)}`).join("\n") + "\n";
+    await writeFile(join(project, "mid.txt"), midContent);
+    const midRes = await executor.execute(
+      "multi_read",
+      { workspaceId, reads: [{ path: "mid.txt" }] },
+      { requestId: "mid", signal: AbortSignal.timeout(5000) },
+    );
+    const mid = resultsOf(midRes)[0] as ReadResult;
+    assert.equal(mid.status, "ok");
+    assert.equal(mid.truncated, false, "mid-size file under maxBytesPerFile must not be truncated");
+    assert.equal(mid.bytes, Buffer.byteLength(midContent));
+    assert.equal(mid.content, midContent);
+
+    // 6. Pi truncation on a sliced read is reported
+    const midSlicedRes = await executor.execute(
+      "multi_read",
+      { workspaceId, reads: [{ path: "mid.txt", offset: 1 }] },
+      { requestId: "mid-sliced", signal: AbortSignal.timeout(5000) },
+    );
+    const midSliced = resultsOf(midSlicedRes)[0] as ReadResult;
+    assert.equal(midSliced.status, "ok");
+    assert.equal(midSliced.truncated, true, "Pi's 2000-line cap on a sliced read must be reported as truncated");
+
+    // 7. Binary files are rejected explicitly
+    await writeFile(join(project, "img.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]));
+    const binRes = await executor.execute(
+      "multi_read",
+      { workspaceId, reads: [{ path: "img.png" }] },
+      { requestId: "binary", signal: AbortSignal.timeout(5000) },
+    );
+    const bin = resultsOf(binRes)[0] as ReadResult;
+    assert.equal(bin.status, "error");
+    assert.equal(bin.error?.code, "binary_file");
+
+    // 8. Sliced reads do not reserve the full per-file limit in the pre-flight budget
+    for (let i = 0; i < 5; i++) await writeFile(join(project, `big${i}.txt`), "z\n".repeat(150 * 1024));
+    const bigRes = await executor.execute(
+      "multi_read",
+      {
+        workspaceId,
+        reads: Array.from({ length: 5 }, (_, i) => ({ path: `big${i}.txt`, offset: 1, limit: 10 })),
+        maxTotalBytes: 1_000_000,
+      },
+      { requestId: "big-sliced", signal: AbortSignal.timeout(5000) },
+    );
+    const bigResults = resultsOf(bigRes);
+    assert.equal(bigResults.length, 5);
+    for (const r of bigResults) assert.equal(r.status, "ok", `sliced read should succeed: ${JSON.stringify(r.error)}`);
+
+    // 9. Missing paths do not reserve the full per-file limit in the pre-flight budget
+    const missingRes = await executor.execute(
+      "multi_read",
+      {
+        workspaceId,
+        reads: [...Array.from({ length: 10 }, (_, i) => ({ path: `missing-${i}.txt` })), { path: "mid.txt" }],
+        maxTotalBytes: 300_000,
+      },
+      { requestId: "missing-preflight", signal: AbortSignal.timeout(5000) },
+    );
+    const missingResults = resultsOf(missingRes);
+    const lastResult = missingResults[missingResults.length - 1] as ReadResult;
+    assert.equal(lastResult.status, "ok", `read after missing paths should succeed: ${JSON.stringify(lastResult.error)}`);
+
     console.log("all executor-multi-read checks passed");
   } finally {
     executor.close();
