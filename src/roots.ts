@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 
@@ -174,14 +174,21 @@ export function policyById(id: string | undefined, policies: NormalizedRootPolic
   return id ? policies.find((policy) => policy.id === id) : undefined;
 }
 
+const MAX_SYMLINK_HOPS = 40;
+
 export function canonicalTarget(path: string): string {
+  return resolveCanonicalTarget(path, 0, path);
+}
+
+function resolveCanonicalTarget(path: string, hops: number, origin: string): string {
+  if (hops > MAX_SYMLINK_HOPS) throw new AccessDeniedError(`Path cannot be resolved (too many symbolic links): ${origin}`);
   const absolute = resolve(expandHomePath(path));
   if (existsSync(absolute)) return realpathSync.native(absolute);
 
   let existing = absolute;
   while (!existsSync(existing)) {
     const parent = dirname(existing);
-    if (parent === existing) throw new AccessDeniedError(`Path cannot be resolved: ${path}`);
+    if (parent === existing) throw new AccessDeniedError(`Path cannot be resolved: ${origin}`);
     existing = parent;
   }
 
@@ -189,7 +196,27 @@ export function canonicalTarget(path: string): string {
   const suffix = relative(existing, absolute);
   if (!suffix || suffix === ".") return canonicalParent;
   if (suffix === ".." || suffix.startsWith(`..${sep}`)) {
-    throw new AccessDeniedError(`Path cannot be resolved safely: ${path}`);
+    throw new AccessDeniedError(`Path cannot be resolved safely: ${origin}`);
+  }
+
+  // existsSync follows symlinks, so the first missing component may be a dangling
+  // link. Follow it so authorization sees the location a write would create.
+  const [first, ...rest] = suffix.split(sep);
+  const firstPath = resolve(canonicalParent, first);
+  let isLink = false;
+  try {
+    isLink = lstatSync(firstPath).isSymbolicLink();
+  } catch {
+    // Missing or unreadable: not a link we can follow.
+  }
+  if (isLink) {
+    let linkTarget: string;
+    try {
+      linkTarget = resolve(dirname(firstPath), readlinkSync(firstPath));
+    } catch {
+      throw new AccessDeniedError(`Path cannot be resolved: ${origin}`);
+    }
+    return resolveCanonicalTarget(rest.length > 0 ? resolve(linkTarget, ...rest) : linkTarget, hops + 1, origin);
   }
   return resolve(canonicalParent, suffix);
 }
