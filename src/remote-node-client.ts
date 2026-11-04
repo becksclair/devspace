@@ -40,6 +40,13 @@ class RemoteNodeTransportError extends TargetUnavailableError {
   }
 }
 
+class RemoteNodeStaleHelloError extends TargetUnavailableError {
+  constructor(message: string) {
+    super(message);
+    this.name = "RemoteNodeStaleHelloError";
+  }
+}
+
 class RemoteNodeExecutionError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
@@ -89,12 +96,19 @@ export class RemoteNodeClient implements ExecutionTarget {
   private async cachedHello(signal: AbortSignal): Promise<NodeHello> {
     const now = Date.now();
     if (this.helloCache && now < this.helloCache.expiresAt) return this.helloCache.hello;
-    if (this.helloInflight) return this.helloInflight;
-    this.helloInflight = this.hello(signal).then((h) => {
-      this.helloCache = { hello: h, expiresAt: Date.now() + this.helloCacheTtlMs };
-      return h;
-    }).finally(() => { this.helloInflight = null; });
-    return this.helloInflight;
+    if (signal.aborted) throw signal.reason ?? new Error("Remote node call cancelled");
+    if (!this.helloInflight) {
+      // The shared hello belongs to the client, not to whichever caller started
+      // it: one caller's cancellation must not fail concurrent waiters. hello()
+      // still bounds the request with its own timeout.
+      const inflight = this.hello(new AbortController().signal).then((h) => {
+        this.helloCache = { hello: h, expiresAt: Date.now() + this.helloCacheTtlMs };
+        return h;
+      }).finally(() => { this.helloInflight = null; });
+      inflight.catch(() => undefined); // the shared promise must never become an unhandled rejection; callers observe errors via raceAbort
+      this.helloInflight = inflight;
+    }
+    return raceAbort(this.helloInflight, signal);
   }
 
   async execute(
@@ -142,7 +156,9 @@ export class RemoteNodeClient implements ExecutionTarget {
         return await this.executeResumable(body, tool, args, remoteRequestId, nodeInstanceId, options);
       } catch (error) {
         if (bustAttempt === 0 && isHelloStaleError(error)) {
-          this.helloCache = null;
+          // Only drop the hello this call used; a concurrent caller may already
+          // have replaced it with a fresh one that the retry should reuse.
+          if (this.helloCache?.hello === hello) this.helloCache = null;
           bustAttempt++;
           continue;
         }
@@ -178,6 +194,14 @@ export class RemoteNodeClient implements ExecutionTarget {
         if (deadlineSignal.aborted) {
           await this.bestEffortCancel(remoteRequestId, nodeInstanceId);
           throw new TargetUnavailableError("Remote node call exceeded its execution deadline", { cause: error });
+        }
+        // The node checks nodeInstanceId before creating or running anything, so
+        // a mismatch on the first attempt proves the operation never started:
+        // the cached hello is stale and the call can be retried as a new
+        // operation. After a transport reattach (retry > 0) the previous
+        // instance may have run it, so the outcome stays uncertain.
+        if (retry === 0 && error instanceof RemoteNodeExecutionError && error.code === "operation_epoch_mismatch") {
+          throw new RemoteNodeStaleHelloError("Remote node instance changed before the operation started");
         }
         if (error instanceof RemoteNodeExecutionError) throw error;
         if (!(error instanceof RemoteNodeTransportError)) {
@@ -315,7 +339,20 @@ function normalizeTargetError(error: unknown, callerSignal: AbortSignal, message
   return new TargetUnavailableError(message, { cause: error });
 }
 
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Remote node call cancelled"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error("Remote node call cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error) => { signal.removeEventListener("abort", onAbort); reject(error); },
+    );
+  });
+}
+
 function isHelloStaleError(error: unknown): boolean {
+  if (error instanceof RemoteNodeStaleHelloError) return true;
   if (error instanceof TargetUnavailableError) {
     return /identity|protocol_mismatch|hello/i.test(error.message);
   }
