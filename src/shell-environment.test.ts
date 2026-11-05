@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { createShellRuntime, mergePathEntries, runConfiguredShell, userExecutablePaths } from "./shell-environment.js";
+import {
+  createDevspaceShellSpawnHook,
+  createShellRuntime,
+  createSystemdSessionEnvironmentReader,
+  currentShellEnvironment,
+  mergePathEntries,
+  parseManagerEnvironment,
+  runConfiguredShell,
+  userExecutablePaths,
+} from "./shell-environment.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-shell-test-"));
 try {
@@ -113,6 +122,75 @@ try {
     () => runConfiguredShell(loginRuntime, "printf 'oauth=%s\\n' \"${DEVSPACE_OAUTH_OWNER_TOKEN-unset}\"", root),
     (error: unknown) => error instanceof Error && "code" in error && (error as { code?: unknown }).code === 126,
   );
+
+  // Graphical-session variables are resolved from the live session at spawn
+  // time, so a service started before login picks them up afterwards.
+  assert.deepEqual(
+    parseManagerEnvironment(JSON.stringify({ type: "as", data: ["WAYLAND_DISPLAY=wayland-1", "XDG_CURRENT_DESKTOP=KDE", "EMPTY=", "A=b=c", "=bad", "noequals", 7] })),
+    { WAYLAND_DISPLAY: "wayland-1", XDG_CURRENT_DESKTOP: "KDE", EMPTY: "", A: "b=c" },
+  );
+  assert.throws(() => parseManagerEnvironment(JSON.stringify({ type: "s", data: "x" })), /Unexpected/);
+
+  let clock = 0;
+  let queries = 0;
+  let managerOutput: string | Error = JSON.stringify({ type: "as", data: ["DISPLAY=:0"] });
+  const reader = createSystemdSessionEnvironmentReader({}, {
+    ttlMs: 1_000,
+    failureTtlMs: 5_000,
+    now: () => clock,
+    query: () => {
+      queries += 1;
+      if (managerOutput instanceof Error) throw managerOutput;
+      return managerOutput;
+    },
+  });
+  assert.ok(reader);
+  assert.deepEqual(reader(), { DISPLAY: ":0" });
+  managerOutput = JSON.stringify({ type: "as", data: ["DISPLAY=:1"] });
+  clock = 999;
+  assert.deepEqual(reader(), { DISPLAY: ":0" }, "cached within the TTL");
+  clock = 1_000;
+  assert.deepEqual(reader(), { DISPLAY: ":1" }, "refreshed after the TTL");
+  managerOutput = new Error("bus unavailable");
+  clock = 2_000;
+  assert.equal(reader(), undefined, "query failure yields no session overlay");
+  managerOutput = JSON.stringify({ type: "as", data: ["DISPLAY=:2"] });
+  clock = 6_999;
+  assert.equal(reader(), undefined, "failures back off for the failure TTL");
+  clock = 7_000;
+  assert.deepEqual(reader(), { DISPLAY: ":2" }, "recovers after the failure TTL");
+  assert.equal(queries, 4);
+
+  let liveSession: Record<string, string> | undefined;
+  const sessionRuntime = createShellRuntime({
+    path: "/bin/bash",
+    mode: "service",
+    environment: { XDG_SESSION_TYPE: "configured-type" },
+  }, ["XAUTHORITY"], { ...baseEnvironment, DISPLAY: "stale:9" }, { sessionEnvironment: () => liveSession });
+  const printSession = "printf 'wayland=%s display=%s type=%s xauth=%s path=%s\\n' \"${WAYLAND_DISPLAY-unset}\" \"${DISPLAY-unset}\" \"${XDG_SESSION_TYPE-unset}\" \"${XAUTHORITY-unset}\" \"$PATH\"";
+  const beforeLogin = await runConfiguredShell(sessionRuntime, printSession, root);
+  assert.match(beforeLogin.stdout, /wayland=unset display=stale:9 type=configured-type xauth=unset /);
+
+  liveSession = {
+    WAYLAND_DISPLAY: "wayland-1",
+    DISPLAY: ":0",
+    XDG_SESSION_TYPE: "wayland",
+    XAUTHORITY: "/run/user/1000/xauth",
+    PATH: "/session/only/bin",
+    UNRELATED_SESSION_VALUE: "ignored",
+  };
+  const afterLogin = await runConfiguredShell(sessionRuntime, printSession, root);
+  assert.match(afterLogin.stdout, /wayland=wayland-1 display=:0 type=configured-type xauth=unset /);
+  assert.doesNotMatch(afterLogin.stdout, /\/session\/only\/bin/);
+  assert.equal(currentShellEnvironment(sessionRuntime).UNRELATED_SESSION_VALUE, undefined);
+  assert.equal(sessionRuntime.environment.WAYLAND_DISPLAY, undefined, "startup snapshot is not mutated");
+  const hooked = createDevspaceShellSpawnHook(sessionRuntime)({ command: "true", cwd: root, env: {} });
+  assert.equal(hooked.env?.WAYLAND_DISPLAY, "wayland-1");
+  assert.equal(hooked.env?.PWD, root);
+
+  const disabledRuntime = createShellRuntime({ path: "/bin/bash", mode: "service" }, [], baseEnvironment, { sessionEnvironment: false });
+  assert.equal(disabledRuntime.readSessionEnvironment, undefined);
+  assert.equal(currentShellEnvironment(disabledRuntime), disabledRuntime.environment);
 } finally {
   await rm(root, { recursive: true, force: true });
 }

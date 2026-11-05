@@ -90,6 +90,8 @@ Diagnostics report filtered variable names, never values.
 
 Service mode does not source the user's shell profile. DevSpace instead builds a deterministic executor `PATH` from conventional user tool locations, configured runtime-manager homes, and the service environment it inherited. This keeps bounded commands predictable while still exposing tools installed under locations such as `~/.local/bin`, `~/bin`, Bun, Cargo, and mise shims.
 
+On Linux, a fixed allowlist of graphical-session variables (display, Wayland socket, X authority, and desktop/session identifiers) is refreshed from the systemd user manager at each shell or terminal spawn. Only those names are imported; `PATH` and every other manager variable are ignored, and configured shell environment values and filtered secret names are never overridden.
+
 Login mode remains an explicit semantic choice for commands that genuinely require the user's login-shell profile. It may modify the executor environment further through `.bash_profile` or equivalent startup files after DevSpace control-plane secrets are removed.
 
 ## OAuth and network exposure

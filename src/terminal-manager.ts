@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { TerminalConfig } from "./config.js";
 import type { ShellRuntime } from "./shell-environment.js";
-import { prepareShellCommand, runConfiguredShell } from "./shell-environment.js";
+import { currentShellEnvironment, prepareShellCommand, runConfiguredShell, sessionEnvironmentOverrides } from "./shell-environment.js";
 import { TerminalStore, type TerminalSession } from "./terminal-store.js";
 
 const execFileAsync = promisify(execFile);
@@ -84,6 +84,10 @@ export class TerminalManager {
     const backendSessionName = `dsp-${createHash("sha256").update(terminalId).digest("hex").slice(0, 20)}`;
     const shellMode = input.shellMode ?? this.shellRuntime.mode;
     const tmux = await this.resolveTmux();
+    // An existing tmux server keeps the environment it started with; pass the
+    // live graphical-session variables explicitly so each new terminal sees them.
+    const sessionEnvironment = Object.entries(sessionEnvironmentOverrides(this.shellRuntime))
+      .flatMap(([name, value]) => ["-e", `${name}=${value}`]);
     const args = [
       "-S", this.socketPath,
       "new-session", "-d",
@@ -91,6 +95,7 @@ export class TerminalManager {
       "-x", String(cols),
       "-y", String(rows),
       "-c", input.workingDirectory,
+      ...sessionEnvironment,
       "--",
       this.shellRuntime.shellPath,
       shellMode === "login" ? "-lc" : "-c",
@@ -296,7 +301,7 @@ export class TerminalManager {
     if (persistent) {
       const unit = `devspace-tmux-${createHash("sha256").update(this.socketPath).digest("hex").slice(0, 16)}`;
       const environmentPath = join(this.config.runtimeDir, `terminal-${process.pid}-${randomUUID()}.env`);
-      await writeFile(environmentPath, systemdEnvironment(this.shellRuntime.environment), { mode: 0o600 });
+      await writeFile(environmentPath, systemdEnvironment(currentShellEnvironment(this.shellRuntime)), { mode: 0o600 });
       try {
         await this.exec("systemd-run", [
           "--user", "--quiet", "--collect",
@@ -367,7 +372,7 @@ export class TerminalManager {
 
   private async exec(command: string, args: string[]) {
     return execFileAsync(command, args, {
-      env: this.shellRuntime.environment,
+      env: currentShellEnvironment(this.shellRuntime),
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: MAX_CAPTURE_BYTES * 2,
