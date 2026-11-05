@@ -20,7 +20,7 @@ const config = {
   idleTtlSeconds: 3600,
   useUserSystemd: false,
 };
-const runtime = createShellRuntime({ path: "/bin/bash", mode: "service" }, [], process.env);
+const runtime = createShellRuntime({ path: "/bin/bash", mode: "service" }, [], process.env, { sessionEnvironment: false });
 let manager = new TerminalManager(config, runtime, stateDir);
 let terminalId: string | undefined;
 
@@ -163,6 +163,36 @@ try {
   assert.equal(uncertainStarted.persistentAcrossDevspaceRestart, true);
   await uncertainManager.close({ workspaceId: "ws_uncertain", terminalId: uncertainStarted.terminalId, force: true });
   uncertainManager.closeStore();
+
+  // A terminal created in an already-running tmux server must still see
+  // graphical-session variables that appeared after the server started.
+  let liveSession: Record<string, string> | undefined;
+  const sessionRuntime = createShellRuntime(
+    { path: "/bin/bash", mode: "service" },
+    [],
+    { ...process.env, KDE_FULL_SESSION: "" },
+    { sessionEnvironment: () => liveSession },
+  );
+  const sessionRuntimeDir = join(root, "session-runtime");
+  const sessionManager = new TerminalManager({ ...config, runtimeDir: sessionRuntimeDir }, sessionRuntime, join(root, "session-state"));
+  const beforeLogin = await sessionManager.start({ workspaceId: "ws_session", command: "cat", workingDirectory: root });
+  // KDE_FULL_SESSION is not in tmux's default update-environment list.
+  liveSession = { KDE_FULL_SESSION: "terminal-test" };
+  const afterLogin = await sessionManager.start({
+    workspaceId: "ws_session",
+    command: "printf 'kde=%s\\n' \"$KDE_FULL_SESSION\"; cat",
+    workingDirectory: root,
+  });
+  let sessionRead: Awaited<ReturnType<typeof sessionManager.read>> | undefined;
+  await waitUntil(async () => {
+    sessionRead = await sessionManager.read({ workspaceId: "ws_session", terminalId: afterLogin.terminalId, mode: "screen" });
+    return /kde=terminal-test/.test(sessionRead.output);
+  });
+  assert.match(sessionRead?.output ?? "", /kde=terminal-test/);
+  await sessionManager.close({ workspaceId: "ws_session", terminalId: afterLogin.terminalId, force: true });
+  await sessionManager.close({ workspaceId: "ws_session", terminalId: beforeLogin.terminalId, force: true });
+  sessionManager.closeStore();
+  await execFileAsync("tmux", ["-S", join(sessionRuntimeDir, "tmux.sock"), "kill-server"]).catch(() => {});
 } finally {
   if (terminalId) await manager.close({ workspaceId: "ws_terminal", terminalId, force: true }).catch(() => undefined);
   manager.closeStore();
