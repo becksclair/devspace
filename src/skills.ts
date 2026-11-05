@@ -1,3 +1,4 @@
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
 import {
@@ -28,6 +29,38 @@ export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSk
     skillPaths: config.skillPaths,
     includeDefaults: true,
   });
+}
+
+export const MAX_AUTOLOAD_SKILL_BYTES = 64 * 1024;
+
+export interface AutoloadedSkillDocument {
+  name: string;
+  path: string;
+  content: string;
+}
+
+/**
+ * Reads the full SKILL.md of each configured autoload skill from the global
+ * skill locations (agent dir and configured skill paths, no project skills).
+ * Used once per MCP session for the connect-time server instructions.
+ */
+export async function loadAutoloadSkillDocuments(config: ServerConfig): Promise<AutoloadedSkillDocument[]> {
+  const names = config.autoLoadSkills ?? [];
+  if (!config.skillsEnabled || names.length === 0) return [];
+  const { skills } = loadWorkspaceSkills(config, config.agentDir);
+  const documents: AutoloadedSkillDocument[] = [];
+  for (const name of names) {
+    const skill = skills.find((candidate) => candidate.name === name && !candidate.disableModelInvocation);
+    if (!skill) continue;
+    try {
+      const file = await stat(skill.filePath);
+      if (!file.isFile() || file.size > MAX_AUTOLOAD_SKILL_BYTES) continue;
+      documents.push({ name, path: formatPathForPrompt(skill.filePath), content: await readFile(skill.filePath, "utf8") });
+    } catch {
+      continue;
+    }
+  }
+  return documents;
 }
 
 export function resolveSkillReadPath(

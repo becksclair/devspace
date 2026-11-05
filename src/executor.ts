@@ -1,9 +1,9 @@
-import { open, readFile, stat, type FileHandle } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import type { ServerConfig } from "./config.js";
 import { commandPreview, logEvent } from "./logger.js";
 import { editFileTool, findFilesTool, grepFilesTool, listDirectoryTool, readFileTool, runShellTool, writeFileTool, type ToolResponse } from "./pi-tools.js";
 import { createReviewCheckpointManager, type ReviewCheckpointManager } from "./review-checkpoints.js";
-import { formatPathForPrompt, markSkillActivated } from "./skills.js";
+import { MAX_AUTOLOAD_SKILL_BYTES, formatPathForPrompt, markSkillActivated } from "./skills.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { parseToolArguments, type ToolArguments, type ToolName } from "./tool-contract.js";
 import { formatAgentsPath, type WorkspaceReadPath, WorkspaceRegistry } from "./workspaces.js";
@@ -39,8 +39,6 @@ type MaintenanceResult = {
   workspaces: Awaited<ReturnType<WorkspaceRegistry["maintenance"]>>;
   terminals: Awaited<ReturnType<TerminalManager["maintenance"]>>;
 };
-
-const MAX_AUTOLOAD_SKILL_BYTES = 64 * 1024;
 
 export class LocalExecutor {
   readonly workspaces: WorkspaceRegistry;
@@ -209,12 +207,11 @@ export class LocalExecutor {
           preloadWarnings.push(`Autoload skill unavailable: ${name}`);
           continue;
         }
+        // Content is delivered once per MCP session in the server instructions; here only unlock reference files.
         try {
           const file = await stat(skill.filePath);
           if (!file.isFile() || file.size > MAX_AUTOLOAD_SKILL_BYTES) throw new Error("SKILL.md missing or too large");
-          const content = await readFile(skill.filePath, "utf8");
           markSkillActivated(workspace.activatedSkillDirs, skill);
-          loadedAgentsFiles.push({ path: formatPathForPrompt(skill.filePath), content });
           preloadedSkills.push(name);
         } catch {
           preloadWarnings.push(`Autoload skill unreadable: ${name}`);
@@ -222,9 +219,7 @@ export class LocalExecutor {
       }
     }
     const availableAgentsFileOutputs = availableAgentsFiles.map((file) => ({ path: formatAgentsPath(file.path, workspace.root) }));
-    const instruction = this.workspaceInstruction() + (preloadedSkills.length
-      ? " Autoloaded SKILL.md content is already loaded in agentsFiles; use it when relevant without rereading."
-      : "");
+    const instruction = this.workspaceInstruction(preloadedSkills);
     const text = [
       ...capabilities.warnings,
       ...preloadWarnings,
@@ -235,7 +230,9 @@ export class LocalExecutor {
       `Access: ${capabilities.fileAccess}`,
       loadedAgentsFiles.length ? `Loaded instructions and skills: ${loadedAgentsFiles.map((file) => file.path).join(", ")}` : undefined,
       availableAgentsFileOutputs.length ? `Available nested instructions: ${availableAgentsFileOutputs.map((file) => file.path).join(", ")}` : undefined,
-      skills.length ? `Available skills: ${skills.map((skill) => skill.name).join(", ")}` : undefined,
+      skills.length
+        ? `Available skills: ${skills.map((skill) => preloadedSkills.includes(skill.name) ? `${skill.name} (autoloaded)` : skill.name).join(", ")}`
+        : undefined,
       instruction,
     ].filter(Boolean).join("\n");
     return {
@@ -589,9 +586,11 @@ export class LocalExecutor {
       : [];
   }
 
-  private workspaceInstruction(): string {
+  private workspaceInstruction(preloadedSkills: string[]): string {
     const base = "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for the same folder unless the workspaceId stops working, you switch folders or modes, or the user asks. Follow loaded global and project instructions, and read relevant nested instruction files before working there.";
-    return this.skillsEnabled ? `${base} Read an advertised SKILL.md before using that skill.` : base;
+    if (!this.skillsEnabled) return base;
+    if (!preloadedSkills.length) return `${base} Read an advertised SKILL.md before using that skill.`;
+    return `${base} Autoloaded skills (${preloadedSkills.join(", ")}) were provided in full in the DevSpace server instructions at connection: use that content directly and do not read their SKILL.md again unless it is missing from your context; their reference files are readable in this workspace. Read any other advertised SKILL.md before using that skill.`;
   }
 }
 

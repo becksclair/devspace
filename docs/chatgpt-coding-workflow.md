@@ -103,7 +103,7 @@ Skills are enabled by default and discovered from:
 - project `.pi/skills`
 - optional paths from `DEVSPACE_SKILL_PATHS`
 
-Read an advertised `SKILL.md` before using the skill. Skill reads receive the same canonical symlink checks as workspace reads. To make selected skills available without a second read after connecting, set `autoLoadSkills` and `skillPaths` in `~/.devspace/config.json` (or `DEVSPACE_AUTOLOAD_SKILLS` and `DEVSPACE_SKILL_PATHS`). Each configured, discovered skill's full `SKILL.md` is included with the initial `open_workspace` instructions. Other skills remain on-demand.
+Read an advertised `SKILL.md` before using the skill. Skill reads receive the same canonical symlink checks as workspace reads. To make selected skills available without a second read after connecting, set `autoLoadSkills` and `skillPaths` in `~/.devspace/config.json` (or `DEVSPACE_AUTOLOAD_SKILLS` and `DEVSPACE_SKILL_PATHS`). Each configured skill found in the agent directory or `skillPaths` has its full `SKILL.md` appended to the MCP server instructions sent when the client connects, so it is available before any workspace is opened and is not repeated on each `open_workspace`. Opening a workspace makes the skill's reference files readable. Other skills remain on-demand.
 
 ## File and shell tools
 

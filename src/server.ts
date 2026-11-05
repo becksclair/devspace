@@ -37,6 +37,7 @@ import { createGatewayWorkspaceStore } from "./gateway-workspace-store.js";
 import { LocalExecutor } from "./executor.js";
 import { RemoteNodeClient } from "./remote-node-client.js";
 import { envSecret, type GatewayRoleConfig } from "./role-config.js";
+import { loadAutoloadSkillDocuments, type AutoloadedSkillDocument } from "./skills.js";
 import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 
 type Transport = StreamableHTTPServerTransport;
@@ -577,7 +578,13 @@ function normalizePhoneSelectorForBridge(toolName: string, args: Record<string, 
   return out;
 }
 
-function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiveDisabled?: Set<string>): string {
+function autoloadedSkillsInstructions(documents: AutoloadedSkillDocument[], openWorkspaceTool: string): string {
+  if (!documents.length) return "";
+  const sections = documents.map((doc) => `### Skill ${doc.name} (${doc.path})\n\n${doc.content.trim()}`);
+  return `\n\n## Autoloaded skills\n\nThe full SKILL.md of each skill below is already loaded; use it directly without reading it again or opening a workspace first. Commands it describes still run through the DevSpace shell or terminal tools, which need a workspaceId, and its reference files become readable after ${openWorkspaceTool}.\n\n${sections.join("\n\n")}`;
+}
+
+function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiveDisabled?: Set<string>, autoloadedSkills: AutoloadedSkillDocument[] = []): string {
   const disabled = effectiveDisabled ?? config.disabledCapabilities ?? new Set<string>();
   const skyDisabled = isCapabilityDisabled(disabled, "sky-cua");
   const inspection = config.minimalTools
@@ -585,7 +592,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
     : `${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} provide structured file inspection when useful. `;
 
   const skills = config.skillsEnabled
-    ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
+    ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding, unless it is listed under Autoloaded skills below; use that content without rereading. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
     : "";
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. When sky-cua phone is enabled, ${PHONE_EPHEMERAL_AGENTS_PATH} and ${PHONE_USE_SKILL_EPHEMERAL_PATH} are auto-injected on open: the former has the Direct epoch/session lifecycle, the latter is the full phone-use skill (AppShot/snapshot/execution contract). `;
@@ -599,7 +606,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
     ? ""
     : " sky-cua desktop/browser/phone (sky-cua) tools are available: desktop/browser observe/capture/input plus phone Companion (aliases phone=default + tablet) via status/list_resources(surface=phone)/phone_connection/observe(surface=phone)/phone_pointer etc. Phone sessions are epoch-fenced — use connect, not refresh, after a drop; list_resources is the ground truth. When a task matches browser-use/computer-use/phone-use, read that SKILL.md before acting and follow its AppShot/phone_snapshot_id contract.";
 
-  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode="isolated" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}`;
+  return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode="isolated" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}${autoloadedSkillsInstructions(autoloadedSkills, toolNames.openWorkspace)}`;
 }
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
@@ -968,6 +975,10 @@ async function createMcpServer(
 ): Promise<McpServer> {
   const effective = effectiveDisabled ?? config.disabledCapabilities ?? new Set<string>();
   const toolNames = toolNamesFor(config);
+  // Hide autoloaded sky-cua skills when sky-cua is disabled for this session.
+  const autoloadedSkills = filterSkyCuaSkillsForEffective(
+    await loadAutoloadSkillDocuments(config), effective, config.skyCua?.projectRoot,
+  ) as AutoloadedSkillDocument[];
   const workspaceAppManifestEntry =
     config.widgets === "off" ? undefined : getWorkspaceAppManifestEntry();
   const workspaceAppUri = workspaceAppManifestEntry
@@ -982,7 +993,7 @@ async function createMcpServer(
         "Secure local coding workspace for MCP clients. Provides workspace-scoped file, search, edit, write, and shell tools.",
     },
     {
-      instructions: serverInstructions(config, toolNames, effective),
+      instructions: serverInstructions(config, toolNames, effective, autoloadedSkills),
     },
   );
 
@@ -1094,21 +1105,11 @@ async function createMcpServer(
         : (() => { if (machine !== undefined) throw new Error("machine selection is available only in gateway mode"); return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, ex); })();
       const awaited = await res;
       if (isSkyCuaDisabled(effective)) {
-        const sc = (awaited as unknown as { structuredContent?: { skills?: unknown[]; skillDiagnostics?: unknown[]; agentsFiles?: Array<{ path: string }> } }).structuredContent;
-        // Autoloaded SKILL.md files share their advertised skill path; drop those whose skill is hidden for this session.
-        const hiddenSkillPaths = new Set<string>();
-        if (sc?.skills) {
-          const visible = filterSkyCuaSkillsForEffective(sc.skills, effective, config.skyCua?.projectRoot) ?? [];
-          for (const skill of sc.skills as Array<{ path?: string }>) {
-            if (skill.path && !visible.includes(skill)) hiddenSkillPaths.add(skill.path);
-          }
-          sc.skills = visible as unknown as never;
-        }
+        const sc = (awaited as unknown as { structuredContent?: { skills?: unknown[]; skillDiagnostics?: unknown[] } }).structuredContent;
+        if (sc?.skills) sc.skills = filterSkyCuaSkillsForEffective(sc.skills, effective, config.skyCua?.projectRoot) as unknown as never;
         if (sc?.skillDiagnostics) sc.skillDiagnostics = filterSkyCuaSkillsForEffective(sc.skillDiagnostics, effective, config.skyCua?.projectRoot) as unknown as never;
-        if (sc?.agentsFiles) sc.agentsFiles = sc.agentsFiles.filter((file) => !hiddenSkillPaths.has(file.path));
-        const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[]; agentsFiles?: Array<{ path: string }> } } })._meta?.card;
+        const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[] } } })._meta?.card;
         if (card?.skills) card.skills = filterSkyCuaSkillsForEffective(card.skills, effective, config.skyCua?.projectRoot) as unknown as never;
-        if (card?.agentsFiles) card.agentsFiles = card.agentsFiles.filter((file) => !hiddenSkillPaths.has(file.path));
       } else {
         // Ephemeral phone lifecycle guidance + full phone-use skill: injected as AGENTS so every workspace open is fully loaded without an extra read.
         const sc = (awaited as unknown as {
@@ -1121,11 +1122,8 @@ async function createMcpServer(
         }).structuredContent;
         const card = (awaited as unknown as { _meta?: { card?: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } } })._meta?.card;
         const phoneFile = phoneEphemeralAgentsFile();
-        const loadedPhoneSkill = phoneUseSkillEphemeralFile(config);
-        // Skip the ephemeral copy when the same phone-use SKILL.md was already autoloaded.
-        const phoneSkillFile = loadedPhoneSkill && !sc?.agentsFiles?.some((file) => file.content === loadedPhoneSkill.content)
-          ? loadedPhoneSkill
-          : null;
+        // Skip the ephemeral copy when phone-use was already autoloaded in the server instructions.
+        const phoneSkillFile = autoloadedSkills.some((doc) => doc.name === "phone-use") ? null : phoneUseSkillEphemeralFile(config);
         const inject = (target: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } | undefined) => {
           if (!target) return;
           const filesToInject: Array<{ path: string; content: string }> = [phoneFile];
@@ -1140,7 +1138,7 @@ async function createMcpServer(
           }
           if (typeof target.instruction === "string") {
             target.instruction += "\n\n" + PHONE_EPHEMERAL_AGENTS_CONTENT;
-            if (phoneSkillFile) target.instruction += `\n\nPhone-use skill is also auto-injected as ${phoneSkillFile.path} — read it for the full AppShot/snapshot/execution contract.`;
+            if (phoneSkillFile) target.instruction += `\n\nPhone-use skill is also auto-injected in agentsFiles as ${phoneSkillFile.path}; use that content for the full AppShot/snapshot/execution contract without rereading it.`;
           }
         };
         inject(sc);
@@ -1264,7 +1262,7 @@ async function createMcpServer(
           "Read a file inside an open workspace. Use this for file inspection instead of shell commands like cat or sed. Call open_workspace first and pass workspaceId.",
           "Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories.",
           config.skillsEnabled
-            ? "If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."
+            ? "If available skills were returned and a task matches one, read that skill's path before proceeding, unless its full SKILL.md was autoloaded in the DevSpace server instructions. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."
             : "",
         ]
           .filter(Boolean)
