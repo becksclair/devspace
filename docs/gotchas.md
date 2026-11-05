@@ -195,6 +195,10 @@ Run `devspace doctor` to inspect the resolved executor `PATH` and verify Bun, Op
 
 DevSpace control-plane secrets are removed from child processes. Add future infrastructure credential names to `DEVSPACE_INFRA_SECRET_NAMES`; do not add ordinary user development credentials there.
 
+## GUI Command Cannot Find The Display
+
+A DevSpace service started at boot inherits no graphical-session variables, because the desktop session imports them into the systemd user manager only after login. On Linux, shell commands and new persistent terminals therefore read `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_CURRENT_DESKTOP`, `XDG_SESSION_DESKTOP`, `XDG_SESSION_TYPE`, `DESKTOP_SESSION`, `KDE_FULL_SESSION`, and `KDE_SESSION_VERSION` from the user manager at spawn time (cached for two seconds, or 30 seconds after a failed query), so no service restart is needed after login. Values set in the configured shell `environment` take precedence. If GUI tools still fail, check `systemctl --user show-environment`; the session must have imported its variables there.
+
 ## Persistent Terminal Is Service-Lifetime Only
 
 Terminal status reports whether the tmux owner is expected to survive DevSpace restart. Restart persistence requires:
