@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.2 - 2026-11-05
+
+- fix(scripts): preserve JSON indentation in versioned builds
+- test(scripts): cover lockfile indentation preservation
+- ci: allow manual workflow dispatch
+- feat(skills): autoload configured skills in open_workspace
+
+<!-- devspace-release: version=2.0.2 commit=87a084c4e8949fcd79feca84d813b453c97a31eb -->
 ## 2.0.1 - 2026-11-04
 
 - ci: install tmux for trusted-host tests
