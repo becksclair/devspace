@@ -28,6 +28,22 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TOOL_MODE: "full" }).minimalTools
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "0" }).minimalTools, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "1" }).minimalTools, true);
 assert.equal(loadConfig(baseEnv).skillsEnabled, true);
+assert.deepEqual(loadConfig(baseEnv).autoLoadSkills, []);
+assert.deepEqual(loadConfig({ ...baseEnv, DEVSPACE_AUTOLOAD_SKILLS: " agent-monitor , agent-monitor , helper " }).autoLoadSkills, ["agent-monitor", "helper"]);
+assert.deepEqual(loadConfig({ ...baseEnv, DEVSPACE_AUTOLOAD_SKILLS: "" }).autoLoadSkills, []);
+const skillConfigDir = mkdtempSync(join(tmpdir(), "devspace-autoload-config-test-"));
+writeFileSync(join(skillConfigDir, "config.json"), JSON.stringify({
+  skillPaths: ["~/custom-agent-skills"],
+  autoLoadSkills: ["agent-monitor", "helper"],
+}));
+const skillFileEnv = { ...baseEnv, DEVSPACE_CONFIG_DIR: skillConfigDir };
+assert.equal(loadConfig(skillFileEnv).skillPaths.includes(join(homedir(), "custom-agent-skills")), true);
+assert.deepEqual(loadConfig(skillFileEnv).autoLoadSkills, ["agent-monitor", "helper"]);
+assert.deepEqual(loadConfig({ ...skillFileEnv, DEVSPACE_AUTOLOAD_SKILLS: "override" }).autoLoadSkills, ["override"]);
+assert.equal(loadConfig({ ...skillFileEnv, DEVSPACE_SKILL_PATHS: "~/other-skills" }).skillPaths.includes(join(homedir(), "custom-agent-skills")), false);
+const badSkillConfigDir = mkdtempSync(join(tmpdir(), "devspace-autoload-bad-config-test-"));
+writeFileSync(join(badSkillConfigDir, "config.json"), JSON.stringify({ autoLoadSkills: "agent-monitor" }));
+assert.throws(() => loadConfig({ ...baseEnv, DEVSPACE_CONFIG_DIR: badSkillConfigDir }), /Invalid autoLoadSkills in config\.json/);
 assert.equal(loadConfig(baseEnv).globalInstructionsFile, join(homedir(), ".devspace", "AGENTS.md"));
 assert.equal(
   loadConfig({ ...baseEnv, DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: "~/custom-devspace-agents.md" }).globalInstructionsFile,

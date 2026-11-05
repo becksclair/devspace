@@ -1,9 +1,9 @@
-import { open, stat, type FileHandle } from "node:fs/promises";
+import { open, readFile, stat, type FileHandle } from "node:fs/promises";
 import type { ServerConfig } from "./config.js";
 import { commandPreview, logEvent } from "./logger.js";
 import { editFileTool, findFilesTool, grepFilesTool, listDirectoryTool, readFileTool, runShellTool, writeFileTool, type ToolResponse } from "./pi-tools.js";
 import { createReviewCheckpointManager, type ReviewCheckpointManager } from "./review-checkpoints.js";
-import { formatPathForPrompt } from "./skills.js";
+import { formatPathForPrompt, markSkillActivated } from "./skills.js";
 import { TerminalManager } from "./terminal-manager.js";
 import { parseToolArguments, type ToolArguments, type ToolName } from "./tool-contract.js";
 import { formatAgentsPath, type WorkspaceReadPath, WorkspaceRegistry } from "./workspaces.js";
@@ -39,6 +39,8 @@ type MaintenanceResult = {
   workspaces: Awaited<ReturnType<WorkspaceRegistry["maintenance"]>>;
   terminals: Awaited<ReturnType<TerminalManager["maintenance"]>>;
 };
+
+const MAX_AUTOLOAD_SKILL_BYTES = 64 * 1024;
 
 export class LocalExecutor {
   readonly workspaces: WorkspaceRegistry;
@@ -198,16 +200,40 @@ export class LocalExecutor {
     }
     const skills = this.visibleSkills(workspace.skills);
     const loadedAgentsFiles = agentsFiles.map((file) => ({ path: formatAgentsPath(file.path, workspace.root), content: file.content }));
+    const preloadedSkills: string[] = [];
+    const preloadWarnings: string[] = [];
+    if (this.skillsEnabled) {
+      for (const name of this.config.autoLoadSkills ?? []) {
+        const skill = workspace.skills.find((candidate) => candidate.name === name && !candidate.disableModelInvocation);
+        if (!skill) {
+          preloadWarnings.push(`Autoload skill unavailable: ${name}`);
+          continue;
+        }
+        try {
+          const file = await stat(skill.filePath);
+          if (!file.isFile() || file.size > MAX_AUTOLOAD_SKILL_BYTES) throw new Error("SKILL.md missing or too large");
+          const content = await readFile(skill.filePath, "utf8");
+          markSkillActivated(workspace.activatedSkillDirs, skill);
+          loadedAgentsFiles.push({ path: formatPathForPrompt(skill.filePath), content });
+          preloadedSkills.push(name);
+        } catch {
+          preloadWarnings.push(`Autoload skill unreadable: ${name}`);
+        }
+      }
+    }
     const availableAgentsFileOutputs = availableAgentsFiles.map((file) => ({ path: formatAgentsPath(file.path, workspace.root) }));
-    const instruction = this.workspaceInstruction();
+    const instruction = this.workspaceInstruction() + (preloadedSkills.length
+      ? " Autoloaded SKILL.md content is already loaded in agentsFiles; use it when relevant without rereading."
+      : "");
     const text = [
       ...capabilities.warnings,
+      ...preloadWarnings,
       `Opened workspace ${workspace.id}`,
       `Root: ${workspace.root}`,
       `Canonical root: ${workspace.canonicalRoot}`,
       `Mode: ${workspace.mode}`,
       `Access: ${capabilities.fileAccess}`,
-      loadedAgentsFiles.length ? `Loaded global/project instructions: ${loadedAgentsFiles.map((file) => file.path).join(", ")}` : undefined,
+      loadedAgentsFiles.length ? `Loaded instructions and skills: ${loadedAgentsFiles.map((file) => file.path).join(", ")}` : undefined,
       availableAgentsFileOutputs.length ? `Available nested instructions: ${availableAgentsFileOutputs.map((file) => file.path).join(", ")}` : undefined,
       skills.length ? `Available skills: ${skills.map((skill) => skill.name).join(", ")}` : undefined,
       instruction,

@@ -1094,11 +1094,21 @@ async function createMcpServer(
         : (() => { if (machine !== undefined) throw new Error("machine selection is available only in gateway mode"); return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, ex); })();
       const awaited = await res;
       if (isSkyCuaDisabled(effective)) {
-        const sc = (awaited as unknown as { structuredContent?: { skills?: unknown[]; skillDiagnostics?: unknown[] } }).structuredContent;
-        if (sc?.skills) sc.skills = filterSkyCuaSkillsForEffective(sc.skills, effective, config.skyCua?.projectRoot) as unknown as never;
+        const sc = (awaited as unknown as { structuredContent?: { skills?: unknown[]; skillDiagnostics?: unknown[]; agentsFiles?: Array<{ path: string }> } }).structuredContent;
+        // Autoloaded SKILL.md files share their advertised skill path; drop those whose skill is hidden for this session.
+        const hiddenSkillPaths = new Set<string>();
+        if (sc?.skills) {
+          const visible = filterSkyCuaSkillsForEffective(sc.skills, effective, config.skyCua?.projectRoot) ?? [];
+          for (const skill of sc.skills as Array<{ path?: string }>) {
+            if (skill.path && !visible.includes(skill)) hiddenSkillPaths.add(skill.path);
+          }
+          sc.skills = visible as unknown as never;
+        }
         if (sc?.skillDiagnostics) sc.skillDiagnostics = filterSkyCuaSkillsForEffective(sc.skillDiagnostics, effective, config.skyCua?.projectRoot) as unknown as never;
-        const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[] } } })._meta?.card;
+        if (sc?.agentsFiles) sc.agentsFiles = sc.agentsFiles.filter((file) => !hiddenSkillPaths.has(file.path));
+        const card = (awaited as unknown as { _meta?: { card?: { skills?: unknown[]; agentsFiles?: Array<{ path: string }> } } })._meta?.card;
         if (card?.skills) card.skills = filterSkyCuaSkillsForEffective(card.skills, effective, config.skyCua?.projectRoot) as unknown as never;
+        if (card?.agentsFiles) card.agentsFiles = card.agentsFiles.filter((file) => !hiddenSkillPaths.has(file.path));
       } else {
         // Ephemeral phone lifecycle guidance + full phone-use skill: injected as AGENTS so every workspace open is fully loaded without an extra read.
         const sc = (awaited as unknown as {
@@ -1111,7 +1121,11 @@ async function createMcpServer(
         }).structuredContent;
         const card = (awaited as unknown as { _meta?: { card?: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } } })._meta?.card;
         const phoneFile = phoneEphemeralAgentsFile();
-        const phoneSkillFile = phoneUseSkillEphemeralFile(config);
+        const loadedPhoneSkill = phoneUseSkillEphemeralFile(config);
+        // Skip the ephemeral copy when the same phone-use SKILL.md was already autoloaded.
+        const phoneSkillFile = loadedPhoneSkill && !sc?.agentsFiles?.some((file) => file.content === loadedPhoneSkill.content)
+          ? loadedPhoneSkill
+          : null;
         const inject = (target: { agentsFiles?: Array<{ path: string; content: string }>; availableAgentsFiles?: Array<{ path: string }>; instruction?: string } | undefined) => {
           if (!target) return;
           const filesToInject: Array<{ path: string; content: string }> = [phoneFile];
