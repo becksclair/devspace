@@ -41,6 +41,8 @@ export interface DevspaceUserConfig {
   stateDir?: string;
   worktreeRoot?: string;
   agentDir?: string;
+  skillPaths?: string[];
+  autoLoadSkills?: string[];
   globalInstructionsFile?: string;
 }
 

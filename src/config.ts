@@ -47,6 +47,7 @@ export interface ServerConfig {
   worktreeRoot: string;
   skillsEnabled: boolean;
   skillPaths: string[];
+  autoLoadSkills?: string[];
   agentDir: string;
   globalInstructionsFile: string;
   logging: LoggingConfig;
@@ -188,6 +189,14 @@ function parseLogFormat(value: string | undefined): LogFormat {
   if (value === "pretty") return "pretty";
 
   throw new Error(`Invalid DEVSPACE_LOG_FORMAT: ${value}`);
+}
+
+function configStringList(value: unknown, name: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    throw new Error(`Invalid ${name} in config.json: expected an array of strings`);
+  }
+  return value;
 }
 
 function parsePathList(value: string | undefined): string[] {
@@ -381,7 +390,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const disabledCapabilities = parseDisabledCapabilities(env.DISABLED_CAPABILITIES);
   const skyCua = parseSkyCuaConfig(env);
   const nodeRepl = parseNodeReplConfig(env);
-  const baseSkillPaths = parsePathList(env.DEVSPACE_SKILL_PATHS);
+  const baseSkillPaths = env.DEVSPACE_SKILL_PATHS !== undefined
+    ? parsePathList(env.DEVSPACE_SKILL_PATHS)
+    : configStringList(files.config.skillPaths, "skillPaths").map((path) => resolve(expandHomePath(path)));
+  const autoLoadSkills = Array.from(new Set(
+    (env.DEVSPACE_AUTOLOAD_SKILLS !== undefined
+      ? env.DEVSPACE_AUTOLOAD_SKILLS.split(",")
+      : configStringList(files.config.autoLoadSkills, "autoLoadSkills")
+    ).map((name) => name.trim()).filter(Boolean),
+  ));
   // Always wire sky-cua skills; per-session filtering via effectiveDisabled (global + X-Disabled-Capabilities header) decides visibility.
   const skillPaths = [...baseSkillPaths, join(skyCua.projectRoot, "skills")];
   return {
@@ -400,6 +417,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths,
+    autoLoadSkills,
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     globalInstructionsFile: resolve(expandHomePath(
       env.DEVSPACE_GLOBAL_INSTRUCTIONS_FILE ?? files.config.globalInstructionsFile ?? defaultGlobalInstructionsFile(),

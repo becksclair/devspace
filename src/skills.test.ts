@@ -3,6 +3,7 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { loadConfig } from "./config.js";
+import { LocalExecutor } from "./executor.js";
 import {
   formatPathForPrompt,
   loadWorkspaceSkills,
@@ -105,6 +106,41 @@ try {
       ?.isSkillFile,
     false,
   );
+
+  // Preloaded skills become part of the initial open_workspace response,
+  // including their reference-file access without an extra SKILL.md read.
+  await writeFile(join(agentDir, "skills", "global-skill", "reference.md"), "preloaded reference\n");
+  const autoloadConfig = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(root, "autoload-config"),
+    DEVSPACE_ALLOWED_ROOTS: projectRoot,
+    DEVSPACE_STATE_DIR: join(root, "autoload-state"),
+    DEVSPACE_WORKTREE_ROOT: join(root, "autoload-worktrees"),
+    DEVSPACE_GLOBAL_INSTRUCTIONS_FILE: join(root, "missing-global-AGENTS.md"),
+    DEVSPACE_AGENT_DIR: agentDir,
+    DEVSPACE_SKILL_PATHS: explicitSkills,
+    DEVSPACE_AUTOLOAD_SKILLS: "duplicate-skill,hidden-skill,missing-skill",
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    DEVSPACE_LOG_LEVEL: "silent",
+    DEVSPACE_TERMINAL_USER_SYSTEMD: "0",
+    PORT: "1",
+  });
+  const autoloadExecutor = new LocalExecutor({ config: autoloadConfig });
+  try {
+    const opened = await autoloadExecutor.execute("open_workspace", { path: projectRoot }, { requestId: "autoload-open" });
+    const initialFiles = opened.structuredContent?.agentsFiles as Array<{ path: string; content: string }>;
+    assert.equal(initialFiles.some((file) => file.path === formatPathForPrompt(join(agentDir, "skills", "global-skill", "SKILL.md")) && file.content.includes("First duplicate wins.")), true);
+    assert.equal(initialFiles.some((file) => file.path.includes("hidden-skill")), false);
+    assert.match(opened.content.map((part) => part.type === "text" ? part.text : "").join("\n"), /Autoload skill unavailable: missing-skill/);
+    assert.match(opened.content.map((part) => part.type === "text" ? part.text : "").join("\n"), /Autoload skill unavailable: hidden-skill/);
+    assert.match(String(opened.structuredContent?.instruction), /already loaded in agentsFiles/);
+    const readRef = await autoloadExecutor.execute("read_file", {
+      workspaceId: String(opened.structuredContent?.workspaceId),
+      path: join(agentDir, "skills", "global-skill", "reference.md"),
+    }, { requestId: "autoload-resource-read" });
+    assert.match(readRef.content.map((part) => part.type === "text" ? part.text : "").join("\n"), /preloaded reference/);
+  } finally {
+    autoloadExecutor.close();
+  }
 
   const staleSkill = {
     ...projectSkill,

@@ -148,7 +148,8 @@ The trusted-owner profile is an operator UX choice for MCP hosts that apply extr
 | `DEVSPACE_GLOBAL_INSTRUCTIONS_FILE` | Optional global DevSpace instruction file. Defaults to `~/.devspace/AGENTS.md`; absence is allowed. Loaded before project instructions on every workspace open and returned to the connected MCP client, so it must not contain secrets. |
 | `DEVSPACE_SKILLS` | Set to `0` to hide skills. Enabled by default. |
 | `DEVSPACE_AGENT_DIR` | Skill/resource agent directory, defaulting to `~/.codex`. It is not used as DevSpace global instruction context. |
-| `DEVSPACE_SKILL_PATHS` | Optional comma-separated skill directories. |
+| `DEVSPACE_SKILL_PATHS` | Optional comma-separated skill directories. Can also be set as `skillPaths` (string array) in `~/.devspace/config.json`. The environment variable overrides that array. |
+| `DEVSPACE_AUTOLOAD_SKILLS` | Optional comma-separated skill names to preload on **every** `open_workspace`; can also be configured as `autoLoadSkills` (string array) in `~/.devspace/config.json`. Defaults to none. The initial response includes the entire `SKILL.md` in `agentsFiles`, and its reference files become readable without a separate skill activation. Unavailable/disabled skills generate warnings. `DEVSPACE_SKILLS=0` disables preloading too. |
 | `DISABLED_CAPABILITIES` | Comma-separated list of capabilities to hide for this instance or per-MCP-session. Hermes on Saga sets `DISABLED_CAPABILITIES=sky-cua` so ChatGPT sees phone/desktop/browser tools but Hermes does not. Future values use same list: `DISABLED_CAPABILITIES=sky-cua,other-cap`. Per-session: client may send `X-Disabled-Capabilities: sky-cua` header or `?disabled_capabilities=sky-cua` query or `params._meta.disabledCapabilities` at `initialize`; evaluated at session creation — ChatGPT “refresh tools” re-initializes (new MCP session) without reauth and picks up the new set; plain `tools/list` on the same session does not change until next session. |
 | `DEVSPACE_SKY_CUA_PROJECT_ROOT` | Local checkout of sky-cua, default `~/projects/sky-cua`. Used to resolve `bin/sky-cua-client` and `skills/` for the live bridge. |
 | `DEVSPACE_SKY_CUA_BIN` | Override sky-cua MCP binary path, default `<projectRoot>/bin/sky-cua-client`. |
@@ -158,7 +159,8 @@ The trusted-owner profile is an operator UX choice for MCP hosts that apply extr
 Example:
 
 ```bash
-DEVSPACE_SKILL_PATHS="$HOME/.codex/skills,$HOME/.claude/skills" \
+DEVSPACE_SKILL_PATHS="$HOME/.agents/skills" \
+DEVSPACE_AUTOLOAD_SKILLS="agent-monitor" \
 npx @waishnav/devspace serve
 ```
 
