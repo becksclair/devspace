@@ -13,7 +13,10 @@
 
 ## Status
 
-- **State**: READY — Phase 1 in progress
+- **State**: Phase 1 DONE; Phase 2 in progress. Phase 1 merged as `f17c349`
+  (PR #3) and deployed to Svartal on 2026-11-09; the deployed suite, the
+  ChatGPT text acceptance (S1, S2, S3, S7), and the user's voice pass
+  (inbox, thread lookup, sending to threads) all passed.
 - **Priority**: P1
 - **Effort**: Phase 1 M, Phase 2 S
 - **Risk**: MEDIUM — adds a remotely reachable capability that starts full-access coding agents on Svartal
@@ -637,7 +640,7 @@ Tight and task-oriented; no duplicated reference material.
 10. **ChatGPT**: refresh the DevSpace connector through the browser, run S1,
     S2, S3, and S7 in a text chat; the user repeats the flow by voice.
 
-### Phase 1 exit criteria
+### Phase 1 exit criteria (met 2026-11-09)
 
 - Unit, end-to-end (both modes), live, and deployed suites pass.
 - ChatGPT text acceptance and the user's voice pass succeed.
