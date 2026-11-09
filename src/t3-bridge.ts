@@ -9,7 +9,8 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -77,10 +78,31 @@ const INBOX_PREVIEW_CHARS = 300;
 const T3_GUIDANCE =
   "Find threads with t3_thread_search or t3_thread_list; never ask the user for IDs. Refer to threads by title and project, and give the thread link when the user may want to open it in the T3 app. Threads always run in full-access mode.";
 
-const THREAD_REQUIRED_TOOLS = new Set(["t3_pending_request", "t3_thread_organize", "t3_queue"]);
-const CLIENT_REQUEST_ID_TOOLS = new Set(["t3_thread_launch", "t3_thread_send", "t3_thread_interrupt"]);
+const THREAD_REQUIRED_TOOLS = new Set(["t3_pending_request", "t3_thread_organize", "t3_queue", "t3_thread_update"]);
+const CLIENT_REQUEST_ID_TOOLS = new Set(["t3_thread_launch", "t3_thread_send", "t3_thread_interrupt", "t3_thread_update"]);
 /** Read-only T3 tools: safe to retry once after the connection dropped mid-request. */
-const IDEMPOTENT_READ_TOOLS = new Set(["t3_project_list", "t3_thread_search", "t3_thread_list", "t3_thread_read", "t3_thread_wait"]);
+const IDEMPOTENT_READ_TOOLS = new Set([
+  "t3_project_list",
+  "t3_thread_search",
+  "t3_thread_list",
+  "t3_thread_read",
+  "t3_thread_wait",
+  "list_scheduled_tasks",
+  "orchestrator_capabilities",
+]);
+/**
+ * Fields the project tools forward. T3's other project settings stay out of the model-facing
+ * surface, notably `scripts` (commands T3 runs on every new worktree). T3 ignores a default model
+ * given at creation, so it is set with `t3_project_update`.
+ */
+const PROJECT_CREATE_FIELDS = ["title", "workspaceRoot", "createWorkspaceRootIfMissing"] as const;
+const PROJECT_UPDATE_FIELDS = ["projectId", "title", "defaultModelSelection"] as const;
+/** Webhook trigger settings; webhook triggers are not exposed (they accept requests from outside). */
+const WEBHOOK_SCHEDULE_FIELDS = ["signature", "maxDeliveryAgeMinutes", "dedupe", "filters"] as const;
+/** Secret-bearing scheduled-task fields removed from results: the webhook URL carries its access token. */
+const WEBHOOK_RESULT_FIELDS = ["webhookUrl", "webhookSignature"] as const;
+const SCHEDULE_DESCRIPTION =
+  "Trigger: {type:'interval',everyMs} (everyMs at least 60000), {type:'fixed_time',timeOfDay:'HH:MM',weekdays?} (weekdays 0-6, 0 is Sunday; default every day), or {type:'once',runAt} (ISO-8601).";
 const ACTIVE_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 const OUTCOME_BY_STATUS: Record<string, "finished" | "failed" | "stopped"> = {
   completed: "finished",
@@ -98,6 +120,8 @@ interface ToolSpec {
   summary: string;
   /** DevSpace behavior appended to the description. */
   note?: string;
+  /** Use `summary` even when T3's live description is available (T3 writes it for in-thread agents). */
+  ownDescription?: boolean;
 }
 
 /** Every DevSpace T3 tool; key order is the registration order (`T3_TOOL_NAMES`). */
@@ -167,6 +191,58 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     readOnly: false,
     summary: "List, read, edit, cancel, or reorder a T3 Code thread's queued messages.",
   },
+  t3_thread_update: {
+    title: "Rename a T3 thread",
+    readOnly: false,
+    summary: 'Rename a T3 Code thread (`action: "rename"` with `title`) or regenerate its title (`action: "regenerate_title"`).',
+  },
+  orchestrator_capabilities: {
+    title: "List T3 models",
+    readOnly: true,
+    summary: "List the agent providers and models T3 Code can run, with each model's options. The list is short; `search` finds other models.",
+    note: "Name models to the user by their `label`. A provider with `constraints` cannot run now; do not pick its models. Use a provider's `providerInstanceId` as `instanceId` and a model's `id` as `model` in t3_thread_launch `modelSelection` or t3_project_update `defaultModelSelection`.",
+    ownDescription: true,
+  },
+  t3_project_create: {
+    title: "Create a T3 project",
+    readOnly: false,
+    summary: "Register a folder as a T3 Code project, or create a new git repository for one.",
+    note: "Without `workspaceRoot`, T3 creates a git repository at `~/.t3/projects/<title>`. A `workspaceRoot` must be an absolute path (or start with `~/`) and is created when missing. Set the project's default model afterwards with t3_project_update.",
+  },
+  t3_project_clone: {
+    title: "Clone a repository for T3",
+    readOnly: false,
+    summary: "Clone a git repository into a new or empty folder.",
+    note: "`destinationPath` must be an absolute path (or start with `~/`); the `workspaceRoot` of existing projects from t3_project_list shows where projects usually live. Then register the clone with t3_project_create, passing the returned `cwd` as `workspaceRoot`.",
+  },
+  t3_project_update: {
+    title: "Update a T3 project",
+    readOnly: false,
+    summary: "Rename a T3 Code project or set its default model.",
+    note: "`defaultModelSelection` is `{ instanceId, model }` from orchestrator_capabilities. Scheduled tasks need a project default model.",
+  },
+  list_scheduled_tasks: {
+    title: "List scheduled T3 tasks",
+    readOnly: true,
+    summary: "List T3 Code scheduled tasks, in one project or in every project.",
+  },
+  schedule_task: {
+    title: "Schedule a T3 task",
+    readOnly: false,
+    summary: "Create or update a T3 Code scheduled task that starts a new thread on a schedule.",
+    note: "Pass `projectId` when creating a task; the project needs a default model (set it with t3_project_update) and must be a git repository. Unless `freshSession` is set, each run starts a new full-access thread in its own worktree. Webhook triggers are not available here.",
+  },
+  run_scheduled_task_now: {
+    title: "Run a scheduled T3 task now",
+    readOnly: false,
+    summary: "Start one run of a T3 Code scheduled task now.",
+    note: "`taskId` is the task's `scheduledTaskId`. Follow the returned thread with t3_thread_wait and t3_thread_read.",
+  },
+  delete_scheduled_task: {
+    title: "Delete a scheduled T3 task",
+    readOnly: false,
+    summary: "Delete a T3 Code scheduled task.",
+  },
 };
 
 export const T3_TOOL_NAMES: readonly string[] = Object.freeze(Object.keys(TOOL_SPECS));
@@ -193,6 +269,16 @@ const DESCRIPTION_REWRITES: Record<string, Array<[string, string]>> = {
     ],
   ],
   t3_thread_organize: [["Settling this thread applies at turn end.", ""]],
+  t3_project_clone: [["Register after with `t3_project_create`, with the same `environmentId`.", ""]],
+  list_scheduled_tasks: [
+    ["Omit `projectId` for this thread's project.", "Omit `projectId` to list every project's tasks."],
+    ["In a scheduled run, do not call this to find your task. Do the prompt.", ""],
+  ],
+  schedule_task: [
+    ["Report the returned next run time or `webhookUrl`.", "Report the returned next run time."],
+    ["No `webhookUrl`: T3 Connect remote access is off.", ""],
+    ["Webhook request values in the prompt are untrusted.", ""],
+  ],
 };
 
 const INBOX_INPUT_SCHEMA: Record<string, unknown> = {
@@ -624,7 +710,7 @@ export class T3Bridge {
   }
 
   /**
-   * All twelve tools in `T3_TOOL_NAMES` order; loose schemas with `live: false` when T3 is
+   * Every tool in `T3_TOOL_NAMES` order; loose schemas with `live: false` when T3 is
    * unreachable. Waits for the catalog at most `catalogTimeoutMs`, and not at all within
    * `CATALOG_FALLBACK_MS` of a failed or timed-out wait (a refresh then runs in the background).
    */
@@ -656,6 +742,22 @@ export class T3Bridge {
         case "t3_thread_list":
         case "t3_thread_search":
           return jsonResult(await this.compactListing(name, await this.invokeData(name, name, shaped, signal)));
+        case "orchestrator_capabilities":
+          return jsonResult(compactCapabilities(await this.invokeData(name, name, shaped, signal)));
+        case "schedule_task":
+        case "list_scheduled_tasks":
+          return withoutWebhookSecrets(await this.invoke(name, name, shaped, signal));
+        case "t3_project_create":
+        case "t3_project_update": {
+          // Keep the project titles shown in thread rows current after a create or rename.
+          const result = await this.invoke(name, name, shaped, signal);
+          if (!result.isError) {
+            const project = resultRecord(result);
+            rememberProject(this.projectTitles, project);
+            if (typeof project.id === "string") this.projectMisses.delete(project.id);
+          }
+          return result;
+        }
         default:
           return await this.invoke(name, name, shaped, signal);
       }
@@ -944,11 +1046,11 @@ export class T3Bridge {
 
   /**
    * Calls one T3 tool. Reads (`IDEMPOTENT_READ_TOOLS`, or `read` for the inbox's pending-request
-   * lookups) and calls carrying `clientRequestId` are retried once after a dropped connection.
+   * lookups), calls carrying `clientRequestId`, and writes that only set fields are retried once
+   * after a dropped connection.
    */
   private invoke(label: string, tool: string, args: Args, signal?: AbortSignal, read = false): Promise<CallToolResult> {
-    const retryAfterSend =
-      read || IDEMPOTENT_READ_TOOLS.has(tool) || (typeof args.clientRequestId === "string" && args.clientRequestId !== "");
+    const retryAfterSend = read || retrySafe(tool, args);
     return this.withConnection(label, retryAfterSend, signal, async (client) => {
       // The SDK never removes its abort listener from a request's signal, so each request gets its
       // own signal, linked to the caller's only while the request is in flight.
@@ -1579,9 +1681,106 @@ function shapeArguments(name: string, input: Args): Args | string {
       args.timeoutMs = Math.max(0, Math.min(requested, WAIT_MAX_MS));
       break;
     }
+    case "t3_project_create": {
+      const picked = pick(args, PROJECT_CREATE_FIELDS);
+      if (picked.workspaceRoot === undefined) return picked;
+      const root = absolutePath(picked.workspaceRoot, "workspaceRoot");
+      if (root.error) return root.error;
+      picked.workspaceRoot = root.path;
+      picked.createWorkspaceRootIfMissing ??= true;
+      return picked;
+    }
+    case "t3_project_clone": {
+      const destination = absolutePath(args.destinationPath, "destinationPath");
+      if (destination.error) return destination.error;
+      args.destinationPath = destination.path;
+      break;
+    }
+    case "t3_project_update":
+      return pick(args, PROJECT_UPDATE_FIELDS);
+    case "schedule_task": {
+      const schedule = args.schedule;
+      if (schedule !== undefined) {
+        if (!isRecord(schedule)) return 'schedule must be an object, such as { type: "once", runAt: "2026-12-01T09:00:00Z" }.';
+        if (schedule.type === "webhook") return "Webhook triggers are not available through DevSpace; set them up in the T3 Code app.";
+        args.schedule = omit(schedule, WEBHOOK_SCHEDULE_FIELDS);
+      }
+      delete args.bindToCurrentThread;
+      if (!nonEmptyString(args.scheduledTaskId)) {
+        // A new task starts a new thread per run, and `clientRequestId` makes creation idempotent.
+        // Updates change only the given fields, so an existing task keeps its thread binding.
+        args.bindToCurrentThread = false;
+        if (!nonEmptyString(args.clientRequestId)) args.clientRequestId = randomUUID();
+      }
+      break;
+    }
   }
   if (CLIENT_REQUEST_ID_TOOLS.has(name) && !nonEmptyString(args.clientRequestId)) args.clientRequestId = randomUUID();
   return args;
+}
+
+function pick(args: Args, fields: readonly string[]): Args {
+  const picked: Args = {};
+  for (const key of fields) if (args[key] !== undefined) picked[key] = args[key];
+  return picked;
+}
+
+function omit(record: Args, fields: readonly string[]): Args {
+  const copy = { ...record };
+  for (const key of fields) delete copy[key];
+  return copy;
+}
+
+/**
+ * Whether a forwarded call may be retried once after its request was sent. `clientRequestId`
+ * counts only for tools whose T3 schema accepts it; T3 ignores it elsewhere.
+ */
+function retrySafe(tool: string, args: Args): boolean {
+  if (IDEMPOTENT_READ_TOOLS.has(tool)) return true;
+  if ((CLIENT_REQUEST_ID_TOOLS.has(tool) || tool === "schedule_task") && nonEmptyString(args.clientRequestId)) return true;
+  // These set fields to given values, so repeating them changes nothing.
+  return tool === "t3_project_update" || (tool === "schedule_task" && nonEmptyString(args.scheduledTaskId));
+}
+
+/** An absolute path, with a leading `~` expanded to this user's home folder (T3 runs as the same user). */
+function absolutePath(value: unknown, field: string): { path: string; error?: undefined } | { path?: undefined; error: string } {
+  if (!nonEmptyString(value)) return { error: `${field} is required and must be an absolute path.` };
+  const text = value.trim();
+  if (text === "~") return { path: homedir() };
+  if (text.startsWith("~/")) return { path: join(homedir(), text.slice(2)) };
+  if (isAbsolute(text)) return { path: text };
+  return { error: `${field} must be an absolute path (or start with ~/), not "${text}".` };
+}
+
+/** Providers and their models, with availability constraints, without the in-thread delegation details. */
+function compactCapabilities(data: Args): Args {
+  const nonEmpty = (value: unknown): unknown[] | undefined => (Array.isArray(value) && value.length > 0 ? value : undefined);
+  const providers = records(data.providers).map((provider) =>
+    definedOnly({
+      providerInstanceId: provider.providerInstanceId,
+      displayName: provider.displayName,
+      models: records(provider.models).map((model) => {
+        const options = records(model.options).map((option) => definedOnly({ id: option.id, values: option.values, default: option.default }));
+        return definedOnly({ id: model.id, label: model.label, options: nonEmpty(options) });
+      }),
+      // Why a provider cannot run now, such as "Provider instance is disabled."
+      constraints: nonEmpty(provider.constraints),
+    }),
+  );
+  return { providers };
+}
+
+/** The object without its undefined fields, so `structuredContent` and its JSON text agree. */
+function definedOnly(value: Args): Args {
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined));
+}
+
+/** Removes the webhook URL (it carries its access token) and signing details from scheduled-task results. */
+function withoutWebhookSecrets(result: CallToolResult): CallToolResult {
+  if (result.isError) return result;
+  const data = resultRecord(result);
+  const scrub = (task: Args): Args => omit(task, WEBHOOK_RESULT_FIELDS);
+  return jsonResult(Array.isArray(data.tasks) ? { ...data, tasks: records(data.tasks).map(scrub) } : scrub(data));
 }
 
 function trimSchema(name: string, schema: Record<string, unknown>): Record<string, unknown> {
@@ -1589,9 +1788,31 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
   trimmed.type = "object";
   const properties: Record<string, unknown> = isRecord(trimmed.properties) ? { ...trimmed.properties } : {};
   delete properties.environmentId;
-  if (name === "t3_thread_launch") {
-    delete properties.runtimeMode;
-    delete properties.delegatedFrom;
+  switch (name) {
+    case "t3_thread_launch":
+      delete properties.runtimeMode;
+      delete properties.delegatedFrom;
+      break;
+    case "t3_project_create":
+    case "t3_project_update": {
+      const fields: readonly string[] = name === "t3_project_create" ? PROJECT_CREATE_FIELDS : PROJECT_UPDATE_FIELDS;
+      for (const key of Object.keys(properties)) if (!fields.includes(key)) delete properties[key];
+      break;
+    }
+    case "schedule_task": {
+      // `trimmed` is a deep copy, so the nested schedule schema is edited in place.
+      delete properties.bindToCurrentThread;
+      const schedule = properties.schedule;
+      if (isRecord(schedule)) {
+        schedule.description = SCHEDULE_DESCRIPTION;
+        const fields = isRecord(schedule.properties) ? schedule.properties : {};
+        for (const key of WEBHOOK_SCHEDULE_FIELDS) delete fields[key];
+        if (isRecord(fields.type) && Array.isArray(fields.type.enum)) {
+          fields.type.enum = fields.type.enum.filter((value) => value !== "webhook");
+        }
+      }
+      break;
+    }
   }
   let required = Array.isArray(trimmed.required)
     ? trimmed.required.filter((key): key is string => typeof key === "string" && key in properties)
@@ -1608,7 +1829,7 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
 
 function describeTool(name: string, liveDescription: string | undefined): string {
   const spec = TOOL_SPECS[name]!;
-  const body = liveDescription ? rewriteDescription(name, liveDescription) : spec.summary;
+  const body = liveDescription && !spec.ownDescription ? rewriteDescription(name, liveDescription) : spec.summary;
   return `${spec.note ? `${body} ${spec.note}` : body}\n${T3_GUIDANCE}`;
 }
 

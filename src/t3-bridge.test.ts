@@ -47,6 +47,10 @@ import {
   checkInboxOmitted,
   checkListing,
   checkNoBlindRetry,
+  checkPhase2Retries,
+  checkProjects,
+  checkScheduledTasks,
+  checkThreadUpdate,
   checkNoSecrets,
   checkReading,
   checkRestart,
@@ -243,6 +247,15 @@ try {
     "t3_pending_request",
     "t3_thread_organize",
     "t3_queue",
+    "t3_thread_update",
+    "orchestrator_capabilities",
+    "t3_project_create",
+    "t3_project_clone",
+    "t3_project_update",
+    "list_scheduled_tasks",
+    "schedule_task",
+    "run_scheduled_task_now",
+    "delete_scheduled_task",
   ]);
   assert.deepEqual([...T3_FORWARDED_TOOLS], T3_TOOL_NAMES.filter((name) => name !== T3_INBOX_TOOL));
   const stateLabel = t3SessionLabel(join(tempDir, "state"));
@@ -527,6 +540,21 @@ try {
     t3_pending_request: { valid: { action: "respond", threadId: "t", requestId: "r", answers: { "Ship?": "Ship" } }, invalid: { action: "answer" } },
     t3_thread_organize: { valid: { threadId: "t", action: "snooze", snoozedUntil: "2026-11-10T09:00:00Z" }, invalid: { threadId: "t", action: 7 } },
     t3_queue: { valid: { action: "edit", threadId: "t", queuedRunId: "q", text: "new text" }, invalid: { action: "edit", cursor: "first" } },
+    t3_thread_update: { valid: { threadId: "t", action: "rename", title: "Renamed" }, invalid: { threadId: "t", action: "retitle" } },
+    orchestrator_capabilities: { valid: { search: "haiku" }, invalid: { search: 5 } },
+    t3_project_create: { valid: { title: "p", workspaceRoot: "/tmp/p", createWorkspaceRootIfMissing: true }, invalid: { title: 5 } },
+    t3_project_clone: {
+      valid: { remoteUrl: "https://example.invalid/r.git", destinationPath: "/tmp/r", protocol: "https" },
+      invalid: { destinationPath: "/tmp/r", protocol: "ftp" },
+    },
+    t3_project_update: { valid: { projectId: "p", title: "t", defaultModelSelection: modelSelection }, invalid: { projectId: "p", title: 5 } },
+    list_scheduled_tasks: { valid: { projectId: "p" }, invalid: { projectId: 5 } },
+    schedule_task: {
+      valid: { projectId: "p", prompt: "Reply with exactly OK", schedule: { type: "fixed_time", timeOfDay: "03:17", weekdays: [0, 6] } },
+      invalid: { projectId: "p", prompt: "x", schedule: { type: "fixed_time", weekdays: ["sunday"] } },
+    },
+    run_scheduled_task_now: { valid: { taskId: "s" }, invalid: {} },
+    delete_scheduled_task: { valid: { scheduledTaskId: "s" }, invalid: {} },
   };
   const syntheticSchema: Record<string, unknown> = {
     type: "object",
@@ -632,6 +660,12 @@ try {
   progress("ok - reading and waiting (B14)");
   await checkShaping(call, fake);
   progress("ok - argument shaping (B12, B15)");
+  await checkThreadUpdate(call, fake);
+  progress("ok - thread rename and title regeneration (B28)");
+  const projects = await checkProjects(call, fake);
+  progress("ok - projects, clones, default model, model catalog (B29, B30, B31)");
+  await checkScheduledTasks(call, fake, String(projects.projectId));
+  progress("ok - scheduled tasks (B27)");
   await checkFullAccessMint(fake, label, [SECRET_NAME]);
 
   // -----------------------------------------------------------------------------------------
@@ -647,6 +681,8 @@ try {
   progress("ok - dropped launch response (B10)");
   await checkNoBlindRetry(call, fake);
   progress("ok - no blind retry (B11)");
+  await checkPhase2Retries(call, fake);
+  progress("ok - Phase 2 retry classification (B32)");
 
   // B5: repeated restarts leave at most one live session for the label.
   await bridge.close();

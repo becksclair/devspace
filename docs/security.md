@@ -75,7 +75,14 @@ Persistent terminals use opaque IDs bound to one workspace and executor machine.
 
 The [T3 Code bridge](t3-code.md) is opt-in: it is exposed only when `t3.enabled` is `true` and the `t3` capability is not disabled. When exposed, any authenticated DevSpace client can start, steer, interrupt, and answer coding-agent threads in the T3 Code instance on the DevSpace host. Every thread the bridge launches runs in T3's `full-access` runtime mode, and callers cannot select another mode. The bridge's T3 credential is a full-access credential with the `orchestration:read`, `orchestration:operate`, `settings:write`, and `source-control:write` scopes.
 
-When T3 Code runs as the DevSpace service user, this is equivalent to the shell and terminal authority DevSpace already grants: the bridge adds another path to that authority without widening it. Enable it only where shell authority is already acceptable. Only the twelve allowlisted tools are exposed; T3's other tools are not reachable through DevSpace. The bridged tools advertise `destructiveHint: false` and `openWorldHint: false`, like the sky-cua bridge; as with annotation profiles, these hints are not a security boundary.
+When T3 Code runs as the DevSpace service user, this is equivalent to the shell and terminal authority DevSpace already grants: the bridge adds another path to that authority without widening it. Enable it only where shell authority is already acceptable. Only the 21 allowlisted tools are exposed; T3's other tools are not reachable through DevSpace. As with annotation profiles, the bridged tools' hints are not a security boundary.
+
+Beyond threads:
+
+- **Scheduled tasks** start unattended runs later. Each run of a task created through DevSpace is a new `full-access` thread with the default model the project had when the task was created, and a recurring task keeps starting runs until it is disabled or deleted. A task created in the T3 app keeps its own thread binding, runtime mode, and model when DevSpace updates it.
+- **Webhook triggers are excluded.** A webhook URL accepts requests from anyone who holds it and starts full-access agents with each request's content; DevSpace callers can already start threads directly, so a webhook would add only a persistent outside trigger. DevSpace rejects webhook schedules and removes `webhookUrl` (which embeds its access token) and `webhookSignature` from scheduled-task results, including those of webhook tasks created in the T3 app. An existing webhook task created in the T3 app can still be edited through `schedule_task` without a `schedule`, including re-enabled, which reactivates its trigger.
+- **Project creation and cloning** write folders as the OS user that runs T3 Code (normally the DevSpace service user), anywhere that user can write; DevSpace roots do not confine them. Paths must be absolute (a leading `~/` is expanded), because T3 resolves relative paths against its own working directory.
+- **Project deletion is not exposed.** `t3_project_create` forwards only a title and a folder, and `t3_project_update` only a title and a default model; T3's other project settings, including project scripts (commands T3 runs on every new worktree), are not reachable.
 
 Credential handling:
 
@@ -86,7 +93,7 @@ Credential handling:
 
 Write tools advertise destructive, open-world hints under the `standard` annotation profile, so MCP hosts can ask for confirmation; `trusted-owner` relaxes them like DevSpace's exec tools. Launches always run in T3's `full-access` mode.
 
-The bridge persists nothing; its inbox cursor is also memory-only, and thread state stays in T3.
+The bridge persists nothing; its inbox cursor is also memory-only, and thread, project, and scheduled-task state stays in T3.
 
 ## Child environment filtering
 

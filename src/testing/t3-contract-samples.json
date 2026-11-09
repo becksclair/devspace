@@ -8,7 +8,13 @@
     "Interrupting a running turn ends with thread status 'cancelled' or 'interrupted' depending on timing (both observed live).",
     "Archiving also settles; archived threads disappear from t3_thread_list.",
     "clientRequestId makes t3_thread_launch and t3_thread_send idempotent (same threadId / runId returned).",
-    "401 WWW-Authenticate carries resource_metadata unless the presented token is non-empty without a '.', and error=\"invalid_token\" whenever a token was presented; real MCP client tokens contain a '.'."
+    "401 WWW-Authenticate carries resource_metadata unless the presented token is non-empty without a '.', and error=\"invalid_token\" whenever a token was presented; real MCP client tokens contain a '.'.",
+    "Phase 2 samples were captured 2026-11-09 from the same T3 Code version by an MCP client signed in from outside a thread with a full-access token.",
+    "t3_project_create ignores defaultModelSelection (the result is always null); set it with t3_project_update, which stores {instanceId, model} plus options and drops provider.",
+    "schedule_task needs a project with a default model; outside callers are never bound (boundThreadId null); clientRequestId makes creation idempotent.",
+    "run_scheduled_task_now works on disabled tasks, starts a new full-access thread in the task's project, and reports lastRunStatus 'succeeded' once started; a project folder that is not a git repository fails workspace preparation at once.",
+    "Deleting a project with threads needs force: true; the folder on disk stays.",
+    "orchestrator_capabilities providers and models are trimmed here; the real catalog lists more of both."
   ],
   "results": {
     "t3_thread_launch": {
@@ -300,7 +306,740 @@
     ],
     "t3_thread_search.envelopeKeys": [
       "matches"
-    ]
+    ],
+    "schedule_task.created": {
+      "scheduledTaskId": "scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53",
+      "title": "DevSpace probe 20261109213601 task",
+      "prompt": "Reply with exactly OK",
+      "enabled": true,
+      "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+      "boundThreadId": null,
+      "freshSession": false,
+      "schedule": {
+        "type": "once",
+        "runAt": "2027-09-05T21:36:02.194Z"
+      },
+      "nextRunAt": "2027-09-05T21:36:02.194Z",
+      "lastRunStatus": "never"
+    },
+    "schedule_task.sameClientRequestId": {
+      "scheduledTaskId": "scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53",
+      "title": "DevSpace probe 20261109213601 task",
+      "prompt": "Reply with exactly OK",
+      "enabled": true,
+      "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+      "boundThreadId": null,
+      "freshSession": false,
+      "schedule": {
+        "type": "once",
+        "runAt": "2027-09-05T21:36:02.194Z"
+      },
+      "nextRunAt": "2027-09-05T21:36:02.194Z",
+      "lastRunStatus": "never"
+    },
+    "schedule_task.fixedTime": {
+      "scheduledTaskId": "scheduled-task:30c0623b-3528-43b5-add5-dc81c9e2e066",
+      "title": "DevSpace probe 20261109213601 weekly",
+      "prompt": "Reply with exactly OK",
+      "enabled": false,
+      "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+      "boundThreadId": null,
+      "freshSession": false,
+      "schedule": {
+        "type": "fixed_time",
+        "timeOfDay": "03:17",
+        "weekdays": [
+          0
+        ]
+      },
+      "nextRunAt": null,
+      "lastRunStatus": "never"
+    },
+    "schedule_task.webhook": {
+      "scheduledTaskId": "scheduled-task:f465a3c2-5e72-4a7d-975f-10440905dc33",
+      "title": "DevSpace probe 20261109213601 webhook",
+      "prompt": "Reply with exactly OK",
+      "enabled": false,
+      "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+      "boundThreadId": null,
+      "freshSession": false,
+      "schedule": {
+        "type": "webhook",
+        "signature": null,
+        "maxDeliveryAgeMinutes": null
+      },
+      "nextRunAt": null,
+      "lastRunStatus": "never",
+      "webhookUrl": "https://connect.example.invalid/hooks/REDACTED",
+      "webhookSignature": "none"
+    },
+    "schedule_task.disable": {
+      "scheduledTaskId": "scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53",
+      "title": "DevSpace probe 20261109213601 task",
+      "prompt": "Reply with exactly OK",
+      "enabled": false,
+      "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+      "boundThreadId": null,
+      "freshSession": false,
+      "schedule": {
+        "type": "once",
+        "runAt": "2027-09-05T21:36:02.194Z"
+      },
+      "nextRunAt": null,
+      "lastRunStatus": "never"
+    },
+    "list_scheduled_tasks": {
+      "tasks": [
+        {
+          "scheduledTaskId": "scheduled-task:f465a3c2-5e72-4a7d-975f-10440905dc33",
+          "title": "DevSpace probe 20261109213601 webhook",
+          "prompt": "Reply with exactly OK",
+          "enabled": false,
+          "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+          "boundThreadId": null,
+          "freshSession": false,
+          "schedule": {
+            "type": "webhook",
+            "signature": null,
+            "maxDeliveryAgeMinutes": null
+          },
+          "nextRunAt": null,
+          "lastRunStatus": "never",
+          "webhookUrl": "https://connect.example.invalid/hooks/REDACTED",
+          "webhookSignature": "none"
+        },
+        {
+          "scheduledTaskId": "scheduled-task:30c0623b-3528-43b5-add5-dc81c9e2e066",
+          "title": "DevSpace probe 20261109213601 weekly",
+          "prompt": "Reply with exactly OK",
+          "enabled": false,
+          "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+          "boundThreadId": null,
+          "freshSession": false,
+          "schedule": {
+            "type": "fixed_time",
+            "timeOfDay": "03:17",
+            "weekdays": [
+              0
+            ]
+          },
+          "nextRunAt": null,
+          "lastRunStatus": "never"
+        },
+        {
+          "scheduledTaskId": "scheduled-task:0d1debab-a36f-485f-a7f9-9bfd3f5f975e",
+          "title": "DevSpace probe 20261109213601 default-bind",
+          "prompt": "Reply with exactly OK",
+          "enabled": true,
+          "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+          "boundThreadId": null,
+          "freshSession": false,
+          "schedule": {
+            "type": "once",
+            "runAt": "2027-09-05T21:36:02.194Z"
+          },
+          "nextRunAt": "2027-09-05T21:36:02.194Z",
+          "lastRunStatus": "never"
+        },
+        {
+          "scheduledTaskId": "scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53",
+          "title": "DevSpace probe 20261109213601 task",
+          "prompt": "Reply with exactly OK",
+          "enabled": true,
+          "projectId": "mcp:1fdad7f5-b79f-4855-8a01-de426c841176",
+          "boundThreadId": null,
+          "freshSession": false,
+          "schedule": {
+            "type": "once",
+            "runAt": "2027-09-05T21:36:02.194Z"
+          },
+          "nextRunAt": "2027-09-05T21:36:02.194Z",
+          "lastRunStatus": "succeeded"
+        }
+      ]
+    },
+    "run_scheduled_task_now": {
+      "taskId": "scheduled-task:a62940e0-65ba-4f1d-b07f-d50b325f7e92",
+      "threadId": "thread:project:192bc34f-f9f5-49c6-8b48-59cd3b416da4:db7ca1a5-8df6-4afe-9d8e-989b509e6639",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639",
+      "lastRunStatus": "succeeded",
+      "runCount": 1,
+      "nextRunAt": "2027-09-05T21:36:40.407Z"
+    },
+    "run_scheduled_task_now.disabledTask": {
+      "taskId": "scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53",
+      "threadId": "thread:project:mcp%3A1fdad7f5-b79f-4855-8a01-de426c841176:152be640-472d-44e5-b17d-578fed99bffb",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/thread%3Aproject%3Amcp%253A1fdad7f5-b79f-4855-8a01-de426c841176%3A152be640-472d-44e5-b17d-578fed99bffb",
+      "lastRunStatus": "succeeded",
+      "runCount": 1,
+      "nextRunAt": null
+    },
+    "delete_scheduled_task": {
+      "scheduledTaskId": "scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53",
+      "deleted": true
+    },
+    "t3_thread_update.rename": {
+      "threadId": "mcp:launch:41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab",
+      "action": "rename",
+      "commandId": "command:mcp:client%3Ab5684f37-e964-4b29-90e1-21b0e422c67c:thread-update:mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab:rename:devspace-probe-8cbf009e-d291-48ad-a988-46935c1010c8",
+      "sequence": 164633,
+      "title": "DevSpace probe 20261109213436 renamed",
+      "titleRegeneration": null,
+      "linkedPullRequest": null,
+      "updatedAt": "2026-11-09T21:34:39.129Z"
+    },
+    "t3_thread_update.sameClientRequestId": {
+      "threadId": "mcp:launch:41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab",
+      "action": "rename",
+      "commandId": "command:mcp:client%3Ab5684f37-e964-4b29-90e1-21b0e422c67c:thread-update:mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab:rename:devspace-probe-8cbf009e-d291-48ad-a988-46935c1010c8",
+      "sequence": 164633,
+      "title": "DevSpace probe 20261109213436 renamed",
+      "titleRegeneration": null,
+      "linkedPullRequest": null,
+      "updatedAt": "2026-11-09T21:34:39.129Z"
+    },
+    "t3_thread_update.regenerate": {
+      "threadId": "mcp:launch:41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab",
+      "action": "regenerate_title",
+      "commandId": "command:mcp:client%3Ab5684f37-e964-4b29-90e1-21b0e422c67c:thread-update:mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab:regenerate_title:ae1710ef-0a6e-41cc-82f4-bd00494c2953",
+      "sequence": 164634,
+      "title": "DevSpace probe 20261109213436 renamed",
+      "titleRegeneration": {
+        "requestId": "command:mcp:client%3Ab5684f37-e964-4b29-90e1-21b0e422c67c:thread-update:mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab:regenerate_title:ae1710ef-0a6e-41cc-82f4-bd00494c2953",
+        "startedAt": "2026-11-09T21:34:39.142Z"
+      },
+      "linkedPullRequest": null,
+      "updatedAt": "2026-11-09T21:34:39.142Z"
+    },
+    "t3_thread_update.threadDetailWhileRegenerating": {
+      "threadId": "mcp:launch:41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab",
+      "projectId": "87645971-d7fe-4ccd-ac98-5b79f318f9d8",
+      "title": "DevSpace probe 20261109213436 renamed",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab",
+      "createdBy": "agent",
+      "creationSource": "mcp",
+      "status": "completed",
+      "latestRunId": "run:thread:mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab:ordinal:1",
+      "activeRunId": null,
+      "providerInstanceId": "claudeAgent",
+      "model": "claude-haiku-5-5",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "linkedPullRequest": null,
+      "pullRequests": [],
+      "titleRegeneration": {
+        "requestId": "command:mcp:client%3Ab5684f37-e964-4b29-90e1-21b0e422c67c:thread-update:mcp%3Alaunch%3A41da7033e7ee818b02f18f163e5db7430a743bb63b5a5ca49245d773cf8f73ab:regenerate_title:ae1710ef-0a6e-41cc-82f4-bd00494c2953",
+        "startedAt": "2026-11-09T21:34:39.142Z"
+      },
+      "branch": null,
+      "worktreePath": "/Users/rclair/.t3/scratch/2026-11-09-reply-with-exactly-ok-cf8f73ab",
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "runCount": 1,
+      "itemCount": 4,
+      "pendingRequestCount": 0,
+      "archived": false,
+      "settled": false,
+      "settledAt": null,
+      "snoozed": false,
+      "snoozedUntil": null,
+      "createdAt": "2026-11-09T21:34:37.398Z",
+      "updatedAt": "2026-11-09T21:34:39.142Z"
+    },
+    "t3_project_create.withRoot": {
+      "id": "mcp:c8a53115-fc2b-473f-9cb0-ff5ba71b0b0f",
+      "title": "DevSpace probe 20261109213436 root",
+      "workspaceRoot": "/tmp/devspace-t3-probe/created",
+      "repositoryIdentity": null,
+      "faviconPath": null,
+      "projectIcon": null,
+      "defaultModelSelection": null,
+      "defaultThreadEnvMode": null,
+      "autoPull": false,
+      "scripts": [],
+      "pinnedAt": null,
+      "archivedAt": null,
+      "createdAt": "2026-11-09T21:34:39.176Z",
+      "updatedAt": "2026-11-09T21:34:39.176Z",
+      "deletedAt": null
+    },
+    "t3_project_create.generated": {
+      "id": "612f92bb-d82e-4a8a-8f21-b3fb697193c0",
+      "title": "devspace-probe-20261109213436",
+      "workspaceRoot": "/Users/rclair/.t3/projects/devspace-probe-20261109213436",
+      "repositoryIdentity": null,
+      "faviconPath": null,
+      "projectIcon": null,
+      "defaultModelSelection": null,
+      "defaultThreadEnvMode": null,
+      "autoPull": false,
+      "scripts": [],
+      "pinnedAt": null,
+      "archivedAt": null,
+      "createdAt": "2026-11-09T21:34:39.258Z",
+      "updatedAt": "2026-11-09T21:34:39.258Z",
+      "deletedAt": null
+    },
+    "t3_project_update": {
+      "id": "mcp:174101eb-da28-4038-9c35-8f50e30a820c",
+      "title": "DevSpace probe 20261109213754 withProvider",
+      "workspaceRoot": "/tmp/devspace-t3-probe/withProvider",
+      "repositoryIdentity": null,
+      "faviconPath": null,
+      "projectIcon": null,
+      "defaultModelSelection": {
+        "instanceId": "claudeAgent",
+        "model": "claude-haiku-5-5"
+      },
+      "defaultThreadEnvMode": null,
+      "autoPull": false,
+      "scripts": [],
+      "pinnedAt": null,
+      "archivedAt": null,
+      "createdAt": "2026-11-09T21:37:55.106Z",
+      "updatedAt": "2026-11-09T21:37:55.112Z",
+      "deletedAt": null
+    },
+    "t3_project_delete": {
+      "id": "mcp:c8a53115-fc2b-473f-9cb0-ff5ba71b0b0f",
+      "title": "DevSpace probe 20261109213436 root",
+      "workspaceRoot": "/tmp/devspace-t3-probe/created",
+      "repositoryIdentity": null,
+      "faviconPath": null,
+      "projectIcon": null,
+      "defaultModelSelection": null,
+      "defaultThreadEnvMode": null,
+      "autoPull": false,
+      "scripts": [],
+      "pinnedAt": null,
+      "archivedAt": null,
+      "createdAt": "2026-11-09T21:34:39.176Z",
+      "updatedAt": "2026-11-09T21:34:43.407Z",
+      "deletedAt": "2026-11-09T21:34:43.407Z"
+    },
+    "t3_project_clone.url": {
+      "cwd": "/tmp/devspace-t3-probe/hello",
+      "remoteUrl": "https://github.com/octocat/Hello-World.git",
+      "repository": null
+    },
+    "t3_project_clone.repository": {
+      "cwd": "/tmp/devspace-t3-probe/hello2",
+      "remoteUrl": "https://github.com/octocat/Hello-World",
+      "repository": {
+        "provider": "github",
+        "nameWithOwner": "octocat/Hello-World",
+        "url": "https://github.com/octocat/Hello-World",
+        "sshUrl": "git@github.com:octocat/Hello-World.git"
+      }
+    },
+    "orchestrator_capabilities": {
+      "parentThreadId": null,
+      "inheritedProviderInstanceId": null,
+      "inheritedModel": null,
+      "inheritedOptions": [],
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "providers": [
+        {
+          "providerInstanceId": "codex",
+          "driverKind": "codex",
+          "displayName": "Codex",
+          "models": [
+            {
+              "id": "gpt-6.1-sol",
+              "options": [
+                {
+                  "id": "reasoningEffort",
+                  "values": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ],
+                  "default": "low"
+                }
+              ]
+            },
+            {
+              "id": "gpt-6-astra",
+              "options": [
+                {
+                  "id": "reasoningEffort",
+                  "values": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ],
+                  "default": "medium"
+                }
+              ]
+            }
+          ],
+          "canRunChildTask": true,
+          "canRunCrossProviderChildTask": true,
+          "constraints": []
+        },
+        {
+          "providerInstanceId": "claudeAgent",
+          "driverKind": "claudeAgent",
+          "displayName": "Claude",
+          "models": [
+            {
+              "id": "claude-opus-5-5",
+              "label": "Claude Opus 5.5",
+              "options": [
+                {
+                  "id": "effort",
+                  "values": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultrathink"
+                  ],
+                  "default": "medium"
+                },
+                {
+                  "id": "ultracode",
+                  "values": [
+                    false,
+                    true
+                  ]
+                },
+                {
+                  "id": "fastMode",
+                  "values": [
+                    false,
+                    true
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "claude-sonnet-5-5",
+              "label": "Claude Sonnet 5.5",
+              "options": [
+                {
+                  "id": "effort",
+                  "values": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultrathink"
+                  ],
+                  "default": "high"
+                },
+                {
+                  "id": "ultracode",
+                  "values": [
+                    false,
+                    true
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "claude-haiku-5-5",
+              "label": "Claude Haiku 5.5",
+              "options": [
+                {
+                  "id": "effort",
+                  "values": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultrathink"
+                  ],
+                  "default": "medium"
+                },
+                {
+                  "id": "ultracode",
+                  "values": [
+                    false,
+                    true
+                  ]
+                }
+              ]
+            }
+          ],
+          "omittedModels": 9,
+          "canRunChildTask": true,
+          "canRunCrossProviderChildTask": true,
+          "constraints": []
+        },
+        {
+          "providerInstanceId": "cursor",
+          "driverKind": "cursor",
+          "displayName": "Cursor",
+          "models": [],
+          "canRunChildTask": false,
+          "canRunCrossProviderChildTask": false,
+          "constraints": [
+            "Provider instance is disabled."
+          ]
+        },
+        {
+          "providerInstanceId": "grok",
+          "driverKind": "grok",
+          "displayName": "Grok",
+          "models": [
+            {
+              "id": "grok-build",
+              "label": "Grok Build"
+            }
+          ],
+          "runtimeModes": [
+            "approval-required",
+            "auto",
+            "full-access"
+          ],
+          "canRunChildTask": false,
+          "canRunCrossProviderChildTask": false,
+          "constraints": [
+            "Provider instance is disabled."
+          ]
+        }
+      ],
+      "features": {
+        "appOwnedSubagents": true,
+        "asyncPolling": true,
+        "cancellation": true,
+        "batchThreadCreation": true,
+        "threadManagement": true,
+        "incrementalThreadRead": true,
+        "scheduledTasks": true,
+        "maxBatchThreads": 20
+      }
+    },
+    "scheduledRun.threadDetail": {
+      "thread": {
+        "threadId": "thread:project:192bc34f-f9f5-49c6-8b48-59cd3b416da4:db7ca1a5-8df6-4afe-9d8e-989b509e6639",
+        "projectId": "192bc34f-f9f5-49c6-8b48-59cd3b416da4",
+        "title": "DevSpace probe 20261109213639 generated",
+        "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "status": "completed",
+        "latestRunId": "run:thread:thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639:ordinal:1",
+        "activeRunId": null,
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "linkedPullRequest": null,
+        "pullRequests": [],
+        "titleRegeneration": null,
+        "branch": "t3/437b1316",
+        "worktreePath": "/Users/rclair/.t3/worktrees/devspace-probe-20261109213639/t3-437b1316-ec1899e6d5c7e779",
+        "parentThreadId": null,
+        "relationshipToParent": null,
+        "runCount": 1,
+        "itemCount": 4,
+        "pendingRequestCount": 0,
+        "archived": false,
+        "settled": false,
+        "settledAt": null,
+        "snoozed": false,
+        "snoozedUntil": null,
+        "createdAt": "2026-11-09T21:36:40.437Z",
+        "updatedAt": "2026-11-09T21:36:42.707Z"
+      },
+      "recentRuns": [
+        {
+          "runId": "run:thread:thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639:ordinal:1",
+          "ordinal": 1,
+          "status": "completed",
+          "providerInstanceId": "claudeAgent",
+          "model": "claude-haiku-5-5",
+          "requestedAt": "2026-11-09T21:36:40.444Z",
+          "startedAt": "2026-11-09T21:36:40.632Z",
+          "completedAt": "2026-11-09T21:36:42.707Z"
+        }
+      ],
+      "items": [
+        {
+          "position": 0,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:192bc34f-f9f5-49c6-8b48-59cd3b416da4:db7ca1a5-8df6-4afe-9d8e-989b509e6639",
+          "itemId": "turn-item:message:scheduled-task-message%3Ascheduled-task%3Aa62940e0-65ba-4f1d-b07f-d50b325f7e92%3A1794260200434%3Amanual",
+          "runId": "run:thread:thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639:ordinal:1",
+          "messageId": "scheduled-task-message:scheduled-task:a62940e0-65ba-4f1d-b07f-d50b325f7e92:1794260200434:manual",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "type": "user_message",
+          "status": "completed",
+          "title": null,
+          "text": "Reply with exactly OK",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:40.444Z"
+        },
+        {
+          "position": 1,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:192bc34f-f9f5-49c6-8b48-59cd3b416da4:db7ca1a5-8df6-4afe-9d8e-989b509e6639",
+          "itemId": "turn-item:provider:claudeAgent:native-item:workspace-preparation%3Arun%3Athread%3Athread%253Aproject%253A192bc34f-f9f5-49c6-8b48-59cd3b416da4%253Adb7ca1a5-8df6-4afe-9d8e-989b509e6639%3Aordinal%3A1",
+          "runId": "run:thread:thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639:ordinal:1",
+          "messageId": null,
+          "createdBy": null,
+          "creationSource": null,
+          "type": "command_execution",
+          "status": "completed",
+          "title": "Workspace ready",
+          "text": "$ Preparing workspace\nWorkspace preparation completed.",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:40.624Z"
+        },
+        {
+          "position": 2,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:192bc34f-f9f5-49c6-8b48-59cd3b416da4:db7ca1a5-8df6-4afe-9d8e-989b509e6639",
+          "itemId": "turn-item:provider:claudeAgent:native-item:4930cc26-fea0-4b3c-942f-7b243d615760",
+          "runId": "run:thread:thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639:ordinal:1",
+          "messageId": "message:provider:claudeAgent:native-item:4930cc26-fea0-4b3c-942f-7b243d615760",
+          "createdBy": "agent",
+          "creationSource": "provider",
+          "type": "assistant_message",
+          "status": "completed",
+          "title": null,
+          "text": "OK",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:42.683Z"
+        },
+        {
+          "position": 3,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:192bc34f-f9f5-49c6-8b48-59cd3b416da4:db7ca1a5-8df6-4afe-9d8e-989b509e6639",
+          "itemId": "turn-item:provider:claudeAgent:native-item:checkpoint%3Acheckpoint%3Ascope%3Acheckpoint-scope%253Athread%253Athread%25253Aproject%25253A192bc34f-f9f5-49c6-8b48-59cd3b416da4%25253Adb7ca1a5-8df6-4afe-9d8e-989b509e6639%253Aname%253Aroot%3Aname%3A1",
+          "runId": "run:thread:thread%3Aproject%3A192bc34f-f9f5-49c6-8b48-59cd3b416da4%3Adb7ca1a5-8df6-4afe-9d8e-989b509e6639:ordinal:1",
+          "messageId": null,
+          "createdBy": null,
+          "creationSource": null,
+          "type": "checkpoint",
+          "status": "completed",
+          "title": null,
+          "text": "[]",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:42.707Z"
+        }
+      ],
+      "nextPosition": 3,
+      "hasMore": false
+    },
+    "scheduledRun.failedThreadDetail": {
+      "thread": {
+        "threadId": "thread:project:mcp%3A24fc3b22-c05d-49bb-9d94-3cd5c7700c16:66da4df9-3519-4195-b4e7-eab710ee6d06",
+        "projectId": "mcp:24fc3b22-c05d-49bb-9d94-3cd5c7700c16",
+        "title": "DevSpace probe 20261109213639 tmp",
+        "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/thread%3Aproject%3Amcp%253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%3A66da4df9-3519-4195-b4e7-eab710ee6d06",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "status": "failed",
+        "latestRunId": "run:thread:thread%3Aproject%3Amcp%253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%3A66da4df9-3519-4195-b4e7-eab710ee6d06:ordinal:1",
+        "activeRunId": null,
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "linkedPullRequest": null,
+        "pullRequests": [],
+        "titleRegeneration": null,
+        "branch": null,
+        "worktreePath": null,
+        "parentThreadId": null,
+        "relationshipToParent": null,
+        "runCount": 1,
+        "itemCount": 3,
+        "pendingRequestCount": 0,
+        "archived": false,
+        "settled": false,
+        "settledAt": null,
+        "snoozed": false,
+        "snoozedUntil": null,
+        "createdAt": "2026-11-09T21:36:42.881Z",
+        "updatedAt": "2026-11-09T21:36:42.910Z"
+      },
+      "recentRuns": [
+        {
+          "runId": "run:thread:thread%3Aproject%3Amcp%253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%3A66da4df9-3519-4195-b4e7-eab710ee6d06:ordinal:1",
+          "ordinal": 1,
+          "status": "failed",
+          "providerInstanceId": "claudeAgent",
+          "model": "claude-haiku-5-5",
+          "requestedAt": "2026-11-09T21:36:42.886Z",
+          "startedAt": null,
+          "completedAt": "2026-11-09T21:36:42.910Z"
+        }
+      ],
+      "items": [
+        {
+          "position": 0,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:mcp%3A24fc3b22-c05d-49bb-9d94-3cd5c7700c16:66da4df9-3519-4195-b4e7-eab710ee6d06",
+          "itemId": "turn-item:message:scheduled-task-message%3Ascheduled-task%3Aa3fd20ef-ae10-4d89-a2ce-3faa818f7e2d%3A1794260202879%3Amanual",
+          "runId": "run:thread:thread%3Aproject%3Amcp%253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%3A66da4df9-3519-4195-b4e7-eab710ee6d06:ordinal:1",
+          "messageId": "scheduled-task-message:scheduled-task:a3fd20ef-ae10-4d89-a2ce-3faa818f7e2d:1794260202879:manual",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "type": "user_message",
+          "status": "completed",
+          "title": null,
+          "text": "Reply with exactly OK",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:42.886Z"
+        },
+        {
+          "position": 1,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:mcp%3A24fc3b22-c05d-49bb-9d94-3cd5c7700c16:66da4df9-3519-4195-b4e7-eab710ee6d06",
+          "itemId": "turn-item:provider:claudeAgent:native-item:workspace-preparation%3Arun%3Athread%3Athread%253Aproject%253Amcp%25253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%253A66da4df9-3519-4195-b4e7-eab710ee6d06%3Aordinal%3A1",
+          "runId": "run:thread:thread%3Aproject%3Amcp%253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%3A66da4df9-3519-4195-b4e7-eab710ee6d06:ordinal:1",
+          "messageId": null,
+          "createdBy": null,
+          "creationSource": null,
+          "type": "command_execution",
+          "status": "failed",
+          "title": "Workspace preparation failed",
+          "text": "$ Preparing workspace\nWorkspace preparation failed during provision worktree: Git command failed in GitWorkflowService.resolveWorktreeBaseRemote (/tmp/devspace-t3-probe/sched): Failed to resolve the VCS driver for this Git command.",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:42.910Z"
+        },
+        {
+          "position": 2,
+          "visibility": "local",
+          "sourceThreadId": "thread:project:mcp%3A24fc3b22-c05d-49bb-9d94-3cd5c7700c16:66da4df9-3519-4195-b4e7-eab710ee6d06",
+          "itemId": "turn-item:provider:claudeAgent:native-item:workspace-preparation-failure%3Arun%3Athread%3Athread%253Aproject%253Amcp%25253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%253A66da4df9-3519-4195-b4e7-eab710ee6d06%3Aordinal%3A1",
+          "runId": "run:thread:thread%3Aproject%3Amcp%253A24fc3b22-c05d-49bb-9d94-3cd5c7700c16%3A66da4df9-3519-4195-b4e7-eab710ee6d06:ordinal:1",
+          "messageId": null,
+          "createdBy": null,
+          "creationSource": null,
+          "type": "error",
+          "status": "failed",
+          "title": "Workspace preparation failed",
+          "text": "Workspace preparation failed during provision worktree: Git command failed in GitWorkflowService.resolveWorktreeBaseRemote (/tmp/devspace-t3-probe/sched): Failed to resolve the VCS driver for this Git command.",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T21:36:42.910Z"
+        }
+      ],
+      "nextPosition": 2,
+      "hasMore": false
+    }
   },
   "errors": {
     "t3_thread_list.noTarget": {
@@ -323,7 +1062,66 @@
       "code": "thread_credential_required",
       "message": "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread."
     },
-    "note": "Tool failures are returned as isError results whose single text content is the JSON shown here."
+    "schedule_task.noDefaultModel": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "invalid_request",
+      "message": "Project 87645971-d7fe-4ccd-ac98-5b79f318f9d8 has no default model, so this caller cannot pick one for it."
+    },
+    "schedule_task.noProject": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass projectId: this MCP client is not running inside a T3 thread."
+    },
+    "schedule_task.weekdaysNotIntegers": {
+      "code": -32602,
+      "message": "Invalid parameters for tool 'schedule_task': Expected number\n  at [\"schedule\"][\"weekdays\"][0]"
+    },
+    "create_threads.outsideThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "thread_credential_required",
+      "message": "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread."
+    },
+    "t3_thread_update.noThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass threadId: this MCP client is not running inside a T3 thread."
+    },
+    "t3_thread_update.renameWithoutTitle": {
+      "code": -32602,
+      "message": "Invalid parameters for tool 't3_thread_update': rename requires title; regenerate_title does not accept one."
+    },
+    "delete_scheduled_task.notFound": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "task_not_found",
+      "message": "Scheduled task scheduled-task:command:mcp:client%3Acfb7d4b7-a33e-4753-a711-8ad056a28cca:schedule-task:devspace-probe-3225126c-6aec-4835-bcfa-c2b887e92e53 was not found."
+    },
+    "run_scheduled_task_now.notFound": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "invalid_request",
+      "message": "The scheduled task was not found."
+    },
+    "t3_project_create.missingRoot": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "orchestration_error",
+      "message": "The operation could not be completed."
+    },
+    "t3_project_create.duplicateRoot": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "invalid_request",
+      "message": "The workspace is already registered to a project."
+    },
+    "t3_project_create.instanceIdMissing": {
+      "code": -32602,
+      "message": "Invalid parameters for tool 't3_project_create': Expected string\n  at [\"defaultModelSelection\"][\"instanceId\"]"
+    },
+    "t3_project_clone.nonEmpty": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "orchestration_error",
+      "message": "Destination path already exists and is not empty."
+    },
+    "scheduledRun.notGitRepository": "Workspace preparation failed during provision worktree: Git command failed in GitWorkflowService.resolveWorktreeBaseRemote (/tmp/devspace-t3-probe/sched): Failed to resolve the VCS driver for this Git command.",
+    "note": "Tool failures are returned as isError results whose single text content is the JSON shown here.",
+    "jsonRpcNote": "Entries shaped {code: -32602, message} are JSON-RPC errors (thrown; clients prefix the message with 'MCP error -32602: '), not isError results."
   },
   "http": {
     "noToken": {

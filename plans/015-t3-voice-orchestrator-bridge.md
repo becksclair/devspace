@@ -23,7 +23,7 @@
 - **Depends on**: none
 - **Category**: feature
 - **Planned at**: commit `bdd940c`, 2026-11-09
-- **Branch / worktree**: `bex/t3-bridge` at `/Users/rclair/projects/devspace-t3-bridge`
+- **Branch / worktree**: `bex/t3-bridge-phase2` at `/Users/rclair/projects/devspace-t3-bridge`
 
 ## Goal
 
@@ -55,7 +55,9 @@ push notifications and Live Activities remain the out-of-band alert path.
   tool to `destructiveHint: false` and `openWorldHint: false`, like DevSpace's
   exec tools; deployments on the `standard` profile keep the confirmation gates.
 - **D4 — Scope**: two phases. Phase 1 ships twelve tools and is validated end to
-  end, including a voice pass. Phase 2 adds the remaining orchestration tools.
+  end, including a voice pass. Phase 2 adds nine tools (21 in total): thread
+  renaming, model discovery, project creation, cloning, and defaults, and
+  scheduled tasks.
 - **Live suite runs**: blanket approval from the user for this feature's work.
 
 ## Verified T3 behavior
@@ -143,6 +145,53 @@ modes, and CLI output shapes).
 6. **Notifications.** T3 publishes agent activity to its mobile app through
    T3 Connect. There is no local inbox or event API on `/mcp`, and nothing can
    start a turn in a ChatGPT conversation from outside.
+7. **Phase 2 tools.** Probed on 2026-11-09 from an outside client with a
+   full-access token; probe threads were archived and probe projects deleted.
+   - `create_threads` (batch launch) is thread-bound: an outside client gets
+     `thread_credential_required`.
+   - `t3_thread_update`: `action: "rename"` with `title`, or
+     `"regenerate_title"`. Outside a thread it needs `threadId`.
+     `clientRequestId` makes it idempotent.
+   - `orchestrator_capabilities` works from outside: `providers` with
+     `providerInstanceId`, `displayName`, and `models` (`id` and options such
+     as effort). The list is short; `search` finds other models.
+   - `t3_project_create`: without `workspaceRoot`, T3 creates a git repository
+     at `~/.t3/projects/<title>` (README, icon, first commit). A missing
+     `workspaceRoot` without `createWorkspaceRootIfMissing` fails with an
+     opaque `orchestration_error`. A folder that is already registered is
+     rejected. `defaultModelSelection` is ignored on creation (it stays
+     `null`).
+   - `t3_project_clone`: a relative `destinationPath` resolves against T3's
+     working directory, the home folder (a probe cloned into
+     `~/relative-dest`). A non-empty destination fails.
+   - `t3_project_update` works from outside and leaves omitted fields
+     unchanged; `defaultModelSelection` is `{ instanceId, model }`. It also
+     accepts `archived`, `autoPull`, `defaultThreadEnvMode`, `faviconPath`,
+     `pinned`, `projectIcon`, `scripts`, and `workspaceRoot`.
+   - `t3_project_delete` keeps the folder on disk; a project with threads
+     needs `force: true`.
+   - Scheduled tasks work from outside a thread, with constraints:
+     - Creating one with `schedule_task` needs `projectId` (else
+       `target_required`) and a project default model (else `invalid_request`,
+       "Project … has no default model, so this caller cannot pick one for
+       it."). None of the owner's existing projects had one.
+     - Each run provisions a git worktree, so the project folder must be a git
+       repository; a non-git folder fails at once with "Workspace preparation
+       failed during provision worktree …".
+     - Each run starts a new thread in its own worktree under
+       `~/.t3/worktrees/<folder>/…`, with `runtimeMode: full-access` and the
+       project's default model. T3 records the model and runtime mode when
+       the task is created (`OrchestratorMcpService.ts` at that tag); updates
+       keep them, so changing the project default later does not change
+       existing tasks, and a task created in the T3 app keeps its own thread
+       binding and runtime mode when it is updated.
+     - `clientRequestId` makes creation idempotent (same `scheduledTaskId`).
+     - `list_scheduled_tasks` without `projectId` lists every project's tasks.
+     - `run_scheduled_task_now` takes `taskId` (the `scheduledTaskId`) and
+       also runs a disabled task.
+     - `delete_scheduled_task` on a missing task returns `task_not_found`.
+     - Webhook triggers exist; through T3 Connect they return a `webhookUrl`
+       that embeds its access token.
 
 ## Current state (DevSpace)
 
@@ -364,16 +413,38 @@ mode."
 
 ### Phase 2 tool surface
 
-Added after Phase 1 exits, with the same discipline:
+Nine tools, registered after the Phase 1 twelve in this order (21 in total).
+"Retried" means reconnected and retried once when the connection fails after
+the request was sent.
 
-| Tool | Shaping |
-|------|---------|
-| `schedule_task`, `list_scheduled_tasks`, `delete_scheduled_task`, `run_scheduled_task_now` | `bindToCurrentThread` removed and forced `false` |
-| `t3_thread_update` | `threadId` required |
-| `create_threads` | `runtimeMode: "full-access"` forced on every thread; `clientRequestId` added |
-| `t3_project_create`, `t3_project_clone` | Pass through; descriptions state where folders are created |
+| Tool | Shaping | Read-only | Retried |
+|------|---------|:---------:|:-------:|
+| `t3_thread_update` | `threadId` required; `clientRequestId` added if absent | no | yes (`clientRequestId`) |
+| `orchestrator_capabilities` | DevSpace's own description; result compacted to `{ providers: [{ providerInstanceId, displayName, models: [{ id, label?, options? }], constraints? }] }`, options as `{ id, values, default }`, non-empty `constraints` kept so disabled providers are not offered as usable | yes | yes (read) |
+| `t3_project_create` | only `title`, `workspaceRoot`, and `createWorkspaceRootIfMissing` exposed and forwarded (`defaultModelSelection` is ignored by T3 on creation; `scripts` stay out); `workspaceRoot` must be absolute or start with `~/` (expanded to the DevSpace user's home folder; other relative paths rejected); `createWorkspaceRootIfMissing` defaults to `true` when `workspaceRoot` is given | no | no |
+| `t3_project_clone` | `destinationPath` required, same path rule | no | no |
+| `t3_project_update` | Only `projectId`, `title`, and `defaultModelSelection` exposed and forwarded | no | yes (sets fields) |
+| `list_scheduled_tasks` | `webhookUrl` and `webhookSignature` removed from results | yes | yes (read) |
+| `schedule_task` | `bindToCurrentThread` removed; webhook triggers removed from the schema (`type` enum without `webhook`; `signature`, `maxDeliveryAgeMinutes`, `dedupe`, `filters` removed) and `type: "webhook"` rejected with "Webhook triggers are not available through DevSpace; set them up in the T3 Code app."; creation (no `scheduledTaskId`) forces `bindToCurrentThread: false` and adds `clientRequestId` if absent; updates change only the given fields; `webhookUrl` and `webhookSignature` removed from results | no | yes (creation carries `clientRequestId`; updates set fields) |
+| `run_scheduled_task_now` | — | no | no |
+| `delete_scheduled_task` | — | no | no |
 
-Project deletion stays out of the model-facing surface.
+- Descriptions follow "Descriptions": T3's own text with targeted rewrites
+  (in-thread phrasing removed; `list_scheduled_tasks` states that omitting
+  `projectId` lists every project; `schedule_task` drops its webhook
+  sentences), a DevSpace note where the shaping matters (path rule, default
+  model and git prerequisites, `taskId` is the `scheduledTaskId`), and the
+  shared guidance line.
+- Never exposed:
+  - `create_threads`: thread-bound (`thread_credential_required`). Several
+    threads are started with repeated `t3_thread_launch` calls, each with its
+    own project and model.
+  - `t3_project_delete`: deletion stays out of the model-facing surface; the
+    live harness deletes test projects through its own T3 client.
+  - Webhook triggers: a webhook URL accepts requests from anyone who holds it
+    and starts full-access agents with each request's content. DevSpace
+    callers can already start threads directly, so webhooks would add only a
+    persistent outside trigger.
 
 ## Implementation contract
 
@@ -384,7 +455,7 @@ Project deletion stays out of the model-facing surface.
 | `src/config.ts`, `src/user-config.ts` | done | `T3BridgeConfig`, `parseT3BridgeConfig` |
 | `src/t3-bridge.ts` | bridge builder | Runtime code only |
 | `src/testing/fake-t3.ts`, `src/testing/fake-t3-cli.mjs` | fake builder | Excluded from the build |
-| `src/testing/t3-scenarios.ts` | scenario builder | Shared S1–S7 |
+| `src/testing/t3-scenarios.ts` | scenario builder | Shared S1–S10 |
 | `src/server.ts` | integrator | Registration and injection only |
 | `src/mcp-bridge-utils.ts` | integrator | Exports `toolAnnotationsForProfile` (moved from `src/server.ts`) |
 | `src/t3-bridge.test.ts`, `src/t3-e2e.test.ts`, `src/t3-live.test.ts`, `src/config.test.ts` (t3 cases) | integrator | |
@@ -394,9 +465,9 @@ Project deletion stays out of the model-facing surface.
 
 ```ts
 export const T3_CAPABILITY = "t3";
-export const T3_FORWARDED_TOOLS: readonly string[]; // the 11 forwarded Phase 1 names
+export const T3_FORWARDED_TOOLS: readonly string[]; // every forwarded name (11 in Phase 1, 20 after Phase 2)
 export const T3_INBOX_TOOL = "t3_inbox";
-export const T3_TOOL_NAMES: readonly string[];      // forwarded + inbox, registration order as in the table
+export const T3_TOOL_NAMES: readonly string[];      // forwarded + inbox, registration order as in the tables
 export const T3_UNREACHABLE_MESSAGE = "T3 Code is not reachable on this machine.";
 export function t3SessionLabel(stateDir: string): string;
 export interface T3CliRunner { run(args: string[], signal?: AbortSignal): Promise<string> } // resolves stdout
@@ -423,7 +494,7 @@ export interface T3BridgeOptions {
 }
 export class T3Bridge {
   constructor(options: T3BridgeOptions);
-  toolDefinitions(): Promise<T3ToolDefinition[]>; // all 12, in T3_TOOL_NAMES order
+  toolDefinitions(): Promise<T3ToolDefinition[]>; // all tools (21 after Phase 2), in T3_TOOL_NAMES order
   call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult>;
   close(options?: { revoke?: boolean }): Promise<void>;
 }
@@ -511,7 +582,7 @@ export interface ScenarioContext {
 }
 export interface Scenario { id: string; title: string; targets: ScenarioTargetKind[]; run(ctx: ScenarioContext): Promise<Record<string, unknown>> }
 export const SCENARIO_PROMPTS: { reply(word: string): string; ask(q: string, a: string, b: string): string; sleep(seconds: number): string };
-export const SCENARIOS: Scenario[];      // S1–S7 per "Orchestrator scenarios"
+export const SCENARIOS: Scenario[];      // S1–S10 per "Orchestrator scenarios"
 export function runScenarios(ctx: ScenarioContext, ids?: string[]): Promise<Array<{ id: string; ok: boolean; error?: string; details?: Record<string, unknown> }>>;
 export function cleanupScenarioThreads(ctx: ScenarioContext): Promise<number>; // settle + archive every thread titled with ctx.stamp
 ```
@@ -583,6 +654,18 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 | B24 | The CLI child environment excludes configured secret names | ✓ | ✓ | | |
 | B25 | Settings validation: defaults, `~` expansion, `url` precedence, unknown keys and wrong types rejected | ✓ | | | |
 
+### Behavior matrix (Phase 2)
+
+| ID | Behavior | Unit | E2E | Live | Deployed |
+|----|----------|:----:|:---:|:----:|:--------:|
+| B26 | Exactly the 21 tools are exposed; `create_threads` and `t3_project_delete` never appear | ✓ | ✓ | ✓ | ✓ |
+| B27 | `schedule_task` shaping: no `bindToCurrentThread`, no webhook fields, and no `webhook` trigger type in the schema; `type: "webhook"` rejected; creation forced unbound with `clientRequestId`; updates (`scheduledTaskId`) get neither; `webhookUrl` and `webhookSignature` stripped from `schedule_task` and `list_scheduled_tasks` results | ✓ | ✓ | ✓ | |
+| B28 | `t3_thread_update` requires `threadId` and gets `clientRequestId`; a dropped response is retried once and renames once | ✓ | ✓ | | |
+| B29 | Path rules: `~/` expanded and relative paths rejected for `workspaceRoot` and `destinationPath`; `createWorkspaceRootIfMissing` defaults to `true` with `workspaceRoot`; `defaultModelSelection` and `scripts` removed from `t3_project_create` | ✓ | ✓ | ✓ | |
+| B30 | `t3_project_update` forwards only `projectId`, `title`, and `defaultModelSelection` | ✓ | ✓ | | |
+| B31 | `orchestrator_capabilities` returns the compact provider and model list | ✓ | ✓ | | |
+| B32 | Retry classification: `list_scheduled_tasks`, `orchestrator_capabilities`, `t3_project_update`, and `schedule_task` are retried once after a dropped response; `delete_scheduled_task`, `run_scheduled_task_now`, `t3_project_create`, and `t3_project_clone` are never retried after the request was sent | ✓ | ✓ | | |
+
 ### Orchestrator scenarios
 
 | ID | Scenario | E2E | Live | Deployed |
@@ -594,6 +677,14 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 | S5 | Agent asks a question → inbox `needsYou` → read and answer → thread finishes with the answer | ✓ | ✓ | |
 | S6 | Queue a message on a running turn → list, read, edit, cancel | ✓ | ✓ | |
 | S7 | Scratch thread lifecycle (`Reply with exactly OK`) with the result visible in the inbox and a preview | ✓ | ✓ | ✓ |
+| S8 | Rename a scratch thread, then regenerate its title | ✓ | ✓ | ✓ |
+| S9 | Clone a small public repository into a temporary folder, register it as a project, pick a model from `orchestrator_capabilities`, and set it as the project default | ✓ | ✓ | ✓ |
+| S10 | In S9's project, schedule a far-future one-time task, list it, run it now, confirm the run thread is `full-access` and replies, delete the task, and confirm it is gone | ✓ | ✓ | ✓ |
+
+The live and deployed harnesses remove the S9 project through their own direct
+T3 client (`t3_project_delete`; deletion is never exposed through DevSpace),
+then delete its folder and the S10 run worktrees. The deployed suite runs S9
+and S10 because it runs on the same machine as the deployed gateway.
 
 ### Outside the suites
 
@@ -615,7 +706,8 @@ Tight and task-oriented; no duplicated reference material.
 
 ## Git workflow
 
-- Branch `bex/t3-bridge` in the worktree `/Users/rclair/projects/devspace-t3-bridge`.
+- Worktree `/Users/rclair/projects/devspace-t3-bridge`: branch `bex/t3-bridge`
+  for Phase 1, `bex/t3-bridge-phase2` for Phase 2.
 - Never run `bun run build:check`, `bun run build`, or `bun run rebuild:local`
   in `/Users/rclair/projects/devspace` during development.
 
@@ -648,23 +740,36 @@ Tight and task-oriented; no duplicated reference material.
 
 ## Phase 2 steps
 
-1. Re-run the live contract assertions for the Phase 2 tools.
-2. Extend the fake, allowlist, shaping, and descriptions.
-3. Extend the matrix and scenarios: schedule a far-future task, list it, run
-   it now, delete it; rename and regenerate a scratch thread title;
-   batch-launch two scratch threads and confirm both run `full-access`; create
-   a project in a temporary folder and clone a small public repository. The
-   live harness removes test projects and folders through its own direct T3
-   client; deletion is never exposed through DevSpace.
-4. Update `docs/t3-code.md` and the README subsection.
+1. **Probes** (done 2026-11-09): live probes of the Phase 2 tools from an
+   outside client ("Verified T3 behavior" item 7). `create_threads` is
+   thread-bound, so batch launch was dropped. Scheduled tasks need
+   `projectId`, a project default model, and a git repository, so
+   `t3_project_update` and `orchestrator_capabilities` were added.
+2. Extend the fake (and its captured fixtures), allowlist, shaping, and
+   descriptions per "Phase 2 tool surface".
+3. Extend the suites with B26–B32 and S8–S10, and the live contract
+   assertions to the Phase 2 tools.
+4. Update `docs/t3-code.md`, the README subsection, and `docs/security.md`.
 5. Repeat steps 4–10 of Phase 1 for the Phase 2 tools.
+
+### Phase 2 exit criteria
+
+- Unit, end-to-end (both modes), live, and deployed suites pass, including
+  B26–B32 and S8–S10.
+- ChatGPT text acceptance and the user's voice pass succeed for the Phase 2
+  tools.
+- Documentation ships with the change.
 
 ## Done criteria
 
 - Phase 1 and Phase 2 exit criteria met.
-- Threads started through the bridge always run with `runtimeMode: full-access`.
+- Threads started through the bridge, and scheduled-task runs, always run with
+  `runtimeMode: full-access`.
 - Restarts leave at most one live session per DevSpace instance label in T3.
-- No secret value appears in DevSpace logs or tool results.
+- No secret value, including a scheduled task's webhook URL, appears in
+  DevSpace logs or tool results.
+- Live and deployed runs leave no test project, folder, worktree, or scheduled
+  task behind.
 
 ## STOP conditions
 

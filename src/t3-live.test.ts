@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -50,8 +50,11 @@ const SCENARIO_TIMEOUT_MS = 5 * 60_000;
 const WAIT_SLICE_MS = 25_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 const DEVSPACE_ACCESS_TOKEN = `t3-live-${randomBytes(24).toString("base64url")}`;
-const LOCAL_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7"];
-const DEPLOYED_SCENARIOS = ["S1", "S2", "S3", "S7"];
+const LOCAL_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10"];
+// The deployed gateway runs on this machine, so S9 and S10 can clone into a local folder.
+const DEPLOYED_SCENARIOS = ["S1", "S2", "S3", "S7", "S8", "S9", "S10"];
+/** Where T3 keeps worktrees for project threads (scheduled runs create them). */
+const T3_WORKTREES_DIR = join(homedir(), ".t3", "worktrees");
 // Row keys real T3 includes only for some threads.
 const OPTIONAL_ROW_KEYS = new Set(["branch"]);
 /** The deployed suite's DevSpace OAuth client and refresh token (directory 0700, file 0600; never printed). */
@@ -98,7 +101,34 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
   t3_pending_request: { environmentId: "string", action: "string", threadId: "string", requestId: "string", answers: "object" },
   t3_thread_organize: { environmentId: "string", threadId: "string", action: "string", snoozedUntil: "string" },
   t3_queue: { environmentId: "string", action: "string", threadId: "string", queuedRunId: "string", text: "string" },
+  t3_thread_update: { environmentId: "string", threadId: "string", action: "string", title: "string", clientRequestId: "string" },
+  orchestrator_capabilities: { environmentId: "string", search: "string" },
+  t3_project_create: {
+    environmentId: "string",
+    title: "string",
+    workspaceRoot: "string",
+    createWorkspaceRootIfMissing: "boolean",
+    defaultModelSelection: "object",
+  },
+  t3_project_clone: { environmentId: "string", destinationPath: "string", remoteUrl: "string", provider: "string", repository: "string" },
+  t3_project_update: { environmentId: "string", projectId: "string", title: "string", defaultModelSelection: "object" },
+  list_scheduled_tasks: { environmentId: "string", projectId: "string" },
+  schedule_task: {
+    environmentId: "string",
+    projectId: "string",
+    prompt: "string",
+    schedule: "object",
+    title: "string",
+    enabled: "boolean",
+    bindToCurrentThread: "boolean",
+    clientRequestId: "string",
+    scheduledTaskId: "string",
+  },
+  run_scheduled_task_now: { environmentId: "string", taskId: "string" },
+  delete_scheduled_task: { environmentId: "string", scheduledTaskId: "string" },
 };
+/** `schedule` fields the bridge removes (webhook triggers); T3 must still call them this. */
+const WEBHOOK_SCHEDULE_FIELDS = ["signature", "maxDeliveryAgeMinutes", "dedupe", "filters"];
 const REQUIRED_ENUM_VALUES: Record<string, string[]> = {
   "t3_thread_launch.runtimeMode": ["full-access"],
   "t3_thread_read.view": ["messages"],
@@ -106,6 +136,7 @@ const REQUIRED_ENUM_VALUES: Record<string, string[]> = {
   "t3_pending_request.action": ["list", "read", "respond"],
   "t3_thread_organize.action": ["settle", "archive"],
   "t3_queue.action": ["list", "read", "edit", "cancel"],
+  "t3_thread_update.action": ["rename", "regenerate_title"],
 };
 /** Fields the bridge reads from T3's results; every real result must carry them. */
 const BRIDGE_READS = {
@@ -118,12 +149,23 @@ const BRIDGE_READS = {
   projectRow: ["id", "title", "workspaceRoot"],
   waitResult: ["threadId", "runId", "status", "timedOut"],
   launchResult: ["threadId", "link", "runId"],
+  projectRecord: ["id", "title", "workspaceRoot", "defaultModelSelection"],
+  scheduledTask: ["scheduledTaskId", "title", "projectId", "boundThreadId", "enabled", "nextRunAt", "lastRunStatus"],
+  capabilityProvider: ["providerInstanceId", "displayName", "models"],
+  capabilityModel: ["id"],
 };
 const ERROR_CASES: Array<{ tool: string; args: Json; code: string }> = [
   { tool: "t3_thread_list", args: {}, code: "target_required" },
   { tool: "t3_pending_request", args: { action: "list" }, code: "target_required" },
   { tool: "t3_thread_organize", args: { action: "settle" }, code: "target_required" },
   { tool: "task_status", args: { taskId: "devspace-contract-probe" }, code: "thread_credential_required" },
+  { tool: "create_threads", args: { threads: [{ prompt: "Reply with exactly OK" }] }, code: "thread_credential_required" },
+  { tool: "t3_thread_update", args: { action: "rename", title: "DevSpace contract probe" }, code: "target_required" },
+  {
+    tool: "schedule_task",
+    args: { prompt: "Reply with exactly OK", schedule: { type: "once", runAt: new Date(Date.now() + 300 * 86_400_000).toISOString() } },
+    code: "target_required",
+  },
 ];
 
 class LiveFailure extends Error {}
@@ -452,6 +494,7 @@ async function contractAssertions(options: {
   fake: FakeT3;
   fakeToken: string;
   stamp: string;
+  workDir: string;
 }): Promise<string | undefined> {
   const { realCall, fakeCall, stamp } = options;
   let contractThreadId: string | undefined;
@@ -508,7 +551,116 @@ async function contractAssertions(options: {
     contractThreadId = undefined;
   });
 
+  await check("contract: Phase 2 schemas and result shapes (projects, scheduled tasks, models)", async () => {
+    await phase2Contract(options.realClient, options.fakeClient, realCall, fakeCall, stamp, options.workDir, options.fake);
+  });
+
   return contractThreadId;
+}
+
+/**
+ * Phase 2 facts the bridge relies on, checked against T3 and the fake: the webhook fields the bridge
+ * strips, the default model T3 ignores on create, the webhook URL key it removes from results, and
+ * the capability and scheduled-task fields it reads.
+ */
+async function phase2Contract(
+  realClient: Client,
+  fakeClient: Client,
+  realCall: T3Call,
+  fakeCall: T3Call,
+  stamp: string,
+  workDir: string,
+  fake: FakeT3,
+): Promise<void> {
+  for (const [what, client] of [["T3", realClient], ["the snapshot", fakeClient]] as const) {
+    const tool = (await listAllTools(client)).find((entry) => entry.name === "schedule_task");
+    const schedule = tool?.inputSchema.properties?.schedule as Json | undefined;
+    const fields = isRecord(schedule?.properties) ? schedule.properties : {};
+    for (const key of WEBHOOK_SCHEDULE_FIELDS) assert.ok(key in fields, `schedule_task schedule.${key} exists in ${what}`);
+    assert.deepEqual(((fields.type ?? {}) as Json).enum, ["interval", "fixed_time", "once", "webhook"], `schedule types in ${what}`);
+  }
+
+  const model = LIVE_MODEL;
+  const samples: Partial<Record<"real" | "fake", { project: Json; updated: Json; task: Json; listing: Json; capabilities: Json }>> = {};
+  for (const [side, call, root] of [
+    ["real", realCall, join(workDir, `contract-${stamp}`)],
+    ["fake", fakeCall, join(fake.home, `contract-${stamp}`)],
+  ] as const) {
+    const project = await ok(call, "t3_project_create", {
+      title: `DevSpace bridge check ${stamp} contract project`,
+      workspaceRoot: root,
+      createWorkspaceRootIfMissing: true,
+      defaultModelSelection: model,
+    });
+    try {
+      assert.equal(project.defaultModelSelection, null, `${side}: T3 ignores defaultModelSelection on create (if this fails, T3 fixed it; expose it again)`);
+      const updated = await ok(call, "t3_project_update", { projectId: project.id, defaultModelSelection: model });
+      assert.deepEqual(updated.defaultModelSelection, model, `${side}: t3_project_update sets the default model`);
+      const task = await ok(call, "schedule_task", {
+        projectId: project.id,
+        title: `DevSpace bridge check ${stamp} contract webhook`,
+        prompt: "Reply with exactly OK",
+        schedule: { type: "webhook" },
+        bindToCurrentThread: false,
+        enabled: false,
+      });
+      const listing = await ok(call, "list_scheduled_tasks", { projectId: project.id });
+      assert.deepEqual(await ok(call, "delete_scheduled_task", { scheduledTaskId: task.scheduledTaskId }), { scheduledTaskId: task.scheduledTaskId, deleted: true });
+      const capabilities = await ok(call, "orchestrator_capabilities", {});
+      samples[side] = { project, updated, task, listing, capabilities };
+    } finally {
+      await call("t3_project_delete", { projectId: project.id, force: true });
+    }
+  }
+  const real = samples.real!;
+  const fakeSample = samples.fake!;
+  if (typeof real.task.webhookUrl === "string") {
+    assert.ok("webhookSignature" in real.task, "a webhook task result carries webhookSignature");
+    assert.ok(records(real.listing.tasks).some((entry) => typeof entry.webhookUrl === "string"), "list_scheduled_tasks returns webhookUrl");
+  } else {
+    notes.push("T3 returned no webhookUrl (T3 Connect remote access is off); the webhook field names were not checked");
+  }
+  compareKeys("project records", [real.project, real.updated], [fakeSample.project, fakeSample.updated], BRIDGE_READS.projectRecord);
+  compareKeys("scheduled tasks", [real.task], [fakeSample.task], BRIDGE_READS.scheduledTask);
+  compareKeys("scheduled task listing", [real.listing], [fakeSample.listing], ["tasks"]);
+  compareKeys("capabilities", [real.capabilities], [fakeSample.capabilities], ["providers"]);
+  const realProviders = records(real.capabilities.providers);
+  const fakeProviders = records(fakeSample.capabilities.providers);
+  compareKeys("capability providers", realProviders, fakeProviders, BRIDGE_READS.capabilityProvider);
+  compareKeys("capability models", realProviders.flatMap((entry) => records(entry.models)), fakeProviders.flatMap((entry) => records(entry.models)), BRIDGE_READS.capabilityModel);
+  const claude = realProviders.find((entry) => entry.providerInstanceId === model.instanceId);
+  assert.ok(claude && records(claude.models).some((entry) => entry.id === model.model), `T3 lists ${model.instanceId}/${model.model}`);
+}
+
+/**
+ * Deletes every T3 project titled with the stamp (through a direct T3 client: DevSpace never
+ * exposes deletion), removes the scenario folders and the stamp's worktrees, and confirms that no
+ * project, scheduled task, or worktree carrying the stamp is left.
+ */
+async function cleanupStampedProjects(direct: T3Call, stamp: string, workDir: string | undefined): Promise<void> {
+  const stampedTasks = async (): Promise<Json[]> =>
+    records((await ok(direct, "list_scheduled_tasks", {})).tasks).filter((task) => String(task.title ?? "").includes(stamp));
+  const tasks = await stampedTasks();
+  for (const task of tasks) await ok(direct, "delete_scheduled_task", { scheduledTaskId: task.scheduledTaskId });
+  if (tasks.length > 0) notes.push(`cleanup deleted ${tasks.length} leftover scheduled task(s)`);
+  const stampedProjects = async (): Promise<Json[]> => {
+    const found: Json[] = [];
+    let cursor: unknown = undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const listing = await ok(direct, "t3_project_list", { limit: 100, ...(typeof cursor === "number" ? { cursor } : {}) });
+      found.push(...records(listing.projects).filter((project) => String(project.title).includes(stamp)));
+      cursor = listing.nextCursor;
+      if (typeof cursor !== "number") break;
+    }
+    return found;
+  };
+  for (const project of await stampedProjects()) await ok(direct, "t3_project_delete", { projectId: project.id, force: true });
+  if (workDir) await rm(workDir, { recursive: true, force: true });
+  const stampedWorktrees = async (): Promise<string[]> => (await readdir(T3_WORKTREES_DIR).catch(() => [] as string[])).filter((entry) => entry.includes(stamp));
+  for (const entry of await stampedWorktrees()) await rm(join(T3_WORKTREES_DIR, entry), { recursive: true, force: true });
+  assert.deepEqual((await stampedProjects()).map((project) => project.title), [], "no project carries the stamp");
+  assert.deepEqual(await stampedWorktrees(), [], "no worktree carries the stamp");
+  assert.deepEqual((await stampedTasks()).map((task) => task.title), [], "no scheduled task carries the stamp");
 }
 
 function checkCliShapes(log: CliRecord[], fakeLog: CliRecord[]): void {
@@ -642,6 +794,8 @@ async function runLocal(stamp: string): Promise<void> {
   const fakeProvider = createT3TokenProvider({ runner: fakeRunner, resolveOrigin: async () => fake.origin, label: harnessLabel });
 
   const stateDir = await mkdtemp(join(tmpdir(), "devspace-t3-live-"));
+  // S9, S10, and the Phase 2 contract clone and create project folders here.
+  const workDir = await mkdtemp(join(tmpdir(), "devspace-t3-live-work-"));
   const config = localConfig(stateDir, settings);
   const label = t3SessionLabel(stateDir);
   const bridgeProviders: T3TokenProvider[] = [];
@@ -712,6 +866,7 @@ async function runLocal(stamp: string): Promise<void> {
       fake,
       fakeToken,
       stamp,
+      workDir,
     });
 
     // The chain: MCP client → in-process DevSpace → bridge → real T3.
@@ -724,7 +879,7 @@ async function runLocal(stamp: string): Promise<void> {
     recordResults(client, outputs);
     const call = devspaceCaller(client);
 
-    await check("B1/B2/B3/B12/B17: DevSpace exposes exactly the twelve tools with trimmed schemas and real descriptions", async () => {
+    await check("B1/B2/B3/B12/B17/B26: DevSpace exposes exactly the DevSpace T3 tools with trimmed schemas and real descriptions", async () => {
       const baseline = await toolNames(endpoint, DEVSPACE_ACCESS_TOKEN, { "x-disabled-capabilities": "t3" });
       for (const name of T3_TOOL_NAMES) assert.ok(!baseline.includes(name), `${name} is hidden when the session disables t3`);
       checkCatalog((await listAllTools(client!)) as CatalogTool[], { baseline: new Set(baseline) });
@@ -754,7 +909,7 @@ async function runLocal(stamp: string): Promise<void> {
       for (const project of projects) assert.deepEqual(Object.keys(project).sort(), ["projectId", "title", "workspaceRoot"]);
     });
 
-    ctx = { kind: "live", client, stamp, projectName: LIVE_PROJECT, modelSelection: LIVE_MODEL, timeoutMs: SCENARIO_TIMEOUT_MS };
+    ctx = { kind: "live", client, stamp, projectName: LIVE_PROJECT, modelSelection: LIVE_MODEL, timeoutMs: SCENARIO_TIMEOUT_MS, workDir };
     scenarioReport(await runScenarios(ctx, LOCAL_SCENARIOS));
 
     await check("cleanup: every thread titled with the stamp is archived", async () => {
@@ -782,6 +937,10 @@ async function runLocal(stamp: string): Promise<void> {
   } finally {
     consoleCapture.restore();
     if (!threadsCleaned) await check("cleanup: every thread titled with the stamp is archived", archiveStampedThreads);
+    await check("cleanup: no project, folder, worktree, or scheduled task carrying the stamp remains", async () => {
+      if (harness) await cleanupStampedProjects(directCaller(harness), stamp, workDir);
+      else await rm(workDir, { recursive: true, force: true });
+    });
     await client?.close().catch(() => undefined);
     running.close?.();
     if (httpServer) {
@@ -960,15 +1119,35 @@ async function runDeployed(stamp: string): Promise<void> {
   if (!publicBaseUrl) fail(`No publicBaseUrl in ${files.configPath} (or DEVSPACE_PUBLIC_BASE_URL).`);
   const ownerToken = process.env.DEVSPACE_OAUTH_OWNER_TOKEN ?? files.auth.ownerToken ?? undefined;
 
+  // Check T3 first: a failed check then leaves no DevSpace access token to revoke.
+  const settings = parseT3BridgeConfig({ enabled: true });
+  const origin = await preflight(settings);
   const credential = await deployedCredential(publicBaseUrl, ownerToken, files.authPath);
   progress(
     `DevSpace OAuth client ${credential.reused ? "reused" : "newly minted"}${credential.refreshExpiresAt ? `; refresh token expires ${credential.refreshExpiresAt}` : ""}`,
   );
   const accessToken = credential.accessToken;
   const endpoint = new URL("/mcp", publicBaseUrl).href;
+  // The gateway runs on this machine: a direct T3 client removes the projects S9 and S10 create
+  // (DevSpace never exposes deletion), and the scenarios clone into a local folder.
+  const runner = createT3CliRunner(settings.cliPath, []);
+  const harnessLabel = `devspace-t3-deployed-harness:${stamp}`;
+  const harnessProvider = createT3TokenProvider({ runner, resolveOrigin: createT3OriginResolver(settings), label: harnessLabel });
+  const workDir = await mkdtemp(join(tmpdir(), "devspace-t3-deployed-work-"));
+  let harness: Client | undefined;
   try {
-    await runDeployedChecks(endpoint, accessToken, stamp);
+    harness = await connectMcp(`${origin}/mcp`, await harnessProvider.getToken());
+    await runDeployedChecks(endpoint, accessToken, stamp, workDir);
   } finally {
+    await check("cleanup: no project, folder, worktree, or scheduled task carrying the stamp remains", async () => {
+      if (harness) await cleanupStampedProjects(directCaller(harness), stamp, workDir);
+      else await rm(workDir, { recursive: true, force: true });
+    });
+    await harness?.close().catch(() => undefined);
+    await check("cleanup: revoke the harness's T3 sessions", async () => {
+      await harnessProvider.revokeOwnSessions();
+      assert.equal((await cliSessions(runner, harnessLabel)).length, 0, "harness label");
+    });
     // Also runs when the MCP connection itself failed, so no run leaves its access token valid.
     await check("cleanup: revoke the DevSpace access token (the cached refresh token is kept)", async () => {
       if (!(await credential.revoke())) notes.push("DevSpace advertises no revocation endpoint; the access token expires on its own");
@@ -976,16 +1155,16 @@ async function runDeployed(stamp: string): Promise<void> {
   }
 }
 
-async function runDeployedChecks(endpoint: string, accessToken: string, stamp: string): Promise<void> {
+async function runDeployedChecks(endpoint: string, accessToken: string, stamp: string, workDir: string): Promise<void> {
   const client = await connectMcp(endpoint, accessToken);
   const call = devspaceCaller(client);
   const kind: ScenarioTargetKind = "deployed";
-  const ctx: ScenarioContext = { kind, client, stamp, projectName: LIVE_PROJECT, modelSelection: LIVE_MODEL, timeoutMs: SCENARIO_TIMEOUT_MS };
+  const ctx: ScenarioContext = { kind, client, stamp, projectName: LIVE_PROJECT, modelSelection: LIVE_MODEL, timeoutMs: SCENARIO_TIMEOUT_MS, workDir };
   try {
     const probe = await call("t3_project_list", { limit: 1 });
     if (probe.isError) fail(`The deployed gateway cannot use T3 Code: ${resultText(probe)}`);
 
-    await check("B2/B3/B12/B17: the deployed gateway exposes exactly the twelve tools", async () => {
+    await check("B2/B3/B12/B17/B26: the deployed gateway exposes exactly the DevSpace T3 tools", async () => {
       const baseline = await toolNames(endpoint, accessToken, { "x-disabled-capabilities": "t3" });
       checkCatalog((await listAllTools(client)) as CatalogTool[], { baseline: new Set(baseline) });
     });
