@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,8 +9,8 @@ import { LocalExecutor } from "./executor.js";
 
 const execFileAsync = promisify(execFile);
 // tmux.sock under macOS's per-user tmpdir exceeds the 104-byte Unix socket
-// path limit, so use the shorter /tmp there; canonicalize because /tmp is a symlink.
-const root = await realpath(await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "devspace-lifecycle-test-")));
+// path limit, so use the shorter /tmp there.
+const root = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "devspace-lifecycle-test-"));
 const source = join(root, "source");
 const state = join(root, "state");
 await mkdir(source);
