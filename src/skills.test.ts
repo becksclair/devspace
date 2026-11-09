@@ -127,6 +127,8 @@ try {
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     DEVSPACE_LOG_LEVEL: "silent",
     DEVSPACE_TERMINAL_USER_SYSTEMD: "0",
+    // The MCP initialize check below must not depend on a built dist/ui manifest.
+    DEVSPACE_WIDGETS: "off",
     PORT: "1",
   });
   const autoloadExecutor = new LocalExecutor({ config: autoloadConfig });
