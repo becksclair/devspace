@@ -60,6 +60,8 @@ const OPTIONAL_ROW_KEYS = new Set(["branch"]);
 /** The deployed suite's DevSpace OAuth client and refresh token (directory 0700, file 0600; never printed). */
 const DEPLOYED_OAUTH_CACHE = join(homedir(), ".local", "state", "devspace", "t3-deployed-check.json");
 const DEPLOYED_OAUTH_TIMEOUT_MS = 15_000;
+/** How long the deployed suite waits for a freshly restarted gateway to serve T3's live tool schemas. */
+const LIVE_CATALOG_WAIT_MS = 90_000;
 
 /** Input properties (and their JSON types) the bridge sets, reads, or removes, per forwarded tool. */
 const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
@@ -1155,7 +1157,29 @@ async function runDeployed(stamp: string): Promise<void> {
   }
 }
 
+/**
+ * Right after a gateway restart, MCP sessions get the bridge's fallback schemas until the bridge has
+ * loaded T3's catalog (its first load mints a T3 credential). The deployed suite usually runs right
+ * after a deployment, so it waits until a fresh session lists the live schemas.
+ */
+async function waitForLiveCatalog(endpoint: string, accessToken: string): Promise<void> {
+  const deadline = Date.now() + LIVE_CATALOG_WAIT_MS;
+  for (;;) {
+    const probe = await connectMcp(endpoint, accessToken);
+    try {
+      const launch = (await listAllTools(probe)).find((tool) => tool.name === "t3_thread_launch");
+      const properties = launch?.inputSchema.properties;
+      if (isRecord(properties) && "message" in properties) return;
+    } finally {
+      await probe.close().catch(() => undefined);
+    }
+    if (Date.now() > deadline) fail(`The deployed gateway did not serve T3's live tool schemas within ${LIVE_CATALOG_WAIT_MS / 1000} s.`);
+    await delay(3_000);
+  }
+}
+
 async function runDeployedChecks(endpoint: string, accessToken: string, stamp: string, workDir: string): Promise<void> {
+  await waitForLiveCatalog(endpoint, accessToken);
   const client = await connectMcp(endpoint, accessToken);
   const call = devspaceCaller(client);
   const kind: ScenarioTargetKind = "deployed";
