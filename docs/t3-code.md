@@ -65,10 +65,10 @@ Thread list rows, search matches, read results, inbox items, and launch and send
 T3 runs scheduled tasks itself; the bridge creates, updates, lists, runs, and deletes them. Creating a task needs:
 
 - **`projectId`.** Without it T3 returns `target_required`.
-- **A project default model.** T3 starts every run with it. Pick a model with `orchestrator_capabilities` and set it with `t3_project_update`; T3 ignores a default model given at project creation.
+- **A project default model.** T3 records it when the task is created and starts every run with that model; changing the project default later does not change existing tasks. Pick a model with `orchestrator_capabilities` and set it with `t3_project_update`; T3 ignores a default model given at project creation.
 - **A git repository.** Each run gets its own git worktree, so the project folder must be a repository. A project created without `workspaceRoot` is one.
 
-Each run starts a new thread (unless the task sets `freshSession`, when runs share the thread the first run made) in `full-access` mode with the project's default model, in a worktree under `~/.t3/worktrees/<folder>/`. Tasks created through DevSpace are never bound to a calling thread, and their creation carries a `clientRequestId`, so a retried creation returns the same `scheduledTaskId`. An update (`scheduledTaskId` given) changes only the fields it names. `run_scheduled_task_now` also runs a disabled task.
+Each run of a task created through DevSpace starts a new thread (unless the task sets `freshSession`, when runs share the thread the first run made) in `full-access` mode with the model recorded at creation, in a worktree under `~/.t3/worktrees/<folder>/`. Tasks created through DevSpace are never bound to a calling thread, and their creation carries a `clientRequestId`, so a retried creation returns the same `scheduledTaskId`. An update (`scheduledTaskId` given) changes only the fields it names. `run_scheduled_task_now` also runs a disabled task. A task created in the T3 app keeps its own thread binding, runtime mode, and model when DevSpace updates it.
 
 ## Setup
 

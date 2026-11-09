@@ -180,7 +180,11 @@ modes, and CLI output shapes).
        failed during provision worktree …".
      - Each run starts a new thread in its own worktree under
        `~/.t3/worktrees/<folder>/…`, with `runtimeMode: full-access` and the
-       project's default model.
+       project's default model. T3 records the model and runtime mode when
+       the task is created (`OrchestratorMcpService.ts` at that tag); updates
+       keep them, so changing the project default later does not change
+       existing tasks, and a task created in the T3 app keeps its own thread
+       binding and runtime mode when it is updated.
      - `clientRequestId` makes creation idempotent (same `scheduledTaskId`).
      - `list_scheduled_tasks` without `projectId` lists every project's tasks.
      - `run_scheduled_task_now` takes `taskId` (the `scheduledTaskId`) and

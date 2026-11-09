@@ -1119,6 +1119,9 @@ async function runDeployed(stamp: string): Promise<void> {
   if (!publicBaseUrl) fail(`No publicBaseUrl in ${files.configPath} (or DEVSPACE_PUBLIC_BASE_URL).`);
   const ownerToken = process.env.DEVSPACE_OAUTH_OWNER_TOKEN ?? files.auth.ownerToken ?? undefined;
 
+  // Check T3 first: a failed check then leaves no DevSpace access token to revoke.
+  const settings = parseT3BridgeConfig({ enabled: true });
+  const origin = await preflight(settings);
   const credential = await deployedCredential(publicBaseUrl, ownerToken, files.authPath);
   progress(
     `DevSpace OAuth client ${credential.reused ? "reused" : "newly minted"}${credential.refreshExpiresAt ? `; refresh token expires ${credential.refreshExpiresAt}` : ""}`,
@@ -1127,8 +1130,6 @@ async function runDeployed(stamp: string): Promise<void> {
   const endpoint = new URL("/mcp", publicBaseUrl).href;
   // The gateway runs on this machine: a direct T3 client removes the projects S9 and S10 create
   // (DevSpace never exposes deletion), and the scenarios clone into a local folder.
-  const settings = parseT3BridgeConfig({ enabled: true });
-  const origin = await preflight(settings);
   const runner = createT3CliRunner(settings.cliPath, []);
   const harnessLabel = `devspace-t3-deployed-harness:${stamp}`;
   const harnessProvider = createT3TokenProvider({ runner, resolveOrigin: createT3OriginResolver(settings), label: harnessLabel });
