@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { LocalExecutor } from "./executor.js";
 
-const root = await mkdtemp(join(tmpdir(), "devspace-executor-policy-test-"));
+// Canonicalize so expected paths match where tmpdir is a symlink (macOS /var -> /private/var).
+const root = await realpath(await mkdtemp(join(tmpdir(), "devspace-executor-policy-test-")));
 try {
   const project = join(root, "project");
   const external = join(root, "external");

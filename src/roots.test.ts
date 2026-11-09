@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -22,7 +22,8 @@ assert.equal(assertAllowedPath("~/personal/devspace", [join(home, "personal")]),
 assert.equal(assertAllowedPath("~/personal/devspace", ["~/personal"]), resolve(home, "personal", "devspace"));
 assert.equal(resolveAllowedPath("~/file.txt", "/workspace", ["/workspace"]), resolve("/workspace", "~/file.txt"));
 
-const root = await mkdtemp(join(tmpdir(), "devspace-roots-test-"));
+// Canonicalize so expected paths match where tmpdir is a symlink (macOS /var -> /private/var).
+const root = await realpath(await mkdtemp(join(tmpdir(), "devspace-roots-test-")));
 try {
   const projects = join(root, "pool", "projects");
   const alias = join(root, "home", "projects");

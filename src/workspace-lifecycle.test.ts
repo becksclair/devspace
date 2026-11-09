@@ -8,7 +8,9 @@ import { loadConfig } from "./config.js";
 import { LocalExecutor } from "./executor.js";
 
 const execFileAsync = promisify(execFile);
-const root = await mkdtemp(join(tmpdir(), "devspace-lifecycle-test-"));
+// tmux.sock under macOS's per-user tmpdir exceeds the 104-byte Unix socket
+// path limit, so use the shorter /tmp there.
+const root = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "devspace-lifecycle-test-"));
 const source = join(root, "source");
 const state = join(root, "state");
 await mkdir(source);
