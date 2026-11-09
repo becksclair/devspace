@@ -136,6 +136,23 @@ DevSpace gives ChatGPT tools to:
 - discover local agent skills from your skill folders
 - show tool cards and optional change summaries in ChatGPT Apps-compatible hosts
 
+### Orchestrate T3 Code
+
+When T3 Code runs on the same machine, DevSpace can also let ChatGPT
+orchestrate it: find projects and threads by name, start full-access coding
+threads, steer, interrupt, and read them, answer agent questions, and check an
+inbox of threads that need you or have finished. It is built for ChatGPT voice
+mode on a phone, and the thread links it returns open the work in the T3 Code
+app. The bridge is off by default; enable it in `~/.devspace/config.json` and
+restart DevSpace:
+
+```json
+{ "t3": { "enabled": true } }
+```
+
+See [T3 Code orchestration](docs/t3-code.md) for how it works, setup, usage,
+and the security implications.
+
 ## Mental Model
 
 DevSpace is remote access to selected local folders and, when enabled by host policy, a persistent engineering terminal.
@@ -178,6 +195,7 @@ devspace doctor
 - [Svartal gateway with an Asgard node](docs/svartal-gateway.md)
 - [Earlier Asgard gateway and return to Saga](docs/asgard-gateway.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
+- [T3 Code orchestration](docs/t3-code.md)
 - [Configuration Reference](docs/configuration.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)

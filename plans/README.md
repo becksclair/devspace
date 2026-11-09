@@ -20,6 +20,7 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 012  | Recover from node restarts immediately, and stop one caller's cancellation from failing shared hellos | P1 | S | — | DONE |
 | 013  | Key OAuth rate limits on the real client when DevSpace sits behind a local tunnel | P1 | S | 008 | DONE |
 | 014  | Turn AGENTS.md into an accurate operating guide and add CLAUDE.md | P2 | S | — | DONE |
+| 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (two phases) | P1 | M + S | — | IN PROGRESS (Phase 1) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
 

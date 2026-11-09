@@ -69,6 +69,32 @@ Both Svartal LaunchAgents are running. Asgard’s private node is enabled and ac
 
 Disposable proof files are absent on both machines. The two OAuth registrations named `Svartal migration verification` and their four tokens were removed after acceptance. The real ChatGPT registration, migrated workspace bindings and original source state were retained. Migration rollback backup copies were subsequently removed on both hosts at the operator’s request. The verification script was removed and its browser tab closed. Screenshots remain under `~/.codex/visualizations/2026/11/08/devspace/`, and the verification conversation remains in ChatGPT history.
 
+## T3 Code bridge
+
+The [T3 Code bridge](t3-code.md) runs in the gateway process and reaches T3 Code on Svartal at `http://127.0.0.1:3773`. It is off until enabled. The gateway reads its settings through the `role-config-source/config.json` link to `~/.devspace/config.json`.
+
+To enable it:
+
+1. In `~/projects/devspace`, save the current `dist` for rollback, update to a revision that includes the bridge, and run `bun run build:check`.
+2. Add `"t3": { "enabled": true }` to `~/.devspace/config.json`.
+3. Restart the gateway and check health:
+
+   ```bash
+   launchctl kickstart -k gui/$(id -u)/com.rclair.devspace-gateway
+   curl -fsS http://127.0.0.1:7679/healthz
+   curl -fsS https://devspace-saga.heliasar.com/healthz
+   ```
+
+4. Verify the public chain from `~/projects/devspace`. The suite starts real scratch threads through the public endpoint, then settles and archives them.
+
+   ```bash
+   bun run test:t3-deployed
+   ```
+
+5. Refresh the DevSpace connector in ChatGPT so it lists the `t3_` tools.
+
+To roll back, set `t3.enabled` to `false` in `~/.devspace/config.json`, restart the gateway with the same `launchctl kickstart` command, and refresh the connector. To remove the code as well, restore the saved `dist` before restarting.
+
 ## Rollback to Asgard
 
 1. On Asgard, stop the private node before starting its old local gateway, since both use port 7679 and the same executor state.
