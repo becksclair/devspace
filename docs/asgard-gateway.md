@@ -1,5 +1,7 @@
 # Asgard gateway and return to Saga
 
+> Superseded on 2026-11-08 by the [Svartal gateway with an Asgard node](svartal-gateway.md). The setup below records the earlier Asgard-hosted gateway.
+
 ## Current setup on Asgard (2026-11-03)
 
 ChatGPT’s **DevSpace Gateway** plugin uses `https://devspace-saga.heliasar.com/mcp`. The hostname stays the same when the gateway moves. It currently routes through the shared `asgard-public` Cloudflare tunnel to `127.0.0.1:7679`. Asgard is the only configured machine, runs its executor locally, and is selected when `open_workspace` omits `machine`.
