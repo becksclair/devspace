@@ -4556,6 +4556,1128 @@
       }
     },
     {
+      "name": "t3_project_update",
+      "description": "Update one project's settings. Omitted fields are unchanged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspaceRoot": {
+            "type": "string"
+          },
+          "defaultModelSelection": {
+            "type": "object",
+            "properties": {
+              "provider": {},
+              "instanceId": {},
+              "model": {},
+              "options": {}
+            },
+            "required": [
+              "model"
+            ]
+          },
+          "autoPull": {
+            "type": "boolean"
+          },
+          "projectIcon": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "lucide",
+                  "emoji",
+                  "monogram"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "color": {
+                "type": "string",
+                "enum": [
+                  "gray",
+                  "red",
+                  "orange",
+                  "amber",
+                  "yellow",
+                  "lime",
+                  "green",
+                  "emerald",
+                  "teal",
+                  "cyan",
+                  "sky",
+                  "blue",
+                  "indigo",
+                  "violet",
+                  "purple",
+                  "fuchsia",
+                  "pink",
+                  "rose"
+                ]
+              },
+              "emoji": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "faviconPath": {
+            "type": "string"
+          },
+          "defaultThreadEnvMode": {
+            "type": "string",
+            "enum": [
+              "local",
+              "worktree"
+            ]
+          },
+          "scripts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "play",
+                    "test",
+                    "lint",
+                    "configure",
+                    "build",
+                    "debug"
+                  ]
+                },
+                "runOnWorktreeCreate": {
+                  "type": "boolean"
+                },
+                "runOnSettle": {
+                  "type": "boolean"
+                },
+                "stopOnSettle": {
+                  "type": "boolean"
+                },
+                "async": {
+                  "type": "boolean"
+                },
+                "previewUrl": {
+                  "type": "string"
+                },
+                "autoOpenPreview": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "command",
+                "icon",
+                "runOnWorktreeCreate"
+              ]
+            }
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Threads and files are kept."
+          }
+        },
+        "required": [
+          "projectId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspaceRoot": {
+            "type": "string"
+          },
+          "repositoryIdentity": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "canonicalKey": {
+                    "type": "string"
+                  },
+                  "locator": {
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "git-remote"
+                        ]
+                      },
+                      "remoteName": {
+                        "type": "string"
+                      },
+                      "remoteUrl": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "remoteName",
+                      "remoteUrl"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "webUrl": {
+                    "type": "string"
+                  },
+                  "rootPath": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "type": "object",
+                    "properties": {
+                      "canonicalKey": {
+                        "type": "string"
+                      },
+                      "remoteUrl": {
+                        "type": "string"
+                      },
+                      "displayName": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "canonicalKey"
+                    ],
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "canonicalKey",
+                  "locator"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "faviconPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectIcon": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "lucide"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "gray",
+                      "red",
+                      "orange",
+                      "amber",
+                      "yellow",
+                      "lime",
+                      "green",
+                      "emerald",
+                      "teal",
+                      "cyan",
+                      "sky",
+                      "blue",
+                      "indigo",
+                      "violet",
+                      "purple",
+                      "fuchsia",
+                      "pink",
+                      "rose"
+                    ]
+                  },
+                  "monogramText": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "monogram": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name",
+                  "color"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "emoji"
+                    ]
+                  },
+                  "emoji": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "emoji"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "monogram"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "gray",
+                      "red",
+                      "orange",
+                      "amber",
+                      "yellow",
+                      "lime",
+                      "green",
+                      "emerald",
+                      "teal",
+                      "cyan",
+                      "sky",
+                      "blue",
+                      "indigo",
+                      "violet",
+                      "purple",
+                      "fuchsia",
+                      "pink",
+                      "rose"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text",
+                  "color"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultModelSelection": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "instanceId": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "model": {},
+                  "options": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "model"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultThreadEnvMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "worktree"
+                ]
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "autoPull": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scripts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "play",
+                    "test",
+                    "lint",
+                    "configure",
+                    "build",
+                    "debug"
+                  ]
+                },
+                "runOnWorktreeCreate": {
+                  "type": "boolean"
+                },
+                "runOnSettle": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stopOnSettle": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "async": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "previewUrl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "autoOpenPreview": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "command",
+                "icon",
+                "runOnWorktreeCreate"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "pinnedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archivedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "deletedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "workspaceRoot",
+          "defaultModelSelection",
+          "scripts",
+          "createdAt",
+          "updatedAt",
+          "deletedAt"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "t3_project_delete",
+      "description": "Delete one project. Nonempty needs `force: true`. Folder on disk stays.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "projectId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspaceRoot": {
+            "type": "string"
+          },
+          "repositoryIdentity": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "canonicalKey": {
+                    "type": "string"
+                  },
+                  "locator": {
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "git-remote"
+                        ]
+                      },
+                      "remoteName": {
+                        "type": "string"
+                      },
+                      "remoteUrl": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "remoteName",
+                      "remoteUrl"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "webUrl": {
+                    "type": "string"
+                  },
+                  "rootPath": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "type": "object",
+                    "properties": {
+                      "canonicalKey": {
+                        "type": "string"
+                      },
+                      "remoteUrl": {
+                        "type": "string"
+                      },
+                      "displayName": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "canonicalKey"
+                    ],
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "canonicalKey",
+                  "locator"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "faviconPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectIcon": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "lucide"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "gray",
+                      "red",
+                      "orange",
+                      "amber",
+                      "yellow",
+                      "lime",
+                      "green",
+                      "emerald",
+                      "teal",
+                      "cyan",
+                      "sky",
+                      "blue",
+                      "indigo",
+                      "violet",
+                      "purple",
+                      "fuchsia",
+                      "pink",
+                      "rose"
+                    ]
+                  },
+                  "monogramText": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "monogram": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name",
+                  "color"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "emoji"
+                    ]
+                  },
+                  "emoji": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "emoji"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "monogram"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "gray",
+                      "red",
+                      "orange",
+                      "amber",
+                      "yellow",
+                      "lime",
+                      "green",
+                      "emerald",
+                      "teal",
+                      "cyan",
+                      "sky",
+                      "blue",
+                      "indigo",
+                      "violet",
+                      "purple",
+                      "fuchsia",
+                      "pink",
+                      "rose"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text",
+                  "color"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultModelSelection": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "instanceId": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "model": {},
+                  "options": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "model"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultThreadEnvMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "worktree"
+                ]
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "autoPull": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scripts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "play",
+                    "test",
+                    "lint",
+                    "configure",
+                    "build",
+                    "debug"
+                  ]
+                },
+                "runOnWorktreeCreate": {
+                  "type": "boolean"
+                },
+                "runOnSettle": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stopOnSettle": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "async": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "previewUrl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "autoOpenPreview": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "command",
+                "icon",
+                "runOnWorktreeCreate"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "pinnedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archivedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "deletedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "workspaceRoot",
+          "defaultModelSelection",
+          "scripts",
+          "createdAt",
+          "updatedAt",
+          "deletedAt"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
       "name": "t3_project_clone",
       "description": "Clone a repository (`destinationPath` new or empty). Register after with `t3_project_create`, with the same `environmentId`.",
       "inputSchema": {

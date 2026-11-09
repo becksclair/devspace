@@ -32,6 +32,10 @@ import {
   checkInboxOmitted,
   checkListing,
   checkNoBlindRetry,
+  checkPhase2Retries,
+  checkProjects,
+  checkScheduledTasks,
+  checkThreadUpdate,
   checkNoSecrets,
   checkReading,
   checkRestart,
@@ -175,6 +179,10 @@ async function exerciseChain(
   await checkReading(call, fake);
   await checkShaping(call, fake);
   progress(`ok - ${mode}: shaped results (B12–B22; omitted inbox outcomes)`);
+  await checkThreadUpdate(call, fake);
+  const projects = await checkProjects(call, fake);
+  await checkScheduledTasks(call, fake, String(projects.projectId));
+  progress(`ok - ${mode}: rename, projects, model catalog, scheduled tasks (B27–B31)`);
 
   const ctx: ScenarioContext = {
     kind: "fake",
@@ -182,19 +190,21 @@ async function exerciseChain(
     stamp: `e2e-${mode}-${Date.now()}`,
     projectName: PROJECT_NAME,
     timeoutMs: SCENARIO_TIMEOUT_MS,
+    workDir: join(fake.home, `scenarios-${mode}`),
   };
   const results = await runScenarios(ctx);
-  assert.deepEqual(results.map((result) => result.id), ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]);
+  assert.deepEqual(results.map((result) => result.id), ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]);
   for (const result of results) assert.ok(result.ok, `${mode} ${result.id} failed: ${result.error}`);
   assert.equal(await cleanupScenarioThreads(ctx), 0, "the scenarios archived every thread they started");
-  progress(`ok - ${mode}: scenarios S1–S7`);
+  progress(`ok - ${mode}: scenarios S1–S10`);
 
   await checkCredentialRecovery(call, fake, label);
   await checkUnavailable(call, fake, () => toolNames(endpoint));
   await checkRestart(call, fake);
   await checkDroppedLaunch(call, fake);
   await checkNoBlindRetry(call, fake);
-  progress(`ok - ${mode}: credential, availability, restart, dropped responses and read retries (B6, B8, B9, B10, B11)`);
+  await checkPhase2Retries(call, fake);
+  progress(`ok - ${mode}: credential, availability, restart, dropped responses and read retries (B6, B8, B9, B10, B11, B32)`);
 
   checkCliEnvironment(fake, SECRET_NAME);
   await checkFullAccessMint(fake, label, [SECRET_NAME]);

@@ -5,7 +5,9 @@
  * asserts on the shaped results and on the arguments the fake actually received.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createT3CliRunner, T3_TOOL_NAMES, T3_UNREACHABLE_MESSAGE } from "../t3-bridge.js";
@@ -26,8 +28,12 @@ export const READ_ONLY_T3_TOOLS: ReadonlySet<string> = new Set([
   "t3_thread_read",
   "t3_thread_wait",
   "t3_inbox",
+  "orchestrator_capabilities",
+  "list_scheduled_tasks",
 ]);
-export const THREAD_REQUIRED_T3_TOOLS = ["t3_pending_request", "t3_thread_organize", "t3_queue"] as const;
+export const THREAD_REQUIRED_T3_TOOLS = ["t3_pending_request", "t3_thread_organize", "t3_queue", "t3_thread_update"] as const;
+/** T3 tools DevSpace never exposes, even though an outside client could list them. */
+export const NEVER_EXPOSED_T3_TOOLS = ["create_threads", "t3_project_delete", "task_status"] as const;
 export const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -141,10 +147,13 @@ export interface CatalogTool {
 }
 
 /**
- * B2: exactly the twelve tools (in order) beyond `baseline`, and no other snapshot tool.
+ * B2/B26: exactly the DevSpace T3 tools (in order) beyond `baseline`, and no other snapshot tool;
+ *     `create_threads` and `t3_project_delete` are never exposed.
  * B3: read-only per the plan's table; under trusted-owner never destructive or open-world, under
  *     standard write tools are destructive and open-world (when annotations are given).
  * B12/B15: launch hides `runtimeMode` and `delegatedFrom`; no `environmentId`; `threadId` required.
+ * B27/B29/B30 (schemas): schedule_task hides thread binding and webhook triggers; project create
+ *     hides `defaultModelSelection`; project update exposes only projectId, title, and default model.
  * B17: descriptions end with the shared guidance and carry no in-thread phrasing.
  */
 export function checkCatalog(
@@ -157,8 +166,9 @@ export function checkCatalog(
   assert.deepEqual(
     added.map((tool) => tool.name),
     [...T3_TOOL_NAMES],
-    "exactly the twelve Phase 1 tools are exposed, in order",
+    "exactly the DevSpace T3 tools are exposed, in order",
   );
+  for (const name of NEVER_EXPOSED_T3_TOOLS) assert.ok(!tools.some((tool) => tool.name === name), `${name} must never be exposed`);
   const listed = new Set(tools.map((tool) => tool.name));
   for (const name of SNAPSHOT_TOOL_NAMES) {
     if (!T3_TOOL_NAMES.includes(name) && !baseline.has(name)) assert.ok(!listed.has(name), `${name} must not be exposed`);
@@ -192,6 +202,23 @@ export function checkCatalog(
     }
     if (tool.name === "t3_pending_request") {
       assert.match(description, /keyed by each question's `id` whose value is the chosen option's `label`/);
+    }
+    if (tool.name === "schedule_task") {
+      assert.ok(!("bindToCurrentThread" in properties), "schedule_task must not expose bindToCurrentThread");
+      const schedule = properties.schedule as Json;
+      const fields = (schedule.properties ?? {}) as Json;
+      for (const key of ["signature", "maxDeliveryAgeMinutes", "dedupe", "filters"]) {
+        assert.ok(!(key in fields), `schedule_task must not expose schedule.${key}`);
+      }
+      assert.deepEqual((fields.type as Json).enum, ["interval", "fixed_time", "once"], "webhook triggers are not offered");
+      assert.doesNotMatch(`${description} ${String(schedule.description)}`, /webhookUrl|type:'webhook'/);
+    }
+    if (tool.name === "t3_project_create") {
+      assert.deepEqual(Object.keys(properties).sort(), ["createWorkspaceRootIfMissing", "title", "workspaceRoot"]);
+    }
+    if (tool.name === "t3_project_update") {
+      assert.deepEqual(Object.keys(properties).sort(), ["defaultModelSelection", "projectId", "title"]);
+      assert.ok(required.includes("projectId"), "t3_project_update requires projectId");
     }
   }
 }
@@ -669,10 +696,14 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
 
   // B15: threadId is required before anything is sent to T3.
   mark = fake.calls.length;
+  const actionArgs: Record<string, Json> = {
+    t3_thread_organize: { action: "settle" },
+    t3_thread_update: { action: "rename", title: "Renamed" },
+  };
   for (const tool of THREAD_REQUIRED_T3_TOOLS) {
-    const action = tool === "t3_thread_organize" ? "settle" : "list";
-    assert.match(await fails(call, tool, { action }), /threadId/, `${tool} without threadId`);
-    assert.match(await fails(call, tool, { action, threadId: "" }), /threadId/, `${tool} with an empty threadId`);
+    const args = actionArgs[tool] ?? { action: "list" };
+    assert.match(await fails(call, tool, args), /threadId/, `${tool} without threadId`);
+    assert.match(await fails(call, tool, { ...args, threadId: "" }), /threadId/, `${tool} with an empty threadId`);
   }
   assert.equal(fake.calls.length, mark, "nothing reached T3");
 
@@ -681,6 +712,182 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
   assert.equal(failure._tag, "OrchestratorMcpFailure");
   assert.equal(failure.code, "thread_not_sendable");
 
+  await ok(call, "t3_thread_organize", { threadId, action: "archive" });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 2 shaping: B27, B28, B29, B30, B31
+// ---------------------------------------------------------------------------------------------
+
+const HAIKU = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
+
+/** B28: thread rename and title regeneration. */
+export async function checkThreadUpdate(call: T3Call, fake: FakeT3): Promise<void> {
+  const { threadId } = fake.addThread({ title: "Before rename", messages: [{ role: "user", text: "Fix the flaky parser test" }] });
+  let mark = fake.calls.length;
+  assert.match(await fails(call, "t3_thread_update", { action: "rename", title: "No thread" }), /threadId/);
+  assert.equal(fake.calls.length, mark, "nothing reached T3 without threadId");
+
+  const renamed = await ok(call, "t3_thread_update", { threadId, action: "rename", title: "After rename" });
+  assert.equal(renamed.title, "After rename");
+  const [renameArgs] = forwarded(fake, "t3_thread_update", mark);
+  assert.ok(renameArgs && typeof renameArgs.clientRequestId === "string" && renameArgs.clientRequestId.length > 0, "rename gets a clientRequestId");
+  assert.equal(((await ok(call, "t3_thread_read", { threadId })).thread as Json).title, "After rename");
+
+  // T3 rejects a rename without a title as invalid parameters; the error reaches the caller.
+  assert.match(await fails(call, "t3_thread_update", { threadId, action: "rename" }), /rename requires title/);
+
+  mark = fake.calls.length;
+  const regenerating = await ok(call, "t3_thread_update", { threadId, action: "regenerate_title" });
+  assert.ok(isRecord(regenerating.titleRegeneration), "regenerate_title reports the regeneration request");
+  assert.ok(typeof forwarded(fake, "t3_thread_update", mark)[0]?.clientRequestId === "string");
+  await ok(call, "t3_thread_organize", { threadId, action: "archive" });
+}
+
+/** B29, B30, B31: project creation, cloning, the default model, and the model catalog. */
+export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
+  // B31: providers and models only, without the delegation details.
+  const capabilities = await ok(call, "orchestrator_capabilities");
+  assert.deepEqual(Object.keys(capabilities), ["providers"]);
+  const providers = records(capabilities.providers);
+  const claude = providers.find((provider) => provider.providerInstanceId === HAIKU.instanceId);
+  assert.ok(claude, "the Claude provider is listed");
+  assert.deepEqual(Object.keys(claude).sort(), ["displayName", "models", "providerInstanceId"]);
+  const haiku = records(claude.models).find((model) => model.id === HAIKU.model);
+  assert.equal(haiku?.label, "Claude Haiku 5.5", "models keep their display label");
+  for (const model of providers.flatMap((provider) => records(provider.models))) {
+    assert.ok(Object.keys(model).every((key) => ["id", "label", "options"].includes(key)), "models carry only id, label, and options");
+  }
+
+  // B29: relative paths are rejected before anything reaches T3.
+  let mark = fake.calls.length;
+  assert.match(await fails(call, "t3_project_create", { title: "Relative", workspaceRoot: "projects/relative" }), /absolute path/);
+  assert.match(await fails(call, "t3_project_clone", { remoteUrl: "https://example.invalid/r.git", destinationPath: "relative-dest" }), /absolute path/);
+  // Without a destination: the MCP schema (end to end) or the bridge (unit) rejects it.
+  assert.match(await fails(call, "t3_project_clone", { remoteUrl: "https://example.invalid/r.git" }), /destinationPath/);
+  assert.equal(fake.calls.length, mark, "nothing reached T3 for relative paths");
+
+  // B29: `~` expands to the home folder (an existing, non-empty folder: T3 refuses the clone).
+  mark = fake.calls.length;
+  const refused = JSON.parse(await fails(call, "t3_project_clone", { remoteUrl: "https://example.invalid/r.git", destinationPath: "~" })) as Json;
+  assert.equal(refused.code, "orchestration_error");
+  assert.equal(forwarded(fake, "t3_project_clone", mark)[0]?.destinationPath, homedir());
+
+  // B29: a missing workspace root is created unless the caller says otherwise; the default model is dropped.
+  const stamp = Date.now();
+  const root = join(fake.home, "workspaces", `created-${stamp}`);
+  mark = fake.calls.length;
+  const created = await ok(call, "t3_project_create", {
+    title: `Created ${stamp}`,
+    workspaceRoot: root,
+    defaultModelSelection: HAIKU,
+    scripts: [{ id: "setup", name: "setup", command: "touch planted", icon: "configure", runOnWorktreeCreate: true }],
+    environmentId: "environment-from-caller",
+  });
+  const [createArgs] = forwarded(fake, "t3_project_create", mark);
+  assert.deepEqual(Object.keys(createArgs ?? {}).sort(), ["createWorkspaceRootIfMissing", "title", "workspaceRoot"], "only title and the root reach T3");
+  assert.equal(createArgs?.createWorkspaceRootIfMissing, true);
+  assert.equal(created.workspaceRoot, root);
+  assert.ok(existsSync(root), "the workspace root was created");
+  const kept = JSON.parse(
+    await fails(call, "t3_project_create", {
+      title: `Kept ${stamp}`,
+      workspaceRoot: join(fake.home, "workspaces", `missing-${stamp}`),
+      createWorkspaceRootIfMissing: false,
+    }),
+  ) as Json;
+  assert.equal(kept.code, "orchestration_error", "an explicit createWorkspaceRootIfMissing: false is kept");
+
+  // Clone a repository into an absolute folder, then register it.
+  const destination = join(fake.home, "clones", `hello-${stamp}`);
+  const clone = await ok(call, "t3_project_clone", { provider: "github", repository: "octocat/Hello-World", destinationPath: destination });
+  assert.equal(clone.cwd, destination);
+  const project = await ok(call, "t3_project_create", { title: `Hello ${stamp}`, workspaceRoot: String(clone.cwd) });
+  const projectId = String(project.id);
+
+  // B30: only projectId, title, and defaultModelSelection reach T3.
+  mark = fake.calls.length;
+  const updated = await ok(call, "t3_project_update", {
+    projectId,
+    title: `Hello ${stamp} renamed`,
+    defaultModelSelection: HAIKU,
+    archived: true,
+    scripts: [],
+    workspaceRoot: "/elsewhere",
+    environmentId: "environment-from-caller",
+  });
+  assert.deepEqual(Object.keys(forwarded(fake, "t3_project_update", mark)[0] ?? {}).sort(), ["defaultModelSelection", "projectId", "title"]);
+  assert.deepEqual(updated.defaultModelSelection, HAIKU);
+  assert.equal(updated.archivedAt, null, "the project was not archived");
+  const listed = records((await ok(call, "t3_project_list")).projects).find((row) => row.projectId === projectId);
+  assert.equal(listed?.title, `Hello ${stamp} renamed`);
+  return { projectId, createdProjectId: created.id };
+}
+
+/** B27: scheduled tasks are created unbound and idempotent, webhooks stay out, and runs run full-access. */
+export async function checkScheduledTasks(call: T3Call, fake: FakeT3, projectId: string): Promise<void> {
+  const runAt = iso(Date.now() + 300 * DAY_MS);
+  const noModel = fake.addProject({ title: `No model ${Date.now()}`, git: true });
+  const failure = JSON.parse(
+    await fails(call, "schedule_task", { projectId: noModel.projectId, prompt: "Reply with exactly OK", schedule: { type: "once", runAt } }),
+  ) as Json;
+  assert.equal(failure.code, "invalid_request", "T3's missing-default-model failure passes through");
+
+  let mark = fake.calls.length;
+  assert.match(
+    await fails(call, "schedule_task", { projectId, prompt: "Reply with exactly OK", schedule: { type: "webhook" } }),
+    // The MCP schema (end to end) or the bridge (unit, or a loose fallback schema) rejects it.
+    /Webhook triggers are not available|expected one of "interval"\|"fixed_time"\|"once"/,
+  );
+  assert.equal(fake.calls.length, mark, "a webhook trigger never reaches T3");
+  assert.match(await fails(call, "schedule_task", { projectId, prompt: "Reply with exactly OK", schedule: JSON.stringify({ type: "webhook" }) }), /schedule/);
+  assert.equal(fake.calls.length, mark, "a schedule that is not an object never reaches T3");
+
+  mark = fake.calls.length;
+  const task = await ok(call, "schedule_task", {
+    projectId,
+    title: "Scheduled check",
+    prompt: "Reply with exactly SCHEDULED",
+    schedule: { type: "once", runAt, signature: { header: "x", encoding: "hex", prefix: "" }, filters: [] },
+    bindToCurrentThread: true,
+  });
+  const [createArgs] = forwarded(fake, "schedule_task", mark);
+  assert.equal(createArgs?.bindToCurrentThread, false, "a new task is never bound to a thread");
+  assert.ok(typeof createArgs?.clientRequestId === "string" && createArgs.clientRequestId.length > 0, "creation gets a clientRequestId");
+  assert.deepEqual(createArgs?.schedule, { type: "once", runAt }, "webhook settings are stripped");
+  const taskId = String(task.scheduledTaskId);
+  assert.equal(task.boundThreadId, null);
+
+  // Updates change only the given fields: no binding and no new clientRequestId.
+  mark = fake.calls.length;
+  const paused = await ok(call, "schedule_task", { scheduledTaskId: taskId, enabled: false });
+  assert.equal(paused.enabled, false);
+  assert.deepEqual(forwarded(fake, "schedule_task", mark)[0], { scheduledTaskId: taskId, enabled: false });
+
+  // Webhook URLs (they carry their token) never reach the caller.
+  const webhook = fake.addScheduledTask({ projectId, title: "Seeded webhook", prompt: "Handle it", schedule: { type: "webhook" }, enabled: false });
+  assert.ok(fake.scheduledTasks().some((entry) => typeof entry.webhookUrl === "string"), "the fake stores a webhook URL");
+  for (const listing of [await ok(call, "list_scheduled_tasks", { projectId }), await ok(call, "list_scheduled_tasks")]) {
+    const tasks = records(listing.tasks);
+    assert.ok(tasks.some((entry) => entry.scheduledTaskId === webhook.scheduledTaskId) && tasks.some((entry) => entry.scheduledTaskId === taskId));
+    for (const entry of tasks) assert.ok(!("webhookUrl" in entry) && !("webhookSignature" in entry), "webhook secrets are stripped");
+  }
+  const webhookUpdate = await ok(call, "schedule_task", { scheduledTaskId: webhook.scheduledTaskId, title: "Seeded webhook renamed" });
+  assert.ok(!("webhookUrl" in webhookUpdate) && !("webhookSignature" in webhookUpdate), "webhook secrets are stripped from updates");
+
+  // A run starts a new full-access thread that does the work, even while the task is paused.
+  const run = await ok(call, "run_scheduled_task_now", { taskId });
+  const threadId = String(run.threadId);
+  await ok(call, "t3_thread_wait", { threadId });
+  const read = await ok(call, "t3_thread_read", { threadId });
+  assert.equal((read.thread as Json).runtimeMode, "full-access");
+  assert.equal((read.thread as Json).status, "completed");
+  assert.equal(records(read.items).at(-1)?.text, "SCHEDULED");
+
+  assert.deepEqual(await ok(call, "delete_scheduled_task", { scheduledTaskId: taskId }), { scheduledTaskId: taskId, deleted: true });
+  assert.equal((JSON.parse(await fails(call, "delete_scheduled_task", { scheduledTaskId: taskId })) as Json).code, "task_not_found");
+  assert.ok(!records((await ok(call, "list_scheduled_tasks", { projectId })).tasks).some((entry) => entry.scheduledTaskId === taskId));
+  await ok(call, "delete_scheduled_task", { scheduledTaskId: webhook.scheduledTaskId });
   await ok(call, "t3_thread_organize", { threadId, action: "archive" });
 }
 
@@ -809,6 +1016,60 @@ export async function checkNoBlindRetry(call: T3Call, fake: FakeT3): Promise<voi
     assert.equal(forwarded(fake, tool, mark).length, 1, `${tool} was sent exactly once`);
   }
   await ok(call, "t3_project_list");
+}
+
+/**
+ * B32: Phase 2 retry classification. Reads, idempotent creates (`clientRequestId`), and writes that
+ * only set fields are retried once after a lost response; the rest are reported, never retried.
+ */
+export async function checkPhase2Retries(call: T3Call, fake: FakeT3): Promise<void> {
+  const stamp = Date.now();
+  const { projectId } = fake.addProject({ title: `Retry project ${stamp}`, defaultModelSelection: HAIKU, git: true });
+  const { threadId } = fake.addThread({ title: `Retry rename ${stamp}`, messages: [{ role: "user", text: "hello" }] });
+  const runAt = iso(Date.now() + 300 * DAY_MS);
+  const sendTwice = async (tool: string, args: Json): Promise<{ result: Json; sent: Json[] }> => {
+    const mark = fake.calls.length;
+    fake.dropNextResponse(tool);
+    const result = await ok(call, tool, args);
+    const sent = forwarded(fake, tool, mark);
+    assert.equal(sent.length, 2, `${tool} was retried once`);
+    return { result, sent };
+  };
+
+  const rename = await sendTwice("t3_thread_update", { threadId, action: "rename", title: `Retry renamed ${stamp}` });
+  assert.equal(rename.sent[0]!.clientRequestId, rename.sent[1]!.clientRequestId, "the rename retry reuses its clientRequestId");
+  await sendTwice("list_scheduled_tasks", { projectId });
+  await sendTwice("orchestrator_capabilities", {});
+  await sendTwice("t3_project_update", { projectId, title: `Retry project ${stamp} renamed` });
+  const created = await sendTwice("schedule_task", { projectId, prompt: "Reply with exactly OK", schedule: { type: "once", runAt } });
+  assert.equal(created.sent[0]!.clientRequestId, created.sent[1]!.clientRequestId);
+  const tasks = records((await ok(call, "list_scheduled_tasks", { projectId })).tasks);
+  assert.equal(tasks.length, 1, "exactly one task was created");
+  const taskId = String(created.result.scheduledTaskId);
+  await sendTwice("schedule_task", { scheduledTaskId: taskId, enabled: false });
+
+  const destination = join(fake.home, "clones", `retry-${stamp}`);
+  for (const [tool, args] of [
+    ["run_scheduled_task_now", { taskId }],
+    ["delete_scheduled_task", { scheduledTaskId: taskId }],
+    ["t3_project_create", { title: `Retry create ${stamp}`, workspaceRoot: join(fake.home, "workspaces", `retry-${stamp}`) }],
+    ["t3_project_clone", { remoteUrl: "https://example.invalid/r.git", destinationPath: destination }],
+  ] as const) {
+    const mark = fake.calls.length;
+    fake.dropNextResponse(tool);
+    assert.equal(await fails(call, tool, args), `T3 Code connection failed during ${tool}; it may or may not have run.`);
+    assert.equal(forwarded(fake, tool, mark).length, 1, `${tool} was sent exactly once`);
+  }
+  // A caller-supplied clientRequestId does not make a tool that ignores it retryable.
+  const mark = fake.calls.length;
+  fake.dropNextResponse("t3_project_clone");
+  await fails(call, "t3_project_clone", {
+    remoteUrl: "https://example.invalid/r.git",
+    destinationPath: join(fake.home, "clones", `retry-id-${stamp}`),
+    clientRequestId: "caller-request-clone",
+  });
+  assert.equal(forwarded(fake, "t3_project_clone", mark).length, 1, "t3_project_clone is never retried");
+  await ok(call, "t3_thread_organize", { threadId, action: "archive" });
 }
 
 // ---------------------------------------------------------------------------------------------

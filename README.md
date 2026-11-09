@@ -140,8 +140,9 @@ DevSpace gives ChatGPT tools to:
 
 When T3 Code runs on the same machine, DevSpace can also let ChatGPT
 orchestrate it: find projects and threads by name, start full-access coding
-threads, steer, interrupt, and read them, answer agent questions, and check an
-inbox of threads that need you or have finished. It is built for ChatGPT voice
+threads, steer, interrupt, and read them, answer agent questions, check an
+inbox of threads that need you or have finished, create and clone projects, and
+schedule tasks that start threads later. It is built for ChatGPT voice
 mode on a phone, and the thread links it returns open the work in the T3 Code
 app. The bridge is off by default; enable it in `~/.devspace/config.json` and
 restart DevSpace:

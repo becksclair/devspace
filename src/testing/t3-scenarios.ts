@@ -1,4 +1,4 @@
-// Shared orchestrator scenarios (S1–S7) for the T3 Code bridge.
+// Shared orchestrator scenarios (S1–S10) for the T3 Code bridge.
 //
 // Each scenario drives DevSpace's exposed T3 tools the way a ChatGPT-like
 // orchestrator would, through an MCP SDK client connected to DevSpace /mcp.
@@ -19,6 +19,11 @@ export interface ScenarioContext {
   projectName: string;
   modelSelection?: { instanceId: string; model: string };
   timeoutMs: number;
+  /**
+   * Absolute folder on T3's machine where S9 and S10 clone and create project folders. The
+   * harness removes it, the projects titled with `stamp`, and their worktrees afterwards.
+   */
+  workDir?: string;
 }
 
 export interface Scenario {
@@ -60,7 +65,16 @@ type T3ToolName =
   | "t3_thread_interrupt"
   | "t3_pending_request"
   | "t3_thread_organize"
-  | "t3_queue";
+  | "t3_queue"
+  | "t3_thread_update"
+  | "orchestrator_capabilities"
+  | "t3_project_create"
+  | "t3_project_clone"
+  | "t3_project_update"
+  | "list_scheduled_tasks"
+  | "schedule_task"
+  | "run_scheduled_task_now"
+  | "delete_scheduled_task";
 
 // DevSpace's shaped results (plan 015, "Result shaping", "Reading", "t3_inbox").
 interface ProjectRow { projectId: string; title: string; workspaceRoot: string }
@@ -93,6 +107,14 @@ interface PendingRequestRead { requestId: string; questions: PendingQuestion[] }
 interface QueueItem { queuedRunId: string; text: string; truncated?: boolean }
 interface QueueListResult { items: QueueItem[]; nextCursor?: number | null }
 
+interface ThreadUpdateResult { threadId: string; action: string; title: string; titleRegeneration?: unknown }
+interface CapabilitiesResult { providers: Array<{ providerInstanceId: string; displayName?: string; models: Array<{ id: string }> }> }
+interface ProjectRecord { id: string; title: string; workspaceRoot: string; defaultModelSelection?: { instanceId?: string; model?: string } | null }
+interface CloneResult { cwd: string; remoteUrl?: string }
+interface ScheduledTask { scheduledTaskId: string; title?: string; enabled?: boolean; projectId?: string; boundThreadId?: string | null }
+interface ScheduledTaskList { tasks: ScheduledTask[] }
+interface RunNowResult { taskId: string; threadId: string | null; link?: string }
+
 interface ScenarioRun {
   ctx: ScenarioContext;
   id: string;
@@ -116,6 +138,10 @@ const SINCE_MARGIN_MS = 2_000;
 const SLEEP_SECONDS = 60;
 const STEER_MESSAGE = "No change; keep waiting for the command to finish.";
 const INTERRUPT_REASON = "DevSpace bridge check";
+/** A tiny public repository for the clone scenarios (the fake never fetches it). */
+const CLONE_URL = "https://github.com/octocat/Hello-World.git";
+const DEFAULT_SCENARIO_MODEL = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
+const FAR_FUTURE_MS = 300 * 24 * 60 * 60 * 1000;
 
 function threadTitle(ctx: ScenarioContext, id: string): string {
   return `DevSpace bridge check ${ctx.stamp} ${id}`;
@@ -548,6 +574,110 @@ async function inboxLifecycle(run: ScenarioRun): Promise<Record<string, unknown>
   return { threadId, link: launched.link, since, waitStatus: wait.status, outcome: entry.outcome, preview: entry.preview };
 }
 
+// S8: rename a thread, then regenerate its title.
+async function renameThread(run: ScenarioRun): Promise<Record<string, unknown>> {
+  const { ctx } = run;
+  const launched = await launch(run, SCENARIO_PROMPTS.reply("OK"));
+  const threadId = launched.threadId;
+  await waitForRun(run, threadId);
+  const title = `${threadTitle(ctx, run.id)} renamed`;
+  const renamed = await callTool<ThreadUpdateResult>(ctx, "t3_thread_update", { threadId, action: "rename", title });
+  assert.equal(renamed.title, title, "t3_thread_update must return the new title");
+  const found = await callTool<SearchResult>(ctx, "t3_thread_search", { query: title, limit: 5 });
+  assert.ok(found.matches.some((match) => match.threadId === threadId && match.title === title), "the renamed thread is found by its new title");
+  assert.equal((await readThread(ctx, threadId, 1)).thread.title, title);
+  const regenerating = await callTool<ThreadUpdateResult>(ctx, "t3_thread_update", { threadId, action: "regenerate_title" });
+  assert.ok(isRecord(regenerating.titleRegeneration), "regenerate_title must report the regeneration request");
+  return { threadId, link: launched.link, renamedTo: title };
+}
+
+/** Picks the scenario model from orchestrator_capabilities, the way an orchestrator would. */
+async function pickModel(ctx: ScenarioContext): Promise<{ instanceId: string; model: string }> {
+  const wanted = ctx.modelSelection ?? DEFAULT_SCENARIO_MODEL;
+  const capabilities = await callTool<CapabilitiesResult>(ctx, "orchestrator_capabilities", {});
+  assert.ok(Array.isArray(capabilities.providers) && capabilities.providers.length > 0, "orchestrator_capabilities must list providers");
+  const provider = capabilities.providers.find((entry) => entry.providerInstanceId === wanted.instanceId);
+  assert.ok(provider, `orchestrator_capabilities must list provider ${wanted.instanceId}`);
+  assert.ok(provider.models.some((model) => model.id === wanted.model), `orchestrator_capabilities must list model ${wanted.model}`);
+  return wanted;
+}
+
+function workDir(ctx: ScenarioContext): string {
+  assert.ok(ctx.workDir, "this scenario needs ctx.workDir");
+  return ctx.workDir;
+}
+
+/** Clones the sample repository, registers it as a project, and sets its default model. */
+async function clonedProject(run: ScenarioRun, model: { instanceId: string; model: string }): Promise<ProjectRecord> {
+  const { ctx } = run;
+  const destinationPath = `${workDir(ctx)}/hello-${ctx.stamp}-${run.id}`;
+  const clone = await callTool<CloneResult>(ctx, "t3_project_clone", { remoteUrl: CLONE_URL, destinationPath });
+  assert.equal(clone.cwd, destinationPath, "t3_project_clone must clone into the requested folder");
+  const project = await callTool<ProjectRecord>(ctx, "t3_project_create", { title: threadTitle(ctx, run.id), workspaceRoot: clone.cwd });
+  assert.equal(project.workspaceRoot, clone.cwd);
+  const updated = await callTool<ProjectRecord>(ctx, "t3_project_update", { projectId: project.id, defaultModelSelection: model });
+  assert.equal(updated.defaultModelSelection?.model, model.model, "t3_project_update must set the default model");
+  return updated;
+}
+
+// S9: clone a repository, register it, pick a model, and make it the project default; create a project in a new folder.
+async function projectSetup(run: ScenarioRun): Promise<Record<string, unknown>> {
+  const { ctx } = run;
+  const model = await pickModel(ctx);
+  const project = await clonedProject(run, model);
+  const listed = await callTool<ProjectListResult>(ctx, "t3_project_list", {});
+  assert.ok(listed.projects.some((row) => row.projectId === project.id && row.title === project.title), "the new project is listed");
+
+  const createdRoot = `${workDir(ctx)}/created-${ctx.stamp}`;
+  const created = await callTool<ProjectRecord>(ctx, "t3_project_create", { title: `${threadTitle(ctx, run.id)} created`, workspaceRoot: createdRoot });
+  assert.equal(created.workspaceRoot, createdRoot, "a missing workspace root is created");
+  return { projectId: project.id, workspaceRoot: project.workspaceRoot, model, createdProjectId: created.id, createdRoot };
+}
+
+// S10: schedule a task, list it, run it now (a new full-access thread), delete it.
+async function scheduledTask(run: ScenarioRun): Promise<Record<string, unknown>> {
+  const { ctx } = run;
+  const model = ctx.modelSelection ?? DEFAULT_SCENARIO_MODEL;
+  const project = await clonedProject(run, model);
+  const title = threadTitle(ctx, run.id);
+  const runAt = new Date(Date.now() + FAR_FUTURE_MS).toISOString();
+  const task = await callTool<ScheduledTask>(ctx, "schedule_task", {
+    projectId: project.id,
+    title,
+    prompt: SCENARIO_PROMPTS.reply("SCHEDULED"),
+    schedule: { type: "once", runAt },
+  });
+  const taskId = task.scheduledTaskId;
+  let deleted = false;
+  try {
+    assert.equal(typeof taskId, "string", "schedule_task must return a scheduledTaskId");
+    assert.equal(task.boundThreadId ?? null, null, "a task created through DevSpace is not bound to a thread");
+    const listed = await callTool<ScheduledTaskList>(ctx, "list_scheduled_tasks", { projectId: project.id });
+    assert.ok(listed.tasks.some((entry) => entry.scheduledTaskId === taskId), "the task is listed");
+    for (const entry of listed.tasks) assert.ok(!("webhookUrl" in entry), "webhook URLs are never returned");
+
+    const started = await callTool<RunNowResult>(ctx, "run_scheduled_task_now", { taskId });
+    assert.equal(typeof started.threadId, "string", "run_scheduled_task_now must start a thread");
+    const threadId = started.threadId as string;
+    run.launched.push(threadId);
+    const wait = await waitForRun(run, threadId);
+    const read = await readThread(ctx, threadId);
+    assert.equal(read.thread.runtimeMode, "full-access", "scheduled runs run in full-access mode");
+    assert.equal(read.thread.status, "completed", `the scheduled run must complete, got ${read.thread.status}`);
+    assert.equal(lastAssistantText(read), "SCHEDULED");
+
+    await callTool<Record<string, unknown>>(ctx, "delete_scheduled_task", { scheduledTaskId: taskId });
+    deleted = true;
+    const after = await callTool<ScheduledTaskList>(ctx, "list_scheduled_tasks", { projectId: project.id });
+    assert.ok(!after.tasks.some((entry) => entry.scheduledTaskId === taskId), "a deleted task is no longer listed");
+    return { projectId: project.id, taskId, threadId, link: started.link, waitStatus: wait.status, runtimeMode: read.thread.runtimeMode };
+  } finally {
+    if (!deleted && typeof taskId === "string") {
+      await callTool<Record<string, unknown>>(ctx, "delete_scheduled_task", { scheduledTaskId: taskId }).catch(() => undefined);
+    }
+  }
+}
+
 export const SCENARIOS: Scenario[] = [
   { id: "S1", title: "What's going on? Check the inbox", targets: [...ALL_TARGETS], run: tracked("S1", inboxOverview) },
   { id: "S2", title: "Find a thread by title and read its latest messages", targets: [...ALL_TARGETS], run: tracked("S2", findAndRead) },
@@ -556,6 +686,9 @@ export const SCENARIOS: Scenario[] = [
   { id: "S5", title: "Answer an agent question surfaced by the inbox", targets: [...NON_DEPLOYED_TARGETS], run: tracked("S5", answerQuestion) },
   { id: "S6", title: "Queue a message on a running turn, then edit and cancel it", targets: [...NON_DEPLOYED_TARGETS], run: tracked("S6", editQueue) },
   { id: "S7", title: "Scratch thread lifecycle with inbox preview and settling", targets: [...ALL_TARGETS], run: tracked("S7", inboxLifecycle) },
+  { id: "S8", title: "Rename a thread and regenerate its title", targets: [...ALL_TARGETS], run: tracked("S8", renameThread) },
+  { id: "S9", title: "Clone and register a project, pick a model, set it as the default", targets: [...ALL_TARGETS], run: tracked("S9", projectSetup) },
+  { id: "S10", title: "Schedule a task, run it now as a full-access thread, delete it", targets: [...ALL_TARGETS], run: tracked("S10", scheduledTask) },
 ];
 
 function selectScenarios(kind: ScenarioTargetKind, ids?: string[]): Scenario[] {

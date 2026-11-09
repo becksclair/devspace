@@ -3,15 +3,18 @@
  *
  * Mirrors the real T3 Code behavior captured in `t3-tools.snapshot.json` and
  * `t3-contract-samples.json`: the headless OAuth flow, the `/mcp` bearer and
- * session failure modes, the Phase 1 orchestration tools, and the `t3 auth`
- * CLI commands DevSpace uses. Excluded from the build; tests only.
+ * session failure modes, the Phase 1 orchestration tools, the Phase 2 project,
+ * thread-update, capability, and scheduled-task tools, and the `t3 auth` CLI
+ * commands DevSpace uses. Project folders, clones, and worktrees are plain
+ * directories under `home` (a `.git` directory marks a repository; git never
+ * runs). Excluded from the build; tests only.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -39,6 +42,7 @@ interface JsonSchema {
   type?: string;
   properties?: Record<string, JsonSchema>;
   required?: string[];
+  items?: JsonSchema;
   enum?: unknown[];
   minimum?: number;
   maximum?: number;
@@ -70,9 +74,38 @@ interface ProjectRecord {
   id: string;
   title: string;
   workspaceRoot: string;
+  faviconPath: string | null;
   projectIcon: JsonObject | null;
+  /** `{instanceId, model}` plus `options` when set; T3 drops `provider`. */
+  defaultModelSelection: JsonObject | null;
+  defaultThreadEnvMode: string | null;
+  autoPull: boolean;
+  scripts: JsonObject[];
+  pinnedAt: string | null;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+type ScheduledRunStatus = "never" | "running" | "succeeded" | "failed";
+
+interface ScheduledTaskRecord {
+  scheduledTaskId: string;
+  title: string;
+  prompt: string;
+  enabled: boolean;
+  projectId: string;
+  freshSession: boolean;
+  /** Stored (normalized) schedule, as `list_scheduled_tasks` returns it. */
+  schedule: JsonObject;
+  nextRunAt: string | null;
+  lastRunStatus: ScheduledRunStatus;
+  runCount: number;
+  /** Webhook tasks only. */
+  webhookUrl: string | null;
+  webhookSignature: "none" | "set" | null;
+  /** Creation order, for newest-first listing. */
+  created: number;
 }
 
 interface ItemRecord {
@@ -143,6 +176,8 @@ interface ThreadRecord {
   snoozedUntil: string | null;
   pinnedAt: string | null;
   unread: boolean;
+  /** `{requestId, startedAt}` while a `regenerate_title` is in flight. */
+  titleRegeneration: JsonObject | null;
   createdAt: string;
   updatedAt: string;
   touched: number;
@@ -213,7 +248,93 @@ const CREDENTIAL_ERROR_BODY = JSON.stringify({
   message: "A valid T3 Code MCP credential is required.",
 });
 const NOT_IN_THREAD = "this MCP client is not running inside a T3 thread.";
+const THREAD_CREDENTIAL_REQUIRED =
+  "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread.";
 const DEFAULT_MODEL_SELECTION = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
+const WEBHOOK_URL_PREFIX = "https://connect.example.invalid/hooks/";
+const REGENERATED_TITLE_FALLBACK = "Regenerated title";
+const CAPABILITY_FEATURES = {
+  appOwnedSubagents: true,
+  asyncPolling: true,
+  cancellation: true,
+  batchThreadCreation: true,
+  threadManagement: true,
+  incrementalThreadRead: true,
+  scheduledTasks: true,
+  maxBatchThreads: 20,
+};
+const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max", "ultrathink"];
+const REASONING_VALUES = ["low", "medium", "high", "xhigh", "max", "ultra"];
+/** A trimmed copy of a real `orchestrator_capabilities` provider list, with the real keys and options. */
+const CAPABILITY_PROVIDERS: JsonObject[] = [
+  {
+    providerInstanceId: "codex",
+    driverKind: "codex",
+    displayName: "Codex",
+    models: [
+      { id: "gpt-6.1-sol", options: [{ id: "reasoningEffort", values: REASONING_VALUES, default: "low" }] },
+      { id: "gpt-6-astra", options: [{ id: "reasoningEffort", values: REASONING_VALUES, default: "medium" }] },
+    ],
+    canRunChildTask: true,
+    canRunCrossProviderChildTask: true,
+    constraints: [],
+  },
+  {
+    providerInstanceId: "claudeAgent",
+    driverKind: "claudeAgent",
+    displayName: "Claude",
+    models: [
+      {
+        id: "claude-opus-5-5",
+        label: "Claude Opus 5.5",
+        options: [
+          { id: "effort", values: EFFORT_VALUES, default: "medium" },
+          { id: "ultracode", values: [false, true] },
+          { id: "fastMode", values: [false, true] },
+        ],
+      },
+      {
+        id: "claude-sonnet-5-5",
+        label: "Claude Sonnet 5.5",
+        options: [
+          { id: "effort", values: EFFORT_VALUES, default: "high" },
+          { id: "ultracode", values: [false, true] },
+        ],
+      },
+      {
+        id: "claude-haiku-5-5",
+        label: "Claude Haiku 5.5",
+        options: [
+          { id: "effort", values: EFFORT_VALUES, default: "medium" },
+          { id: "ultracode", values: [false, true] },
+        ],
+      },
+    ],
+    omittedModels: 9,
+    canRunChildTask: true,
+    canRunCrossProviderChildTask: true,
+    constraints: [],
+  },
+  {
+    providerInstanceId: "cursor",
+    driverKind: "cursor",
+    displayName: "Cursor",
+    models: [],
+    canRunChildTask: false,
+    canRunCrossProviderChildTask: false,
+    constraints: ["Provider instance is disabled."],
+  },
+  {
+    providerInstanceId: "grok",
+    driverKind: "grok",
+    displayName: "Grok",
+    models: [{ id: "grok-build", label: "Grok Build" }],
+    runtimeModes: ["approval-required", "auto", "full-access"],
+    canRunChildTask: false,
+    canRunCrossProviderChildTask: false,
+    constraints: ["Provider instance is disabled."],
+  },
+];
 const STEP_MS = 2;
 const CLOSE_SETTLE_MS = 25;
 const MAX_BODY_BYTES = 1_048_576;
@@ -281,22 +402,28 @@ function failure(code: string, message: string): CallToolResult {
   };
 }
 
-function checkValue(schema: JsonSchema, value: unknown): string | undefined {
+/**
+ * Top-level keys keep the fake's established wording; below the top level a base-type mismatch
+ * reads like T3's captured `Expected number\n  at ["schedule"]["weekdays"][0]`, with no actual value.
+ */
+function checkValue(schema: JsonSchema, value: unknown, nested = false): string | undefined {
   const actual = JSON.stringify(value);
+  const expected = (type: string) => (nested ? `Expected ${type}` : `Expected ${type}, actual ${actual}`);
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
     return `Expected ${schema.enum.map((option) => JSON.stringify(option)).join(" | ")}, actual ${actual}`;
   }
   switch (schema.type) {
     case "string":
-      return typeof value === "string" ? undefined : `Expected string, actual ${actual}`;
+      return typeof value === "string" ? undefined : expected("string");
     case "boolean":
-      return typeof value === "boolean" ? undefined : `Expected boolean, actual ${actual}`;
+      return typeof value === "boolean" ? undefined : expected("boolean");
     case "object":
-      return isRecord(value) ? undefined : `Expected object, actual ${actual}`;
+      return isRecord(value) ? undefined : expected("object");
     case "array":
-      return Array.isArray(value) ? undefined : `Expected array, actual ${actual}`;
+      return Array.isArray(value) ? undefined : expected("array");
     case "number":
     case "integer": {
+      if (nested && (typeof value !== "number" || !Number.isFinite(value))) return expected("number");
       if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isInteger(value))) {
         return `Expected ${schema.type === "integer" ? "an integer" : "a number"}, actual ${actual}`;
       }
@@ -313,21 +440,134 @@ function checkValue(schema: JsonSchema, value: unknown): string | undefined {
   }
 }
 
-/**
- * Mirrors T3's argument decoding: required keys, top-level types and enums. Unknown keys are
- * ignored, and `null` on an optional key is accepted (`t3_queue` documents `beforeRunId: null`).
- */
-function validateArguments(tool: SnapshotTool, args: JsonObject): string | undefined {
-  for (const key of tool.inputSchema.required ?? []) {
-    if (args[key] === undefined) return `Missing key\n  at ["${key}"]`;
+/** Required keys, types, and enums of one object level, recursing into nested objects and array items. */
+function checkObject(schema: JsonSchema, value: JsonObject, path: string): string | undefined {
+  for (const key of schema.required ?? []) {
+    if (value[key] === undefined) return `Missing key\n  at ${path}["${key}"]`;
   }
-  for (const [key, value] of Object.entries(args)) {
-    const schema = tool.inputSchema.properties?.[key];
-    if (!schema || value === undefined || (value === null && !tool.inputSchema.required?.includes(key))) continue;
-    const problem = checkValue(schema, value);
-    if (problem) return `${problem}\n  at ["${key}"]`;
+  for (const [key, child] of Object.entries(value)) {
+    const childSchema = schema.properties?.[key];
+    if (!childSchema || child === undefined || (child === null && !schema.required?.includes(key))) continue;
+    const problem = checkTree(childSchema, child, `${path}["${key}"]`, path !== "");
+    if (problem) return problem;
   }
   return undefined;
+}
+
+function checkTree(schema: JsonSchema, value: unknown, path: string, nested: boolean): string | undefined {
+  const problem = checkValue(schema, value, nested);
+  if (problem) return `${problem}\n  at ${path}`;
+  if (schema.type === "object" && isRecord(value)) return checkObject(schema, value, path);
+  if (schema.type === "array" && Array.isArray(value) && schema.items) {
+    for (const [index, item] of value.entries()) {
+      const itemProblem = checkTree(schema.items, item, `${path}[${index}]`, true);
+      if (itemProblem) return itemProblem;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Mirrors T3's argument decoding: required keys, types, and enums, recursively through nested
+ * objects and array items. Unknown keys are ignored, and `null` on an optional key is accepted
+ * (`t3_queue` documents `beforeRunId: null`).
+ */
+function validateArguments(tool: SnapshotTool, args: JsonObject): string | undefined {
+  return checkObject(tool.inputSchema, args, "");
+}
+
+function invalidParams(tool: string, problem: string): Error {
+  return rpcError(ErrorCode.InvalidParams, `Invalid parameters for tool '${tool}': ${problem}`);
+}
+
+/**
+ * T3 requires a string `instanceId` in `defaultModelSelection` even though the published schema
+ * leaves it untyped; the stored selection keeps `instanceId`, `model`, and `options` only.
+ */
+function storedModelSelection(tool: string, value: unknown): JsonObject | null | undefined {
+  if (value === undefined || value === null) return value;
+  const selection = value as JsonObject;
+  if (typeof selection.instanceId !== "string") {
+    throw invalidParams(tool, `Expected string\n  at ["defaultModelSelection"]["instanceId"]`);
+  }
+  return {
+    instanceId: selection.instanceId,
+    model: String(selection.model),
+    ...(selection.options !== undefined ? { options: structuredClone(selection.options) } : {}),
+  };
+}
+
+/** The next UTC `HH:MM` on an allowed weekday (every day when `weekdays` is absent or empty). */
+function nextFixedTime(timeOfDay: string, weekdays: unknown): string | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(timeOfDay);
+  if (!match) return null;
+  const allowed = Array.isArray(weekdays) && weekdays.length > 0 ? new Set(weekdays) : undefined;
+  const now = Date.now();
+  for (let day = 0; day <= 7; day++) {
+    const candidate = new Date(now);
+    candidate.setUTCDate(candidate.getUTCDate() + day);
+    candidate.setUTCHours(Number(match[1]), Number(match[2]), 0, 0);
+    if (candidate.getTime() > now && (!allowed || allowed.has(candidate.getUTCDay()))) return candidate.toISOString();
+  }
+  return null;
+}
+
+/** The stored form of a `schedule_task` schedule; webhook tasks never keep a signing secret. */
+function normalizeSchedule(schedule: JsonObject): JsonObject {
+  switch (schedule.type) {
+    case "interval":
+      if (typeof schedule.everyMs !== "number") throw new ToolFailure("invalid_request", "An interval schedule needs everyMs.");
+      return { type: "interval", everyMs: schedule.everyMs };
+    case "fixed_time":
+      if (typeof schedule.timeOfDay !== "string") throw new ToolFailure("invalid_request", "A fixed_time schedule needs timeOfDay.");
+      return {
+        type: "fixed_time",
+        timeOfDay: schedule.timeOfDay,
+        ...(schedule.weekdays !== undefined ? { weekdays: structuredClone(schedule.weekdays) } : {}),
+      };
+    case "once":
+      if (typeof schedule.runAt !== "string" || Number.isNaN(Date.parse(schedule.runAt))) {
+        throw new ToolFailure("invalid_request", "A once schedule needs an ISO-8601 runAt.");
+      }
+      return { type: "once", runAt: schedule.runAt };
+    default: {
+      const signature = isRecord(schedule.signature)
+        ? { header: schedule.signature.header, encoding: schedule.signature.encoding, prefix: schedule.signature.prefix }
+        : null;
+      return {
+        type: "webhook",
+        signature,
+        maxDeliveryAgeMinutes: typeof schedule.maxDeliveryAgeMinutes === "number" ? schedule.maxDeliveryAgeMinutes : null,
+        ...(isRecord(schedule.dedupe) ? { dedupe: structuredClone(schedule.dedupe) } : {}),
+        ...(Array.isArray(schedule.filters) ? { filters: structuredClone(schedule.filters) } : {}),
+      };
+    }
+  }
+}
+
+function nextRunAt(task: Pick<ScheduledTaskRecord, "enabled" | "schedule">): string | null {
+  if (!task.enabled) return null;
+  const schedule = task.schedule;
+  switch (schedule.type) {
+    case "interval":
+      return new Date(Date.now() + Number(schedule.everyMs)).toISOString();
+    case "fixed_time":
+      return nextFixedTime(String(schedule.timeOfDay), schedule.weekdays);
+    case "once":
+      return String(schedule.runAt);
+    default:
+      return null;
+  }
+}
+
+/** Is `path` missing, or an empty directory? */
+function isEmptyOrMissing(path: string): boolean {
+  if (!existsSync(path)) return true;
+  try {
+    return readdirSync(path).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Scripted agent behavior, keyed off the same prompts the live suite uses. */
@@ -405,6 +645,12 @@ export class FakeT3 {
    * asynchronously: `execFileSync` blocks the event loop that must answer it and deadlocks.
    */
   readonly cliPath: string;
+  /**
+   * The fake's home directory: relative `t3_project_create` and `t3_project_clone` paths resolve
+   * against it, generated projects land in `<home>/.t3/projects/<title>`, and scheduled runs make
+   * worktrees under `<home>/.t3/worktrees/`.
+   */
+  readonly home: string;
   readonly calls: Array<{ tool: string; args: Record<string, unknown>; label: string }> = [];
   readonly cliInvocations: Array<{ args: string[]; envNames: string[] }> = [];
 
@@ -429,12 +675,18 @@ export class FakeT3 {
   private readonly drops = new Map<string, number>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly threads = new Map<string, ThreadRecord>();
+  /** Threads removed with their project; reading one is `thread_not_found`. */
+  private readonly deletedThreads = new Set<string>();
+  private readonly tasks = new Map<string, ScheduledTaskRecord>();
   private readonly idempotent = new Map<string, JsonObject>();
   private readonly waiters = new Set<() => void>();
+  /** Timers not owned by a run (title regeneration). */
+  private readonly timers = new Set<NodeJS.Timeout>();
   private readonly scratchProjectId: string;
   private httpServer: HttpServer | undefined;
   private sequence = 1000;
   private touchCounter = 0;
+  private taskCounter = 0;
   private stopped = false;
   private rejectingCredentials = false;
 
@@ -451,6 +703,8 @@ export class FakeT3 {
     this.toolsList = (JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8")) as { tools: SnapshotTool[] }).tools;
     this.toolsByName = new Map(this.toolsList.map((tool) => [tool.name, tool]));
 
+    this.home = join(tempDir, "home");
+    mkdirSync(this.home, { recursive: true });
     this.runtimeFile = join(tempDir, "server-runtime.json");
     writeFileSync(
       this.runtimeFile,
@@ -470,15 +724,10 @@ export class FakeT3 {
       { mode: 0o755 },
     );
 
-    const createdAt = nowIso();
     this.scratchProjectId = randomUUID();
     this.projects.set(this.scratchProjectId, {
-      id: this.scratchProjectId,
-      title: "No project",
-      workspaceRoot: join(tempDir, "scratch"),
+      ...this.newProject(this.scratchProjectId, "No project", join(tempDir, "scratch")),
       projectIcon: { kind: "lucide", name: "message-square-dashed", color: "gray" },
-      createdAt,
-      updatedAt: createdAt,
     });
     httpServer.on("request", this.onRequest);
   }
@@ -510,23 +759,62 @@ export class FakeT3 {
     return [...this.sessions.values()].filter((session) => session.label === label && this.isLive(session)).length;
   }
 
-  addProject(input: { title: string; workspaceRoot?: string }): { projectId: string } {
+  /**
+   * Registers a project. `defaultModelSelection` (default none) is what `schedule_task` requires
+   * and scheduled runs use; `git: true` creates `<workspaceRoot>/.git` (and the root), making the
+   * project a repository so `run_scheduled_task_now` can provision a worktree for it.
+   */
+  addProject(input: {
+    title: string;
+    workspaceRoot?: string;
+    defaultModelSelection?: { instanceId: string; model: string } | null;
+    git?: boolean;
+  }): { projectId: string } {
     const id = randomUUID();
-    const at = nowIso();
-    this.projects.set(id, {
-      id,
-      title: input.title,
-      workspaceRoot: input.workspaceRoot ?? join(this.tempDir, "projects", slug(input.title)),
-      projectIcon: null,
-      createdAt: at,
-      updatedAt: at,
-    });
+    const project = this.newProject(id, input.title, input.workspaceRoot ?? join(this.tempDir, "projects", slug(input.title)));
+    project.defaultModelSelection = input.defaultModelSelection ? { ...input.defaultModelSelection } : null;
+    if (input.git) mkdirSync(join(project.workspaceRoot, ".git"), { recursive: true });
+    this.projects.set(id, project);
     return { projectId: id };
   }
 
   /** Drops a project from `t3_project_list`; its threads keep the now-unknown `projectId`. */
   removeProject(projectId: string): void {
     if (!this.projects.delete(projectId)) throw new Error(`FakeT3.removeProject: unknown project ${projectId}`);
+  }
+
+  /** The project row exactly as `t3_project_list` shows it, or `undefined` once removed or deleted. */
+  project(projectId: string): Record<string, unknown> | undefined {
+    const project = this.projects.get(projectId);
+    return project ? this.projectRow(project) : undefined;
+  }
+
+  /** Every scheduled task, newest first, as `list_scheduled_tasks` shows it (webhook fields included). */
+  scheduledTasks(): Array<Record<string, unknown>> {
+    return this.sortedTasks().map((task) => this.taskView(task));
+  }
+
+  /**
+   * Seeds a scheduled task without `schedule_task`'s checks (no default model needed). A webhook
+   * schedule gets a `webhookUrl` under `https://connect.example.invalid/hooks/`, as T3 Connect would.
+   */
+  addScheduledTask(input: {
+    projectId: string;
+    title: string;
+    prompt: string;
+    schedule: Record<string, unknown>;
+    enabled?: boolean;
+  }): { scheduledTaskId: string } {
+    if (!this.projects.has(input.projectId)) throw new Error(`FakeT3.addScheduledTask: unknown project ${input.projectId}`);
+    const task = this.insertTask(`scheduled-task:${randomUUID()}`, {
+      title: input.title,
+      prompt: input.prompt,
+      projectId: input.projectId,
+      schedule: input.schedule,
+      enabled: input.enabled ?? true,
+      freshSession: false,
+    });
+    return { scheduledTaskId: task.scheduledTaskId };
   }
 
   addThread(input: {
@@ -654,6 +942,8 @@ export class FakeT3 {
     for (const thread of this.threads.values()) {
       for (const run of thread.runs) this.clearTimers(run);
     }
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
     await this.closeListener();
     rmSync(this.tempDir, { recursive: true, force: true });
   }
@@ -1097,11 +1387,29 @@ export class FakeT3 {
         return this.threadOrganize(args);
       case "t3_queue":
         return this.queue(args);
+      case "t3_thread_update":
+        return this.threadUpdate(args, context);
+      case "t3_project_create":
+        return this.projectCreate(args);
+      case "t3_project_update":
+        return this.projectUpdate(args);
+      case "t3_project_delete":
+        return this.projectDelete(args);
+      case "t3_project_clone":
+        return this.projectClone(args);
+      case "orchestrator_capabilities":
+        return this.capabilities(args);
+      case "schedule_task":
+        return this.scheduleTask(args, context);
+      case "list_scheduled_tasks":
+        return this.listScheduledTasks(args);
+      case "delete_scheduled_task":
+        return this.deleteScheduledTask(args);
+      case "run_scheduled_task_now":
+        return this.runScheduledTaskNow(args);
       case "task_status":
-        throw new ToolFailure(
-          "thread_credential_required",
-          "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread.",
-        );
+      case "create_threads":
+        throw new ToolFailure("thread_credential_required", THREAD_CREDENTIAL_REQUIRED);
       default:
         throw new ToolFailure("not_implemented", `${name} is not implemented in fake T3.`);
     }
@@ -1116,24 +1424,281 @@ export class FakeT3 {
     const cursor = optInt(args.cursor) ?? 0;
     const limit = clamp(optInt(args.limit) ?? 50, 1, 100);
     return {
-      projects: projects.slice(cursor, cursor + limit).map((project) => ({
-        id: project.id,
-        title: project.title,
-        workspaceRoot: project.workspaceRoot,
-        repositoryIdentity: null,
-        faviconPath: null,
-        projectIcon: project.projectIcon,
-        defaultModelSelection: null,
-        defaultThreadEnvMode: null,
-        autoPull: false,
-        scripts: [],
-        pinnedAt: null,
-        archivedAt: null,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-        deletedAt: null,
-      })),
+      projects: projects.slice(cursor, cursor + limit).map((project) => this.projectRow(project)),
       nextCursor: cursor + limit < projects.length ? cursor + limit : null,
+    };
+  }
+
+  /**
+   * Real T3 ignores `defaultModelSelection` here (the result is always `null`; set it with
+   * `t3_project_update`). Without `workspaceRoot` it makes `<home>/.t3/projects/<title>` with a
+   * README and a git repository; with one, the folder must exist unless
+   * `createWorkspaceRootIfMissing` is true.
+   */
+  private projectCreate(args: JsonObject): JsonObject {
+    storedModelSelection("t3_project_create", args.defaultModelSelection);
+    const title = String(args.title);
+    const given = optString(args.workspaceRoot);
+    const root = given !== undefined ? resolve(this.home, given) : join(this.home, ".t3", "projects", title);
+    if ([...this.projects.values()].some((project) => project.workspaceRoot === root)) {
+      throw new ToolFailure("invalid_request", "The workspace is already registered to a project.");
+    }
+    let id: string;
+    if (given === undefined) {
+      id = randomUUID();
+      mkdirSync(join(root, ".git"), { recursive: true });
+      if (!existsSync(join(root, "README.md"))) writeFileSync(join(root, "README.md"), `# ${title}\n`);
+    } else {
+      id = `mcp:${randomUUID()}`;
+      if (!existsSync(root)) {
+        if (args.createWorkspaceRootIfMissing !== true) {
+          throw new ToolFailure("orchestration_error", "The operation could not be completed.");
+        }
+        mkdirSync(root, { recursive: true });
+      }
+    }
+    const project = this.newProject(id, title, root);
+    if (Array.isArray(args.scripts)) project.scripts = structuredClone(args.scripts) as JsonObject[];
+    this.projects.set(id, project);
+    return this.projectRow(project);
+  }
+
+  private projectUpdate(args: JsonObject): JsonObject {
+    const project = this.requireProject(args.projectId);
+    const selection = storedModelSelection("t3_project_update", args.defaultModelSelection);
+    const at = nowIso();
+    if (typeof args.title === "string") project.title = args.title;
+    if (typeof args.workspaceRoot === "string") project.workspaceRoot = resolve(this.home, args.workspaceRoot);
+    if (selection !== undefined) project.defaultModelSelection = selection;
+    if (typeof args.autoPull === "boolean") project.autoPull = args.autoPull;
+    if (args.projectIcon !== undefined) project.projectIcon = isRecord(args.projectIcon) ? { ...args.projectIcon } : null;
+    if (args.faviconPath !== undefined) project.faviconPath = optString(args.faviconPath) ?? null;
+    if (args.defaultThreadEnvMode !== undefined) project.defaultThreadEnvMode = optString(args.defaultThreadEnvMode) ?? null;
+    if (Array.isArray(args.scripts)) project.scripts = structuredClone(args.scripts) as JsonObject[];
+    if (typeof args.pinned === "boolean") project.pinnedAt = args.pinned ? (project.pinnedAt ?? at) : null;
+    if (typeof args.archived === "boolean") project.archivedAt = args.archived ? (project.archivedAt ?? at) : null;
+    project.updatedAt = at;
+    return this.projectRow(project);
+  }
+
+  /** Removes the project and its threads; the folder on disk stays. */
+  private projectDelete(args: JsonObject): JsonObject {
+    const project = this.requireProject(args.projectId);
+    const threads = [...this.threads.values()].filter((thread) => thread.projectId === project.id);
+    if (threads.length > 0 && args.force !== true) {
+      throw new ToolFailure("invalid_request", "The project has threads; pass force: true to delete it.");
+    }
+    for (const thread of threads) {
+      for (const run of thread.runs) this.finishRun(thread, run, "cancelled", false);
+      this.threads.delete(thread.threadId);
+      this.deletedThreads.add(thread.threadId);
+    }
+    this.projects.delete(project.id);
+    project.updatedAt = nowIso();
+    this.notify();
+    return this.projectRow(project, project.updatedAt);
+  }
+
+  /** A clone is a `.git` marker and a README in the destination; nothing touches the network. */
+  private projectClone(args: JsonObject): JsonObject {
+    const cwd = resolve(this.home, String(args.destinationPath));
+    if (!isEmptyOrMissing(cwd)) throw new ToolFailure("orchestration_error", "Destination path already exists and is not empty.");
+    const remoteUrl = optString(args.remoteUrl);
+    const nameWithOwner = optString(args.repository);
+    let result: JsonObject;
+    if (remoteUrl !== undefined) {
+      result = { cwd, remoteUrl, repository: null };
+    } else if (args.provider === "github" && nameWithOwner !== undefined && /^[^/\s]+\/[^/\s]+$/.test(nameWithOwner)) {
+      const url = `https://github.com/${nameWithOwner}`;
+      const sshUrl = `git@github.com:${nameWithOwner}.git`;
+      result = {
+        cwd,
+        remoteUrl: args.protocol === "ssh" ? sshUrl : url,
+        repository: { provider: "github", nameWithOwner, url, sshUrl },
+      };
+    } else {
+      throw new ToolFailure("invalid_request", "Pass remoteUrl, or provider 'github' with repository 'owner/name'.");
+    }
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+    writeFileSync(join(cwd, "README"), `Cloned from ${String(result.remoteUrl)}\n`);
+    return result;
+  }
+
+  /** A trimmed copy of a real catalog for an outside caller; `search` filters models by id or label. */
+  private capabilities(args: JsonObject): JsonObject {
+    const search = optString(args.search)?.trim().toLowerCase();
+    const providers = CAPABILITY_PROVIDERS.map((provider) => structuredClone(provider)).flatMap((provider) => {
+      if (!search) return [provider];
+      const models = (provider.models as JsonObject[]).filter((model) =>
+        [model.id, model.label].some((value) => typeof value === "string" && value.toLowerCase().includes(search)),
+      );
+      return models.length > 0 ? [{ ...provider, models }] : [];
+    });
+    return {
+      parentThreadId: null,
+      inheritedProviderInstanceId: null,
+      inheritedModel: null,
+      inheritedOptions: [],
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      providers,
+      features: { ...CAPABILITY_FEATURES },
+    };
+  }
+
+  private threadUpdate(args: JsonObject, context: CallContext): JsonObject {
+    const action = String(args.action);
+    const title = optString(args.title);
+    if ((action === "rename") !== (title !== undefined)) {
+      throw invalidParams("t3_thread_update", "rename requires title; regenerate_title does not accept one.");
+    }
+    const thread = this.requireTargetThread(args.threadId);
+    const commandId = `command:mcp:${encodeURIComponent(`client:${context.clientId}`)}:thread-update:${encodeURIComponent(thread.threadId)}:${action}:${optString(args.clientRequestId) ?? randomUUID()}`;
+    const previous = this.idempotent.get(commandId);
+    if (previous) return previous;
+
+    this.touch(thread);
+    if (title !== undefined) {
+      thread.title = title;
+    } else {
+      thread.titleRegeneration = { requestId: commandId, startedAt: thread.updatedAt };
+      this.later(this.completionDelayMs, () => {
+        if (this.threads.get(thread.threadId) !== thread || thread.titleRegeneration?.requestId !== commandId) return;
+        const firstMessage = thread.items.find((item) => item.type === "user_message")?.text.trim();
+        thread.title = firstMessage ? firstMessage.slice(0, 40) : REGENERATED_TITLE_FALLBACK;
+        thread.titleRegeneration = null;
+        this.touch(thread);
+        this.notify();
+      });
+    }
+    const result = {
+      threadId: thread.threadId,
+      action,
+      commandId,
+      sequence: this.nextSequence(),
+      title: thread.title,
+      titleRegeneration: thread.titleRegeneration ? { ...thread.titleRegeneration } : null,
+      linkedPullRequest: null,
+      updatedAt: thread.updatedAt,
+    };
+    this.idempotent.set(commandId, result);
+    return result;
+  }
+
+  /**
+   * Create (no `scheduledTaskId`) or update. Outside callers are never bound to a thread, so
+   * `boundThreadId` is always `null`; `clientRequestId` makes creation idempotent.
+   */
+  private scheduleTask(args: JsonObject, context: CallContext): JsonObject {
+    const scheduledTaskId = optString(args.scheduledTaskId);
+    if (scheduledTaskId !== undefined) return this.updateScheduledTask(scheduledTaskId, args);
+
+    const projectId = optString(args.projectId);
+    if (projectId === undefined) throw new ToolFailure("target_required", `Pass projectId: ${NOT_IN_THREAD}`);
+    const project = this.requireProject(projectId);
+    if (!project.defaultModelSelection) {
+      throw new ToolFailure(
+        "invalid_request",
+        `Project ${project.id} has no default model, so this caller cannot pick one for it.`,
+      );
+    }
+    const clientRequestId = optString(args.clientRequestId);
+    const id =
+      clientRequestId !== undefined
+        ? `scheduled-task:command:mcp:${encodeURIComponent(`client:${context.clientId}`)}:schedule-task:${clientRequestId}`
+        : `scheduled-task:${randomUUID()}`;
+    const existing = this.tasks.get(id);
+    if (existing) return this.taskView(existing);
+
+    const prompt = optString(args.prompt);
+    if (prompt === undefined || !isRecord(args.schedule)) {
+      throw new ToolFailure("invalid_request", "Pass prompt and schedule to create a scheduled task.");
+    }
+    return this.taskView(
+      this.insertTask(id, {
+        title: optString(args.title) ?? prompt.slice(0, 80),
+        prompt,
+        projectId: project.id,
+        schedule: args.schedule,
+        enabled: args.enabled !== false,
+        freshSession: args.freshSession === true,
+      }),
+    );
+  }
+
+  private updateScheduledTask(scheduledTaskId: string, args: JsonObject): JsonObject {
+    const task = this.requireTask(scheduledTaskId);
+    if (typeof args.projectId === "string") task.projectId = this.requireProject(args.projectId).id;
+    if (typeof args.title === "string") task.title = args.title;
+    if (typeof args.prompt === "string") task.prompt = args.prompt;
+    if (typeof args.freshSession === "boolean") task.freshSession = args.freshSession;
+    const scheduleChanged = isRecord(args.schedule);
+    const enabledChanged = typeof args.enabled === "boolean" && args.enabled !== task.enabled;
+    if (isRecord(args.schedule)) this.applySchedule(task, args.schedule);
+    if (typeof args.enabled === "boolean") task.enabled = args.enabled;
+    if (scheduleChanged || enabledChanged) task.nextRunAt = nextRunAt(task);
+    return this.taskView(task);
+  }
+
+  private listScheduledTasks(args: JsonObject): JsonObject {
+    const projectId = optString(args.projectId);
+    return {
+      tasks: this.sortedTasks()
+        .filter((task) => projectId === undefined || task.projectId === projectId)
+        .map((task) => this.taskView(task)),
+    };
+  }
+
+  private deleteScheduledTask(args: JsonObject): JsonObject {
+    const task = this.requireTask(String(args.scheduledTaskId));
+    this.tasks.delete(task.scheduledTaskId);
+    return { scheduledTaskId: task.scheduledTaskId, deleted: true };
+  }
+
+  /**
+   * Starts a new thread in the task's project, even for a disabled task. A project without a
+   * `.git` fails workspace preparation at once (as real T3 does); otherwise a worktree directory
+   * is made and the prompt runs through the scripted agent. "succeeded" means started.
+   */
+  private runScheduledTaskNow(args: JsonObject): JsonObject {
+    const task = this.tasks.get(String(args.taskId));
+    if (!task) throw new ToolFailure("invalid_request", "The scheduled task was not found.");
+    const project = this.requireProject(task.projectId);
+    const repository = existsSync(join(project.workspaceRoot, ".git"));
+    let worktreePath: string | null = null;
+    let branch: string | null = null;
+    if (repository) {
+      const short = randomBytes(4).toString("hex");
+      worktreePath = join(this.home, ".t3", "worktrees", basename(project.workspaceRoot), `t3-${short}-${randomBytes(8).toString("hex")}`);
+      mkdirSync(worktreePath, { recursive: true });
+      branch = `t3/${short}`;
+    }
+    const thread = this.createThread({
+      threadId: `thread:project:${encodeURIComponent(project.id)}:${randomUUID()}`,
+      projectId: project.id,
+      title: task.title,
+      createdBy: "agent",
+      creationSource: "mcp",
+      modelSelection: { ...(project.defaultModelSelection ?? DEFAULT_MODEL_SELECTION) },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      worktreePath,
+      createdAt: nowIso(),
+    });
+    thread.branch = branch;
+    const messageId = `scheduled-task-message:${task.scheduledTaskId}:${Date.now()}:manual`;
+    const run = this.newRun(thread, "preparing", task.prompt, messageId);
+    if (repository) this.beginRun(thread, run, "launch", messageId);
+    else this.failWorkspacePreparation(thread, run, project.workspaceRoot);
+    task.lastRunStatus = "succeeded";
+    task.runCount += 1;
+    return {
+      taskId: task.scheduledTaskId,
+      threadId: thread.threadId,
+      link: this.link(thread.threadId),
+      lastRunStatus: task.lastRunStatus,
+      runCount: task.runCount,
+      nextRunAt: task.nextRunAt,
     };
   }
 
@@ -1553,6 +2118,142 @@ export class FakeT3 {
   }
 
   // ---------------------------------------------------------------------------
+  // Project and scheduled-task model
+  // ---------------------------------------------------------------------------
+
+  private newProject(id: string, title: string, workspaceRoot: string): ProjectRecord {
+    const at = nowIso();
+    return {
+      id,
+      title,
+      workspaceRoot,
+      faviconPath: null,
+      projectIcon: null,
+      defaultModelSelection: null,
+      defaultThreadEnvMode: null,
+      autoPull: false,
+      scripts: [],
+      pinnedAt: null,
+      archivedAt: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  private projectRow(project: ProjectRecord, deletedAt: string | null = null): JsonObject {
+    return {
+      id: project.id,
+      title: project.title,
+      workspaceRoot: project.workspaceRoot,
+      repositoryIdentity: null,
+      faviconPath: project.faviconPath,
+      projectIcon: project.projectIcon ? { ...project.projectIcon } : null,
+      defaultModelSelection: project.defaultModelSelection ? structuredClone(project.defaultModelSelection) : null,
+      defaultThreadEnvMode: project.defaultThreadEnvMode,
+      autoPull: project.autoPull,
+      scripts: structuredClone(project.scripts),
+      pinnedAt: project.pinnedAt,
+      archivedAt: project.archivedAt,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+      deletedAt,
+    };
+  }
+
+  private requireProject(projectId: unknown): ProjectRecord {
+    const project = this.projects.get(String(projectId));
+    if (!project) throw new ToolFailure("invalid_request", `Project ${String(projectId)} was not found.`);
+    return project;
+  }
+
+  private insertTask(
+    scheduledTaskId: string,
+    input: { title: string; prompt: string; projectId: string; schedule: JsonObject; enabled: boolean; freshSession: boolean },
+  ): ScheduledTaskRecord {
+    const task: ScheduledTaskRecord = {
+      scheduledTaskId,
+      title: input.title,
+      prompt: input.prompt,
+      enabled: input.enabled,
+      projectId: input.projectId,
+      freshSession: input.freshSession,
+      schedule: {},
+      nextRunAt: null,
+      lastRunStatus: "never",
+      runCount: 0,
+      webhookUrl: null,
+      webhookSignature: null,
+      created: ++this.taskCounter,
+    };
+    this.applySchedule(task, input.schedule);
+    task.nextRunAt = nextRunAt(task);
+    this.tasks.set(scheduledTaskId, task);
+    return task;
+  }
+
+  /** Stores a normalized schedule; webhook tasks keep (or get) their URL, others drop it. */
+  private applySchedule(task: ScheduledTaskRecord, schedule: JsonObject): void {
+    task.schedule = normalizeSchedule(schedule);
+    if (task.schedule.type === "webhook") {
+      task.webhookUrl ??= `${WEBHOOK_URL_PREFIX}${secret(24)}`;
+      task.webhookSignature = task.schedule.signature ? "set" : "none";
+    } else {
+      task.webhookUrl = null;
+      task.webhookSignature = null;
+    }
+  }
+
+  private taskView(task: ScheduledTaskRecord): JsonObject {
+    return {
+      scheduledTaskId: task.scheduledTaskId,
+      title: task.title,
+      prompt: task.prompt,
+      enabled: task.enabled,
+      projectId: task.projectId,
+      boundThreadId: null,
+      freshSession: task.freshSession,
+      schedule: structuredClone(task.schedule),
+      nextRunAt: task.nextRunAt,
+      lastRunStatus: task.lastRunStatus,
+      ...(task.schedule.type === "webhook" ? { webhookUrl: task.webhookUrl, webhookSignature: task.webhookSignature } : {}),
+    };
+  }
+
+  private sortedTasks(): ScheduledTaskRecord[] {
+    return [...this.tasks.values()].sort((a, b) => b.created - a.created);
+  }
+
+  private requireTask(scheduledTaskId: string): ScheduledTaskRecord {
+    const task = this.tasks.get(scheduledTaskId);
+    if (!task) throw new ToolFailure("task_not_found", `Scheduled task ${scheduledTaskId} was not found.`);
+    return task;
+  }
+
+  /** Real T3's immediate failure when a scheduled run's project folder is not a git repository. */
+  private failWorkspacePreparation(thread: ThreadRecord, run: RunRecord, workspaceRoot: string): void {
+    const message = `Workspace preparation failed during provision worktree: Git command failed in GitWorkflowService.resolveWorktreeBaseRemote (${workspaceRoot}): Failed to resolve the VCS driver for this Git command.`;
+    const messageId = run.messageId ?? randomUUID();
+    this.addUserItem(thread, run.runId, messageId, run.message ?? "", messageId);
+    for (const [kind, type, text] of [
+      ["workspace-preparation", "command_execution", `$ Preparing workspace\n${message}`],
+      ["workspace-preparation-failure", "error", message],
+    ]) {
+      this.addItem(thread, {
+        itemId: `turn-item:provider:${run.providerInstanceId}:native-item:${encodeURIComponent(`${kind}:${run.runId}`)}`,
+        runId: run.runId,
+        messageId: null,
+        createdBy: null,
+        creationSource: null,
+        type,
+        status: "failed",
+        title: "Workspace preparation failed",
+        text,
+      });
+    }
+    this.finishRun(thread, run, "failed");
+  }
+
+  // ---------------------------------------------------------------------------
   // Thread model
   // ---------------------------------------------------------------------------
 
@@ -1590,6 +2291,7 @@ export class FakeT3 {
       snoozedUntil: null,
       pinnedAt: null,
       unread: false,
+      titleRegeneration: null,
       createdAt: input.createdAt,
       updatedAt: input.createdAt,
       touched: ++this.touchCounter,
@@ -1626,13 +2328,16 @@ export class FakeT3 {
     return run;
   }
 
-  /** Starts a run created as `preparing` (launch) or `starting` (send or dequeue). */
-  private beginRun(thread: ThreadRecord, run: RunRecord, phase: "launch" | "send"): void {
+  /**
+   * Starts a run created as `preparing` (launch or scheduled run) or `starting` (send or dequeue).
+   * A launch keys its user item by thread id unless `userItemKey` says otherwise.
+   */
+  private beginRun(thread: ThreadRecord, run: RunRecord, phase: "launch" | "send", userItemKey?: string): void {
     thread.settled = false;
     thread.settledAt = null;
     if (run.message !== null) {
       const messageId = run.messageId ?? randomUUID();
-      this.addUserItem(thread, run.runId, messageId, run.message, phase === "launch" ? thread.threadId : undefined);
+      this.addUserItem(thread, run.runId, messageId, run.message, userItemKey ?? (phase === "launch" ? thread.threadId : undefined));
     }
     this.touch(thread);
     this.notify();
@@ -1889,7 +2594,7 @@ export class FakeT3 {
       interactionMode: thread.interactionMode,
       linkedPullRequest: null,
       pullRequests: [],
-      titleRegeneration: null,
+      titleRegeneration: thread.titleRegeneration ? { ...thread.titleRegeneration } : null,
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       parentThreadId: thread.parentThreadId,
@@ -1917,8 +2622,11 @@ export class FakeT3 {
 
   private requireThread(threadId: unknown): ThreadRecord {
     const thread = this.threads.get(String(threadId));
-    if (!thread) throw new ToolFailure("not_found", `Thread ${String(threadId)} was not found.`);
-    return thread;
+    if (thread) return thread;
+    if (this.deletedThreads.has(String(threadId))) {
+      throw new ToolFailure("thread_not_found", `Thread ${String(threadId)} is no longer available.`);
+    }
+    throw new ToolFailure("not_found", `Thread ${String(threadId)} was not found.`);
   }
 
   /** Tools whose `threadId` is optional inside T3 refuse outside callers without it. */
@@ -1950,6 +2658,16 @@ export class FakeT3 {
     }, ms);
     timer.unref();
     run.timers.add(timer);
+  }
+
+  /** Like `after`, for work no run owns; cleared on `stop`. */
+  private later(ms: number, action: () => void): void {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      if (!this.stopped) action();
+    }, ms);
+    timer.unref();
+    this.timers.add(timer);
   }
 
   private clearTimers(run: RunRecord): void {
