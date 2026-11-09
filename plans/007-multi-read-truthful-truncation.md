@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 79ddffc..HEAD -- src/executor.ts src/executor-multi-read.test.ts`
+> **Drift check (run first)**: `git diff --stat 97e507c..HEAD -- src/executor.ts src/executor-multi-read.test.ts`
 > Plan 006 is expected to have changed the end of `multiRead()` in `src/executor.ts`
 > (it adds `result: text` to `structuredContent`). Any *other* change in the
 > excerpted regions below is drift: treat it as a STOP condition.
@@ -19,7 +19,7 @@
 - **Risk**: LOW
 - **Depends on**: plans/006-multi-read-mcp-output-schema.md (same function; land 006 first)
 - **Category**: bug
-- **Planned at**: commit `79ddffc`, 2026-11-04
+- **Planned at**: commit `97e507c`, 2026-11-04
 
 ## Why this matters
 

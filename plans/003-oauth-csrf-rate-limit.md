@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat ee85288..HEAD -- src/oauth-provider.ts src/server.ts src/config.ts src/oauth-provider.test.ts`
+> **Drift check (run first)**: `git diff --stat 2effcdd..HEAD -- src/oauth-provider.ts src/server.ts src/config.ts src/oauth-provider.test.ts`
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
@@ -19,7 +19,7 @@
 - **Risk**: LOW
 - **Depends on**: none
 - **Category**: security
-- **Planned at**: commit `ee85288`, 2026-08-28
+- **Planned at**: commit `2effcdd`, 2026-08-28
 - **Issue**: —
 
 ## Why this matters

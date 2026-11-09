@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 79ddffc..HEAD -- scripts/versioned-build.mjs scripts/rebuild-local.mjs scripts/release-utils.mjs scripts/release-utils.test.mjs`
+> **Drift check (run first)**: `git diff --stat 97e507c..HEAD -- scripts/versioned-build.mjs scripts/rebuild-local.mjs scripts/release-utils.mjs scripts/release-utils.test.mjs`
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition.
@@ -19,18 +19,18 @@
 - **Risk**: LOW
 - **Depends on**: none
 - **Category**: dx
-- **Planned at**: commit `79ddffc`, 2026-11-04
+- **Planned at**: commit `97e507c`, 2026-11-04
 
 ## Why this matters
 
-Since the npm→Bun migration (commit `dc41e21`), `bun run build` (the versioned
+Since the npm→Bun migration (commit `faeac4d`), `bun run build` (the versioned
 release build) and `bun run rebuild:local` (rebuild, restart
 `devspace.service`, verify `/healthz`) both fail. Their `spawnPm` helper
 assumes `npm_execpath` points at a JavaScript file (`npm-cli.js`) and runs it
 with `node`. Under `bun run`, `npm_execpath` is the **Bun native binary**
 (`~/.bun/bin/bun`), so the scripts execute `node /path/to/bun run build:compile`,
 and node fails trying to parse an ELF file. The failure was reproduced at
-`79ddffc`: `node <bun> --version` exits 1. CI only runs `build:check`, so
+`97e507c`: `node <bun> --version` exits 1. CI only runs `build:check`, so
 nothing caught it. The package version has been stuck at 2.0.0 ever since.
 
 ## Current state
@@ -184,7 +184,7 @@ git worktree add --detach "$WT" HEAD
 (cd "$WT" && bun install --frozen-lockfile && bun run build)
 ```
 
-(A reviewer confirmed that at `79ddffc` a detached worktree passes every versioned-build precondition and, before this fix, fails exactly at `spawnPm` with the node `SyntaxError`.)
+(A reviewer confirmed that at `97e507c` a detached worktree passes every versioned-build precondition and, before this fix, fails exactly at `spawnPm` with the node `SyntaxError`.)
 
 **Verify**:
 - The output contains the line `$ bun run clean && bun run build:app && tsc -p tsconfig.build.json`, then `$ vite build`, then `Built DevSpace <next patch version>` (`2.0.1` when this plan was written). `tsc` prints nothing on success, so its appearance in that first echoed line is the evidence it ran.

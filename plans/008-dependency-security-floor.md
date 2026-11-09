@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 79ddffc..HEAD -- package.json bun.lock`
+> **Drift check (run first)**: `git diff --stat 97e507c..HEAD -- package.json bun.lock`
 > If either file changed since this plan was written, re-run `bun audit` and
 > compare against "Current state" before proceeding; if the vulnerable versions
 > listed below are already gone, mark this plan REJECTED (fixed independently).
@@ -19,7 +19,7 @@
 - **Risk**: MED (MCP SDK minor bump touches auth middleware)
 - **Depends on**: none (plan 013 depends on this one)
 - **Category**: security
-- **Planned at**: commit `79ddffc`, 2026-11-04
+- **Planned at**: commit `97e507c`, 2026-11-04
 
 ## Why this matters
 
@@ -34,7 +34,7 @@ spoofing bug that matters as soon as a subnet-style `trust proxy` is used
 
 ## Current state
 
-`bun audit` at `79ddffc`: 56 vulnerabilities (1 critical, 18 high, 31 moderate, 6 low). Relevant installed versions (`bun pm ls --all`):
+`bun audit` at `97e507c`: 56 vulnerabilities (1 critical, 18 high, 31 moderate, 6 low). Relevant installed versions (`bun pm ls --all`):
 
 | Package | Installed | Fixed in | Advisory (examples) | Comes from |
 |---|---|---|---|---|

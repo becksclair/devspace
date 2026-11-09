@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 79ddffc..HEAD -- src/shell-environment.ts src/sky-cua/bridge.ts src/node-repl-bridge.ts src/server.ts package.json`
+> **Drift check (run first)**: `git diff --stat 97e507c..HEAD -- src/shell-environment.ts src/sky-cua/bridge.ts src/node-repl-bridge.ts src/server.ts package.json`
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition. (Plan 013 edits a different region of
@@ -21,7 +21,7 @@
 - **Risk**: LOW
 - **Depends on**: none
 - **Category**: security
-- **Planned at**: commit `79ddffc`, 2026-11-04
+- **Planned at**: commit `97e507c`, 2026-11-04
 
 ## Why this matters
 

@@ -7,7 +7,7 @@
 - ci: allow manual workflow dispatch
 - feat(skills): autoload configured skills in open_workspace
 
-<!-- devspace-release: version=2.0.2 commit=87a084c4e8949fcd79feca84d813b453c97a31eb -->
+<!-- devspace-release: version=2.0.2 commit=0e2d71c5bb7547728f48a952f34f3372379b43d9 -->
 ## 2.0.1 - 2026-11-04
 
 - ci: install tmux for trusted-host tests
@@ -83,7 +83,7 @@
 - fix(server): accept MCP request bodies up to the SDK limit
 - Merge branch 'bex/sad-lamport-b02e37'
 
-<!-- devspace-release: version=2.0.1 commit=33d0ee8325ffe45e2e86c0b40b12ae6c33f85995 -->
+<!-- devspace-release: version=2.0.1 commit=45d1aba15cbd73e5eb59b128d81b2af3a2eadd69 -->
 ## Unreleased
 
 - fix: evict idle MCP sessions so the gateway no longer accumulates memory

@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 79ddffc..HEAD -- AGENTS.md CLAUDE.md package.json src/tool-contract.ts scripts/versioned-build.mjs scripts/rebuild-local.mjs .gitea/workflows/publish-runtime-artifact.yml`
+> **Drift check (run first)**: `git diff --stat 97e507c..HEAD -- AGENTS.md CLAUDE.md package.json src/tool-contract.ts scripts/versioned-build.mjs scripts/rebuild-local.mjs .gitea/workflows/publish-runtime-artifact.yml`
 > `package.json` is expected to differ if plans 006/008/010/013 landed (new test
 > entries, dependency floors). That is fine. Any change to `AGENTS.md`, or a
 > `CLAUDE.md` that already exists, is drift: STOP and compare.
@@ -19,7 +19,7 @@
 - **Risk**: LOW
 - **Depends on**: none
 - **Category**: dx
-- **Planned at**: commit `79ddffc`, 2026-11-04
+- **Planned at**: commit `97e507c`, 2026-11-04
 
 ## Why this matters
 
@@ -50,10 +50,10 @@ same file. The import is documented not to load the file twice.
 - `AGENTS.md` (32 lines) has a title, three paragraphs of intent, a workspace-workflow paragraph containing claim 2, and a "Core constraints" bullet list whose second bullet is claim 1. There is no `CLAUDE.md` in the repo root.
 - `AGENTS.md` line map, for Step 1: title = line 1. The three intent paragraphs = lines 3-5, 7-9, 11-14. The workspace-workflow paragraph = lines 16-24; its last sentence (claim 2) starts "`AGENTS.md` files are returned automatically…" (lines 21-24). The core-constraints bullet to replace (claim 1) = line 29.
 - DevSpace itself loads the **first** matching root instruction file in the order `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD` (`docs/chatgpt-coding-workflow.md:91-96`; `src/workspaces.ts:700,716-727`). Adding `CLAUDE.md` does not change what DevSpace loads for this repo. The new root `CLAUDE.md` will, however, be listed in `availableAgentsFiles` (`src/workspaces.ts:575-590`); that is a one-line file and harmless.
-- Facts the new guide must state (all verified at `79ddffc`):
+- Facts the new guide must state (all verified at `97e507c`):
   - Package manager: Bun (`bun.lock`; CI `bun install --frozen-lockfile`). Runtime: Node `>=24 <27` (`package.json` `engines`). No `package.json` script loads `.env`. `bun run <script>` executes `node`/`tsx` children, and Bun injects `.env` only into code it runs itself (`bun file.ts`) or when `--env-file=.env` is passed. Export variables in the shell or the systemd unit; `.env.example` documents the names.
   - `bun run typecheck` → `tsc -p tsconfig.json --noEmit`.
-  - `bun run test` → `node --test scripts/release-utils.test.mjs` followed by an `&&` chain of `tsx src/<name>.test.ts` scripts. Takes about 65 s and needs `tmux` on PATH. New test files must be appended to that script by hand, or they never run (orphaned tests already happened once; see commits `b027d45`, `7fee803`). Run one suite with `bunx tsx src/<name>.test.ts`. `bun run test:protocol` runs the gateway/node protocol subset. **`bun test` is not the test command**: it invokes Bun's own runner, which these scripts are not written for.
+  - `bun run test` → `node --test scripts/release-utils.test.mjs` followed by an `&&` chain of `tsx src/<name>.test.ts` scripts. Takes about 65 s and needs `tmux` on PATH. New test files must be appended to that script by hand, or they never run (orphaned tests already happened once; see commits `8ff08dd`, `6fa848d`). Run one suite with `bunx tsx src/<name>.test.ts`. `bun run test:protocol` runs the gateway/node protocol subset. **`bun test` is not the test command**: it invokes Bun's own runner, which these scripts are not written for.
   - `bun run build:check` → clean, `vite build` (UI into `dist/ui`), then `tsc -p tsconfig.build.json`. This is the non-mutating build.
   - `bun run build` (`scripts/versioned-build.mjs`) bumps the version in `package.json`, prepends `CHANGELOG.md`, and requires committed build inputs. `bun run rebuild:local` additionally restarts `devspace.service` and probes `/healthz`. Agents must not run either unless explicitly asked.
   - `TOOL_CONTRACT_HASH` is the sha256 of `CONTRACT_DESCRIPTION`, a hand-maintained per-tool field list in `src/tool-contract.ts:63-89`. It is deliberately **not** derived from the Zod `TOOL_SCHEMAS`. Any wire-shape change must update `TOOL_SCHEMAS`, `CONTRACT_DESCRIPTION` (this is what changes the hash), and the mirrored `inputSchema` in `src/server.ts`, all together. Both the node server (`src/node-server.ts`) and the gateway client (`src/remote-node-client.ts`) reject a peer whose hash differs, so the gateway and every node must redeploy together.

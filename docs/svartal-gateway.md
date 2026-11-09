@@ -7,7 +7,7 @@ The public endpoint remains `https://devspace-saga.heliasar.com/mcp`. Svartal no
 | Component | Location |
 | --- | --- |
 | Gateway | Svartal LaunchAgent `com.rclair.devspace-gateway`, loopback `127.0.0.1:7679` |
-| Runtime | Node 24 at `~/.local/share/mise/installs/node/24/bin/node`, version 2.0.2 built from source `065844c6a4a7ad5c83de4d2ee4ad334dcc2ef2ed` in `~/projects/devspace` |
+| Runtime | Node 24 at `~/.local/share/mise/installs/node/24/bin/node`, version 2.0.2 built from source `c75139e6cbe46933c394c42b6c25390970793a39` in `~/projects/devspace` (`065844c6a4a7ad5c83de4d2ee4ad334dcc2ef2ed` before the 2026-11-09 history rewrite; builds made before then still report that ID) |
 | Launcher | `~/.local/bin/devspace-gateway`, loads protected `~/.config/devspace-svartal/node.env` |
 | Gateway configuration | `~/.config/devspace-svartal/gateway.json` |
 | OAuth and workspace bindings | `~/.local/state/devspace-gateway/devspace.sqlite`, copied using SQLite backup from Asgard |

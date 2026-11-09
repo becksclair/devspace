@@ -7,7 +7,7 @@
 > in `plans/README.md` — unless a reviewer dispatched you and told you they
 > maintain the index.
 >
-> **Drift check (run first)**: `git diff --stat 79ddffc..HEAD -- src/config.ts src/config.test.ts src/logger.ts src/server.ts docs/configuration.md .env.example package.json`
+> **Drift check (run first)**: `git diff --stat 97e507c..HEAD -- src/config.ts src/config.test.ts src/logger.ts src/server.ts docs/configuration.md .env.example package.json`
 > Plan 008 changes `package.json`/`bun.lock` and plan 010 edits `src/server.ts`
 > around the bridge call sites (lines ~65, ~1685) and `createGatewayServer`.
 > Those are expected. Any change to the excerpts below is drift: treat it as a
@@ -20,7 +20,7 @@
 - **Risk**: MED (changes the default client-IP derivation on loopback binds)
 - **Depends on**: plans/008-dependency-security-floor.md (needs `proxy-addr ≥ 2.0.8`; the "loopback" trust setting is exactly what the critical advisory GHSA-jqcg-44mw-7w3h affects)
 - **Category**: security
-- **Planned at**: commit `79ddffc`, 2026-11-04
+- **Planned at**: commit `97e507c`, 2026-11-04
 
 ## Why this matters
 

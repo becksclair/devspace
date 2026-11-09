@@ -1,6 +1,6 @@
 # Implementation Plans
 
-Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `ee85288`). Plans 006-014 come from a second deep audit on 2026-11-04 (at `79ddffc`). The user selected F01-F08 plus F15 from that audit's findings table. Execute in the recommended order given under "Dependency notes (006-014)"; the table is numeric, not an execution order. Each executor: read the plan fully before starting, honor its STOP conditions, and update your row when done.
+Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcdd`). Plans 006-014 come from a second deep audit on 2026-11-04 (at `97e507c`). The user selected F01-F08 plus F15 from that audit's findings table. Execute in the recommended order given under "Dependency notes (006-014)"; the table is numeric, not an execution order. Each executor: read the plan fully before starting, honor its STOP conditions, and update your row when done.
 
 ## Execution order & status
 
@@ -38,7 +38,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 After writing, plans 006-014 were cold-read by seven parallel Fable reviewers: 006+007, 008+013, 009, 010, 011, 012, and 014 with this index. Most reviewers dry-ran their plan in a disposable worktree. Two blockers were fixed: 012's orphaned shared hello could crash the gateway on an unhandled rejection, and 013's Step 1 test passed before the fix. Several major issues were fixed too: verification steps that could not be observed in 006/007/013, a wrong fact about imports in 011, and false facts about the hash derivation and `.env` in 014. Plans 009, 010 and 011 were dry-run end to end with every gate green.
 
-## 2026-11-04 audit (at `79ddffc`): scope and baseline
+## 2026-11-04 audit (at `97e507c`): scope and baseline
 
 - **Baseline**: `bun run typecheck` clean (0.7s); `bun run test` green (≈64s); working tree clean. Plans 001-005 verified as still holding.
 - **Audited**: whole repo, all nine categories, one read-only auditor per category (DX and docs combined). Every cited finding was re-opened and vetted by the advisor. F01 (multi_read over MCP) and F05 (`spawnPm` under Bun) were reproduced live. `bun audit` was run; the local `devspace.sqlite` was inspected read-only for OAuth row counts.
@@ -96,7 +96,7 @@ Prior-audit items resolved by this audit:
 
 ---
 
-# 2026-08-28 audit (historical, at `ee85288`)
+# 2026-08-28 audit (historical, at `2effcdd`)
 
 ## Dependency notes
 
@@ -110,7 +110,7 @@ Prior-audit items resolved by this audit:
 - Commands verified: `npm run typecheck` (tsc --noEmit), `npm test` (node --test + 28x tsx chain), `npm run build:check` (vite build + tsc -p tsconfig.build.json), `npm run build` (versioned), `npm ci`/`npm install` (lockfile).
 - Whole repo deep pass (~16.2k lines, 67 src entries): `src/server.ts:2287`, `src/workspaces.ts:801`, `src/cli.ts:814`, `src/executor.ts:589`, `src/gateway-router.ts:422`, `src/terminal-manager.ts:418`, plus all stores, bridges, workspaces, roots, config, oauth, gateway, UI.
 - All nine audit categories: correctness, security, performance, test coverage, tech debt/architecture, dependencies/migrations, DX/tooling, docs, direction.
-- Git HEAD: `ee85288`, main, clean working tree.
+- Git HEAD: `2effcdd`, main, clean working tree.
 
 ## What was not audited
 
@@ -179,4 +179,4 @@ Additional vetted low-priority/leverage-deferred findings retained in index for 
 
 - Execute plans 001-005 in recommended order; 004 first if CI is red and blocking confidence.
 - Each plan is self-contained for a zero-context executor; it vendors its excerpts and verification gates.
-- After each DONE, re-run `git diff --stat ee85288..HEAD` drift checks for remaining TODOs.
+- After each DONE, re-run `git diff --stat 2effcdd..HEAD` drift checks for remaining TODOs.
