@@ -13,10 +13,13 @@
 
 ## Status
 
-- **State**: Phase 1 DONE; Phase 2 in progress. Phase 1 merged as `f17c349`
-  (PR #3) and deployed to Svartal on 2026-11-09; the deployed suite, the
-  ChatGPT text acceptance (S1, S2, S3, S7), and the user's voice pass
-  (inbox, thread lookup, sending to threads) all passed.
+- **State**: Phase 1 DONE; Phase 2 deployed, awaiting the voice pass. Phase 1
+  merged as `f17c349` (PR #3) and passed the deployed suite, the ChatGPT text
+  acceptance, and the user's voice pass on 2026-11-09. Phase 2 merged as
+  `9cd2aa4` (PR #4) and was deployed to Svartal the same day; the live and
+  deployed suites (S1–S10) and the ChatGPT text acceptance (model list, project
+  creation and default model, scheduled task run as a full-access thread,
+  rename, task deletion, archive) passed. The user's voice pass remains.
 - **Priority**: P1
 - **Effort**: Phase 1 M, Phase 2 S
 - **Risk**: MEDIUM — adds a remotely reachable capability that starts full-access coding agents on Svartal
