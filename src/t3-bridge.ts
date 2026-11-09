@@ -200,7 +200,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "List T3 models",
     readOnly: true,
     summary: "List the agent providers and models T3 Code can run, with each model's options. The list is short; `search` finds other models.",
-    note: "Name models to the user by their `label`. Use a provider's `providerInstanceId` as `instanceId` and a model's `id` as `model` in t3_thread_launch `modelSelection` or t3_project_update `defaultModelSelection`.",
+    note: "Name models to the user by their `label`. A provider with `constraints` cannot run now; do not pick its models. Use a provider's `providerInstanceId` as `instanceId` and a model's `id` as `model` in t3_thread_launch `modelSelection` or t3_project_update `defaultModelSelection`.",
     ownDescription: true,
   },
   t3_project_create: {
@@ -747,6 +747,17 @@ export class T3Bridge {
         case "schedule_task":
         case "list_scheduled_tasks":
           return withoutWebhookSecrets(await this.invoke(name, name, shaped, signal));
+        case "t3_project_create":
+        case "t3_project_update": {
+          // Keep the project titles shown in thread rows current after a create or rename.
+          const result = await this.invoke(name, name, shaped, signal);
+          if (!result.isError) {
+            const project = resultRecord(result);
+            rememberProject(this.projectTitles, project);
+            if (typeof project.id === "string") this.projectMisses.delete(project.id);
+          }
+          return result;
+        }
         default:
           return await this.invoke(name, name, shaped, signal);
       }
@@ -1741,16 +1752,21 @@ function absolutePath(value: unknown, field: string): { path: string; error?: un
   return { error: `${field} must be an absolute path (or start with ~/), not "${text}".` };
 }
 
-/** Providers and their models, without the in-thread delegation details. */
+/** Providers and their models, with availability constraints, without the in-thread delegation details. */
 function compactCapabilities(data: Args): Args {
-  const providers = records(data.providers).map((provider) => ({
-    providerInstanceId: provider.providerInstanceId,
-    displayName: provider.displayName,
-    models: records(provider.models).map((model) => {
-      const options = records(model.options).map((option) => definedOnly({ id: option.id, values: option.values, default: option.default }));
-      return definedOnly({ id: model.id, label: model.label, options: options.length > 0 ? options : undefined });
+  const nonEmpty = (value: unknown): unknown[] | undefined => (Array.isArray(value) && value.length > 0 ? value : undefined);
+  const providers = records(data.providers).map((provider) =>
+    definedOnly({
+      providerInstanceId: provider.providerInstanceId,
+      displayName: provider.displayName,
+      models: records(provider.models).map((model) => {
+        const options = records(model.options).map((option) => definedOnly({ id: option.id, values: option.values, default: option.default }));
+        return definedOnly({ id: model.id, label: model.label, options: nonEmpty(options) });
+      }),
+      // Why a provider cannot run now, such as "Provider instance is disabled."
+      constraints: nonEmpty(provider.constraints),
     }),
-  }));
+  );
   return { providers };
 }
 

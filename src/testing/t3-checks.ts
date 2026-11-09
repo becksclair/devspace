@@ -755,6 +755,9 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
   assert.deepEqual(Object.keys(claude).sort(), ["displayName", "models", "providerInstanceId"]);
   const haiku = records(claude.models).find((model) => model.id === HAIKU.model);
   assert.equal(haiku?.label, "Claude Haiku 5.5", "models keep their display label");
+  const disabled = providers.find((provider) => provider.providerInstanceId === "grok");
+  assert.ok(disabled && records(disabled.models).length > 0, "a disabled provider with models is listed");
+  assert.deepEqual(disabled.constraints, ["Provider instance is disabled."], "availability constraints are kept");
   for (const model of providers.flatMap((provider) => records(provider.models))) {
     assert.ok(Object.keys(model).every((key) => ["id", "label", "options"].includes(key)), "models carry only id, label, and options");
   }
@@ -805,6 +808,12 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
   const project = await ok(call, "t3_project_create", { title: `Hello ${stamp}`, workspaceRoot: String(clone.cwd) });
   const projectId = String(project.id);
 
+  // Thread rows name the project; a rename must show up in them at once.
+  const inProject = fake.addThread({ projectId, title: `In project ${stamp}` });
+  const projectOf = async (): Promise<unknown> =>
+    records((await ok(call, "t3_thread_list", { projectId, limit: 100 })).threads).find((row) => row.threadId === inProject.threadId)?.project;
+  assert.equal(await projectOf(), `Hello ${stamp}`);
+
   // B30: only projectId, title, and defaultModelSelection reach T3.
   mark = fake.calls.length;
   const updated = await ok(call, "t3_project_update", {
@@ -818,9 +827,12 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
   });
   assert.deepEqual(Object.keys(forwarded(fake, "t3_project_update", mark)[0] ?? {}).sort(), ["defaultModelSelection", "projectId", "title"]);
   assert.deepEqual(updated.defaultModelSelection, HAIKU);
+  // Checked before any project listing, which would refresh the titles on its own.
+  assert.equal(await projectOf(), `Hello ${stamp} renamed`, "thread rows show the renamed project");
   assert.equal(updated.archivedAt, null, "the project was not archived");
   const listed = records((await ok(call, "t3_project_list")).projects).find((row) => row.projectId === projectId);
   assert.equal(listed?.title, `Hello ${stamp} renamed`);
+  await ok(call, "t3_thread_organize", { threadId: inProject.threadId, action: "archive" });
   return { projectId, createdProjectId: created.id };
 }
 

@@ -416,7 +416,7 @@ the request was sent.
 | Tool | Shaping | Read-only | Retried |
 |------|---------|:---------:|:-------:|
 | `t3_thread_update` | `threadId` required; `clientRequestId` added if absent | no | yes (`clientRequestId`) |
-| `orchestrator_capabilities` | DevSpace's own description; result compacted to `{ providers: [{ providerInstanceId, displayName, models: [{ id, label?, options? }] }] }`, options as `{ id, values, default }` | yes | yes (read) |
+| `orchestrator_capabilities` | DevSpace's own description; result compacted to `{ providers: [{ providerInstanceId, displayName, models: [{ id, label?, options? }], constraints? }] }`, options as `{ id, values, default }`, non-empty `constraints` kept so disabled providers are not offered as usable | yes | yes (read) |
 | `t3_project_create` | only `title`, `workspaceRoot`, and `createWorkspaceRootIfMissing` exposed and forwarded (`defaultModelSelection` is ignored by T3 on creation; `scripts` stay out); `workspaceRoot` must be absolute or start with `~/` (expanded to the DevSpace user's home folder; other relative paths rejected); `createWorkspaceRootIfMissing` defaults to `true` when `workspaceRoot` is given | no | no |
 | `t3_project_clone` | `destinationPath` required, same path rule | no | no |
 | `t3_project_update` | Only `projectId`, `title`, and `defaultModelSelection` exposed and forwarded | no | yes (sets fields) |
