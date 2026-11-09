@@ -84,6 +84,8 @@ Credential handling:
 - Each DevSpace instance uses its own T3 session label, derived from its state directory, and revokes every session carrying that label before minting, so restarts do not accumulate live credentials.
 - The CLI child environment is built like the sky-cua and node_repl bridge children: the control-plane names listed under [Child environment filtering](#child-environment-filtering) are removed, along with `GH_TOKEN`, `GITHUB_TOKEN`, and every `*_NODE_TOKEN`. It adds `ELECTRON_RUN_AS_NODE=1`, runs with a 30-second timeout, and gets no stdin.
 
+Write tools advertise destructive, open-world hints under the `standard` annotation profile, so MCP hosts can ask for confirmation; `trusted-owner` relaxes them like DevSpace's exec tools. Launches always run in T3's `full-access` mode.
+
 The bridge persists nothing; its inbox cursor is also memory-only, and thread state stays in T3.
 
 ## Child environment filtering

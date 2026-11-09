@@ -142,11 +142,16 @@ export interface CatalogTool {
 
 /**
  * B2: exactly the twelve tools (in order) beyond `baseline`, and no other snapshot tool.
- * B3: read-only per the plan's table, never destructive or open-world (when annotations are given).
+ * B3: read-only per the plan's table; under trusted-owner never destructive or open-world, under
+ *     standard write tools are destructive and open-world (when annotations are given).
  * B12/B15: launch hides `runtimeMode` and `delegatedFrom`; no `environmentId`; `threadId` required.
  * B17: descriptions end with the shared guidance and carry no in-thread phrasing.
  */
-export function checkCatalog(tools: CatalogTool[], options: { baseline?: ReadonlySet<string>; live?: boolean } = {}): void {
+export function checkCatalog(
+  tools: CatalogTool[],
+  options: { baseline?: ReadonlySet<string>; live?: boolean; annotationProfile?: "standard" | "trusted-owner" } = {},
+): void {
+  const relaxed = (options.annotationProfile ?? "trusted-owner") === "trusted-owner";
   const baseline = options.baseline ?? new Set<string>();
   const added = tools.filter((tool) => !baseline.has(tool.name));
   assert.deepEqual(
@@ -164,8 +169,9 @@ export function checkCatalog(tools: CatalogTool[], options: { baseline?: Readonl
     if (tool.readOnly !== undefined) assert.equal(tool.readOnly, readOnly, `${tool.name} readOnly`);
     if (tool.annotations) {
       assert.equal(tool.annotations.readOnlyHint, readOnly, `${tool.name} readOnlyHint`);
-      assert.equal(tool.annotations.destructiveHint, false, `${tool.name} destructiveHint`);
-      assert.equal(tool.annotations.openWorldHint, false, `${tool.name} openWorldHint`);
+      const gated = !relaxed && !readOnly;
+      assert.equal(tool.annotations.destructiveHint, gated, `${tool.name} destructiveHint`);
+      assert.equal(tool.annotations.openWorldHint, gated, `${tool.name} openWorldHint`);
     }
 
     const description = tool.description ?? "";

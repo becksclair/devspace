@@ -1409,10 +1409,12 @@ export async function registerT3Tools(server: McpServer, bridge: T3Bridge, annot
         title: definition.title,
         description: definition.description,
         inputSchema: inputSchemaToZod(definition.inputSchema),
+        // Write tools start agents or change thread state, so their base hints follow T3's own
+        // (destructive, open-world); the trusted-owner profile relaxes them like DevSpace's exec tools.
         annotations: toolAnnotationsForProfile(annotationProfile, {
           readOnlyHint: definition.readOnly,
-          destructiveHint: false,
-          openWorldHint: false,
+          destructiveHint: !definition.readOnly,
+          openWorldHint: !definition.readOnly,
         }),
         _meta: {},
       } as never,

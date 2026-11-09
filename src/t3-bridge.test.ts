@@ -379,7 +379,7 @@ try {
     const registered = await connectRegistered(catalogBridge, profile);
     try {
       const { tools } = await registered.client.listTools();
-      checkCatalog(tools as CatalogTool[]);
+      checkCatalog(tools as CatalogTool[], { annotationProfile: profile });
       const registeredCall = mcpCaller(registered.client);
       const launched = await ok(registeredCall, "t3_thread_launch", {
         scratch: true,

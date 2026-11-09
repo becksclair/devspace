@@ -134,7 +134,7 @@ Nothing can start a turn in a ChatGPT conversation from outside, so DevSpace can
 
 ## Tool reference
 
-All twelve tools advertise `destructiveHint: false` and `openWorldHint: false`, with `readOnlyHint` as listed. No other T3 tool is reachable through DevSpace. Forwarded tools drop `environmentId` from their schema and pass T3's result through unchanged unless noted. Results carry `structuredContent` and the same JSON as text; no tool declares an output schema. T3 failures are `isError` results whose text is `{"_tag":"OrchestratorMcpFailure","code":…,"message":…}`.
+`readOnlyHint` is as listed. Under the `trusted-owner` annotation profile (Svartal's) every tool advertises `destructiveHint: false` and `openWorldHint: false`, so ChatGPT asks for no confirmations; under `standard`, write tools advertise `destructiveHint: true` and `openWorldHint: true`, as T3 itself does. No other T3 tool is reachable through DevSpace. Forwarded tools drop `environmentId` from their schema and pass T3's result through unchanged unless noted. Results carry `structuredContent` and the same JSON as text; no tool declares an output schema. T3 failures are `isError` results whose text is `{"_tag":"OrchestratorMcpFailure","code":…,"message":…}`.
 
 | Tool | Read-only | Purpose, defaults, and shaping |
 | --- | --- | --- |

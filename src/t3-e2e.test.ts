@@ -56,6 +56,7 @@ process.env.GH_TOKEN ??= "github-token-that-must-not-reach-the-t3-cli";
 // Gateway mode reads its settings through loadConfig(process.env).
 process.env.DEVSPACE_WIDGETS = "off";
 process.env.DEVSPACE_LOG_LEVEL = "debug";
+process.env.DEVSPACE_ANNOTATION_PROFILE = "standard";
 process.env.DEVSPACE_INFRA_SECRET_NAMES = SECRET_NAME;
 delete process.env.DISABLED_CAPABILITIES;
 
@@ -150,7 +151,14 @@ function assertNoT3Tools(names: string[], why: string): void {
 }
 
 /** Everything that runs identically in both modes against a fresh fake and a fresh bridge. */
-async function exerciseChain(mode: string, endpoint: string, fake: FakeT3, label: string, outputs: string[]): Promise<void> {
+async function exerciseChain(
+  mode: string,
+  endpoint: string,
+  fake: FakeT3,
+  label: string,
+  outputs: string[],
+  annotationProfile: "standard" | "trusted-owner",
+): Promise<void> {
   // B1 (per session) and the baseline for B2.
   const baseline = await toolNames(endpoint, { "x-disabled-capabilities": "t3" });
   assertNoT3Tools(baseline, "when the session disables the t3 capability");
@@ -158,7 +166,7 @@ async function exerciseChain(mode: string, endpoint: string, fake: FakeT3, label
   const client = await connect(endpoint);
   recordResults(client, outputs);
   const call = callerFor(client);
-  checkCatalog((await client.listTools()).tools as CatalogTool[], { baseline: new Set(baseline) });
+  checkCatalog((await client.listTools()).tools as CatalogTool[], { baseline: new Set(baseline), annotationProfile });
   progress(`ok - ${mode}: catalog and annotations (B1, B2, B3, B12, B15, B17)`);
 
   await checkInbox(call, fake);
@@ -276,7 +284,7 @@ async function serveMode(): Promise<void> {
   await warmCatalog(bridge);
   const endpoint = await startServe(config, bridge);
   const outputs: string[] = [];
-  await exerciseChain("serve", endpoint, fake, label, outputs);
+  await exerciseChain("serve", endpoint, fake, label, outputs, "trusted-owner");
 
   // B5: DevSpace restarts with a new bridge for the same state directory leave one live session.
   await bridge.close();
@@ -357,7 +365,8 @@ async function gatewayMode(): Promise<void> {
   await warmCatalog(bridge);
   const label = t3SessionLabel(gateway.stateDir);
   const outputs: string[] = [];
-  await exerciseChain("gateway", gateway.endpoint, fake, label, outputs);
+  // The gateway loads its settings through loadConfig, whose annotation profile defaults to standard.
+  await exerciseChain("gateway", gateway.endpoint, fake, label, outputs, "standard");
   assert.ok(fake.calls.every((entry) => entry.label === label), "every T3 call came from the gateway's own label");
 
   // B1: the local machine's disabledCapabilities hides the tools, even with a bridge injected.

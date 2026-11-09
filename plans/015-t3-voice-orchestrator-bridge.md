@@ -46,8 +46,11 @@ push notifications and Live Activities remain the out-of-band alert path.
   variables. Disabled unless `t3.enabled` is `true`. Enabled only on Svartal.
 - **D2 — Inbox cursor**: in memory, with a `since` override and a 24-hour
   fallback after a restart. No persistence; settled state lives in T3.
-- **D3 — Annotations**: `destructiveHint: false` and `openWorldHint: false` on
-  every bridged tool, matching the sky-cua bridge.
+- **D3 — Annotations**: no confirmation friction on Svartal. Write tools carry
+  T3's own hints (`destructiveHint: true`, `openWorldHint: true`) as their base,
+  and the `trusted-owner` annotation profile (Svartal's) relaxes every bridged
+  tool to `destructiveHint: false` and `openWorldHint: false`, like DevSpace's
+  exec tools; deployments on the `standard` profile keep the confirmation gates.
 - **D4 — Scope**: two phases. Phase 1 ships twelve tools and is validated end to
   end, including a voice pass. Phase 2 adds the remaining orchestration tools.
 - **Live suite runs**: blanket approval from the user for this feature's work.
@@ -252,8 +255,10 @@ machine (`disabledCapabilities`).
   `src/t3-bridge.ts` (`{}`, `type: "null"`, type arrays, `enum`, `const`,
   `anyOf`/`oneOf`/`allOf`, arrays, objects with `required` and
   `additionalProperties`); it never delegates to `jsonSchemaToZod`.
-- Annotations: `readOnlyHint` per the table, `destructiveHint: false`,
-  `openWorldHint: false`, passed through `toolAnnotationsForProfile`
+- Annotations: `readOnlyHint` per the table; base `destructiveHint` and
+  `openWorldHint` are `true` for write tools and `false` for read-only tools,
+  passed through `toolAnnotationsForProfile`, so `trusted-owner` relaxes them to
+  `false`
   (`src/mcp-bridge-utils.ts`, shared with `src/server.ts`).
 - No bridged tool declares an output schema; results carry `structuredContent`
   and the same JSON as text.
@@ -551,7 +556,7 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 |----|----------|:----:|:---:|:----:|:--------:|
 | B1 | Tools present only with `t3.enabled: true`; absent when the `t3` capability is disabled per session or per gateway machine | | ✓ | | |
 | B2 | Exactly the twelve Phase 1 tools are exposed; non-allowlisted T3 tools never appear | ✓ | ✓ | ✓ | ✓ |
-| B3 | Annotations: read-only hints per table; `destructiveHint` and `openWorldHint` false | | ✓ | | ✓ |
+| B3 | Annotations: read-only hints per table; under `trusted-owner` `destructiveHint` and `openWorldHint` false; under `standard` write tools destructive and open-world | ✓ | ✓ | | ✓ |
 | B4 | Credential minted through the CLI pairing flow at full-access with all four scopes | ✓ | ✓ | ✓ | |
 | B5 | Revoke before mint: repeated restarts leave at most one live session per label | ✓ | ✓ | ✓ | |
 | B6 | HTTP 401 → one re-mint and the call succeeds; a second 401 returns the credential error without looping | ✓ | ✓ | | |
