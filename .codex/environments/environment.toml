@@ -1,0 +1,11 @@
+version = 1
+name = "DevSpace"
+
+[setup]
+script = '''
+set -eu
+: "${CODEX_WORKTREE_PATH:?CODEX_WORKTREE_PATH must be set}"
+cd "$CODEX_WORKTREE_PATH"
+bun install --frozen-lockfile
+bun run build:app
+'''
