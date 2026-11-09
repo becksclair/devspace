@@ -44,6 +44,12 @@ export interface DevspaceUserConfig {
   skillPaths?: string[];
   autoLoadSkills?: string[];
   globalInstructionsFile?: string;
+  t3?: {
+    enabled?: boolean;
+    cliPath?: string;
+    runtimeFile?: string;
+    url?: string | null;
+  };
 }
 
 export interface DevspaceAuthConfig {

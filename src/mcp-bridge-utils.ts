@@ -1,4 +1,5 @@
 import * as z from "zod/v4";
+import type { AnnotationProfile } from "./config.js";
 
 export interface BridgeToolDef {
   name: string;
@@ -110,6 +111,24 @@ export function jsonSchemaToZod(schema: unknown): z.ZodTypeAny {
       return z.looseObject({}).passthrough();
     }
   }
+}
+
+/**
+ * Tool annotations for the configured profile: `standard` keeps them as given; `trusted-owner`
+ * clears the destructive and open-world hints, then applies `trustedOverrides`.
+ */
+export function toolAnnotationsForProfile<T extends { destructiveHint?: boolean; openWorldHint?: boolean }>(
+  profile: AnnotationProfile,
+  standard: T,
+  trustedOverrides: Partial<T> = {},
+): T {
+  if (profile === "standard") return standard;
+  return {
+    ...standard,
+    destructiveHint: false,
+    openWorldHint: false,
+    ...trustedOverrides,
+  };
 }
 
 export function normalizeAnnotations(raw: unknown): BridgeToolDef["annotations"] | undefined {

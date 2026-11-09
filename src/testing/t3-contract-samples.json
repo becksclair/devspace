@@ -1,0 +1,445 @@
+{
+  "capturedFrom": "T3 Code v0.1.8-nightly.20261109.4392",
+  "notes": [
+    "Captured from scratch threads created and archived by the Step 0 probes; no user data.",
+    "A pending user question leaves the thread status 'running'; pendingRequestCount on the thread detail becomes > 0.",
+    "Run status 'waiting' is treated by T3 itself as running; approvals are pending requests that t3_pending_request does not list.",
+    "afterPosition is exclusive.",
+    "Interrupting a running turn ends with thread status 'cancelled' or 'interrupted' depending on timing (both observed live).",
+    "Archiving also settles; archived threads disappear from t3_thread_list.",
+    "clientRequestId makes t3_thread_launch and t3_thread_send idempotent (same threadId / runId returned).",
+    "401 WWW-Authenticate carries resource_metadata unless the presented token is non-empty without a '.', and error=\"invalid_token\" whenever a token was presented; real MCP client tokens contain a '.'."
+  ],
+  "results": {
+    "t3_thread_launch": {
+      "threadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "projectId": "87645971-d7fe-4ccd-ac98-5b79f318f9d8",
+      "modelSelection": {
+        "instanceId": "claudeAgent",
+        "model": "claude-haiku-5-5"
+      },
+      "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+      "status": "preparing"
+    },
+    "t3_thread_launch.sameClientRequestId": {
+      "threadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "projectId": "87645971-d7fe-4ccd-ac98-5b79f318f9d8",
+      "modelSelection": {
+        "instanceId": "claudeAgent",
+        "model": "claude-haiku-5-5"
+      },
+      "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+      "status": "starting"
+    },
+    "t3_thread_wait.done": {
+      "threadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+      "status": "completed",
+      "timedOut": false
+    },
+    "t3_thread_wait.timedOut": {
+      "threadId": "mcp:2583569f-cff3-4ace-b6a9-4f47b0f68fe8",
+      "runId": "run:thread:mcp%3A2583569f-cff3-4ace-b6a9-4f47b0f68fe8:ordinal:1",
+      "status": "running",
+      "timedOut": true
+    },
+    "t3_thread_read.messages": {
+      "thread": {
+        "threadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+        "projectId": "87645971-d7fe-4ccd-ac98-5b79f318f9d8",
+        "title": "DevSpace bridge check 180216 A",
+        "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "status": "completed",
+        "latestRunId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+        "activeRunId": null,
+        "providerInstanceId": "claudeAgent",
+        "model": "claude-haiku-5-5",
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "linkedPullRequest": null,
+        "pullRequests": [],
+        "titleRegeneration": null,
+        "branch": null,
+        "worktreePath": "/Users/rclair/.t3/scratch/2026-11-09-reply-with-exactly-ok-3277b672",
+        "parentThreadId": null,
+        "relationshipToParent": null,
+        "runCount": 1,
+        "itemCount": 4,
+        "pendingRequestCount": 0,
+        "archived": false,
+        "settled": false,
+        "settledAt": null,
+        "snoozed": false,
+        "snoozedUntil": null,
+        "createdAt": "2026-11-09T17:02:17.206Z",
+        "updatedAt": "2026-11-09T17:02:19.898Z"
+      },
+      "recentRuns": [
+        {
+          "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+          "ordinal": 1,
+          "status": "completed",
+          "providerInstanceId": "claudeAgent",
+          "model": "claude-haiku-5-5",
+          "requestedAt": "2026-11-09T17:02:17.213Z",
+          "startedAt": "2026-11-09T17:02:17.251Z",
+          "completedAt": "2026-11-09T17:02:19.898Z"
+        }
+      ],
+      "items": [
+        {
+          "position": 0,
+          "visibility": "local",
+          "sourceThreadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+          "itemId": "turn-item:message:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+          "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+          "messageId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "type": "user_message",
+          "status": "completed",
+          "title": null,
+          "text": "Reply with exactly OK",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T17:02:17.213Z"
+        },
+        {
+          "position": 2,
+          "visibility": "local",
+          "sourceThreadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+          "itemId": "turn-item:provider:claudeAgent:native-item:a26835e2-11ec-4e49-9ff4-0a1483a00d04",
+          "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:1",
+          "messageId": "message:provider:claudeAgent:native-item:a26835e2-11ec-4e49-9ff4-0a1483a00d04",
+          "createdBy": "agent",
+          "creationSource": "provider",
+          "type": "assistant_message",
+          "status": "completed",
+          "title": null,
+          "text": "OK",
+          "textTruncated": false,
+          "nextTextOffset": null,
+          "updatedAt": "2026-11-09T17:02:19.853Z"
+        }
+      ],
+      "nextPosition": 2,
+      "hasMore": false
+    },
+    "t3_thread_read.afterPositionExclusive": {
+      "afterPosition": 0,
+      "returnedPositions": [
+        2
+      ]
+    },
+    "t3_thread_send.auto": {
+      "threadId": "mcp:launch:e56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672",
+      "messageId": "message:mcp:client%3A80feff49-0aff-42a7-9f5d-341fdb0f503a:thread-send:probe-180216-S",
+      "runId": "run:thread:mcp%3Alaunch%3Ae56697b4fb0fa561f4eb913bb383a8e519ee79fb838fc669412cfaf53277b672:ordinal:2",
+      "status": "starting",
+      "delivery": "started"
+    },
+    "t3_thread_send.steer": {
+      "threadId": "mcp:2583569f-cff3-4ace-b6a9-4f47b0f68fe8",
+      "link": "https://app.t3.codes/threads/00000000-0000-4000-8000-0000000000e1/mcp%3A2583569f-cff3-4ace-b6a9-4f47b0f68fe8",
+      "messageId": "message:mcp:client%3A2d16ed03-088a-4a87-9e3b-70d413b4e13c:thread-send:acf0baac-e4d8-4b1e-a953-ccddf3651e9d",
+      "runId": "run:thread:mcp%3A2583569f-cff3-4ace-b6a9-4f47b0f68fe8:ordinal:1",
+      "status": "running",
+      "delivery": "steered"
+    },
+    "t3_thread_send.notSteerable": {
+      "isError": true,
+      "text": "{\"_tag\":\"OrchestratorMcpFailure\",\"code\":\"thread_not_sendable\",\"message\":\"Thread mcp:6542cee7-a221-4c05-9d4a-22a08867eeb5 has no running turn that can be steered.\"}"
+    },
+    "t3_pending_request.list": {
+      "requestIds": [
+        "runtime-request:provider:claudeAgent:provider-turn:provider-turn%3Aprovider%3AclaudeAgent%3Anative-turn%3Aturn%253Arun-attempt%253Arun%253Arun%25253Athread%25253Amcp%2525253A476834ab-c4f9-4911-ab4b-8ee61eeb4120%25253Aordinal%25253A1%253Aattempt%253A1:native-request:toolu_0111gm4WmRh74gfhN3sTnXAN:f411ec44-cb37-413e-8e73-3af66e15d031"
+      ]
+    },
+    "t3_pending_request.listEmpty": {
+      "requestIds": []
+    },
+    "t3_pending_request.read": {
+      "requestId": "runtime-request:provider:claudeAgent:provider-turn:provider-turn%3Aprovider%3AclaudeAgent%3Anative-turn%3Aturn%253Arun-attempt%253Arun%253Arun%25253Athread%25253Amcp%2525253A476834ab-c4f9-4911-ab4b-8ee61eeb4120%25253Aordinal%25253A1%253Aattempt%253A1:native-request:toolu_0111gm4WmRh74gfhN3sTnXAN:f411ec44-cb37-413e-8e73-3af66e15d031",
+      "questions": [
+        {
+          "id": "Pick a color",
+          "header": "Color",
+          "question": "Pick a color",
+          "options": [
+            {
+              "label": "red",
+              "description": "Pick red"
+            },
+            {
+              "label": "blue",
+              "description": "Pick blue"
+            }
+          ],
+          "multiSelect": false
+        }
+      ]
+    },
+    "t3_pending_request.respond": {
+      "arguments": {
+        "answers": {
+          "Pick a color": "red"
+        }
+      },
+      "result": {
+        "sequence": 125096
+      }
+    },
+    "t3_pending_request.threadDetailWhilePending": {
+      "status": "running",
+      "pendingRequestCount": 1
+    },
+    "t3_queue.list": {
+      "items": [
+        {
+          "queuedRunId": "run:thread:mcp%3A2583569f-cff3-4ace-b6a9-4f47b0f68fe8:ordinal:2",
+          "text": "queued probe message",
+          "truncated": false
+        }
+      ],
+      "nextCursor": null
+    },
+    "t3_queue.read": {
+      "queuedRunId": "run:thread:mcp%3A2583569f-cff3-4ace-b6a9-4f47b0f68fe8:ordinal:2",
+      "text": "queued probe message",
+      "truncated": false
+    },
+    "t3_queue.edit": {
+      "sequence": 125280
+    },
+    "t3_queue.cancel": {
+      "sequence": 125283
+    },
+    "t3_queue.listEmpty": {
+      "items": [],
+      "nextCursor": null
+    },
+    "t3_thread_interrupt.requested": {
+      "threadId": "mcp:2583569f-cff3-4ace-b6a9-4f47b0f68fe8",
+      "runId": "run:thread:mcp%3A2583569f-cff3-4ace-b6a9-4f47b0f68fe8:ordinal:1",
+      "status": "interrupt_requested"
+    },
+    "t3_thread_interrupt.noActiveRun": {
+      "threadId": "mcp:6542cee7-a221-4c05-9d4a-22a08867eeb5",
+      "runId": null,
+      "status": "no_active_run"
+    },
+    "t3_thread_interrupt.finalThreadStatus": "cancelled",
+    "t3_thread_organize": {
+      "sequence": 125212
+    },
+    "t3_project_list.row": {
+      "id": "87645971-d7fe-4ccd-ac98-5b79f318f9d8",
+      "title": "No project",
+      "workspaceRoot": "/Users/rclair/.t3/scratch",
+      "repositoryIdentity": null,
+      "faviconPath": null,
+      "projectIcon": {
+        "kind": "lucide",
+        "name": "message-square-dashed",
+        "color": "gray"
+      },
+      "defaultModelSelection": null,
+      "defaultThreadEnvMode": null,
+      "autoPull": false,
+      "scripts": [],
+      "pinnedAt": null,
+      "archivedAt": null,
+      "createdAt": "2026-11-08T14:59:18.697Z",
+      "updatedAt": "2026-11-08T14:59:18.704Z",
+      "deletedAt": null
+    },
+    "t3_thread_list.rowShapeExample": {
+      "threadId": "00000000-0000-4000-8000-000000000001",
+      "projectId": "00000000-0000-4000-8000-000000000002",
+      "title": "Example thread",
+      "link": "https://app.t3.codes/threads/<environmentId>/00000000-0000-4000-8000-000000000001",
+      "createdBy": "user",
+      "creationSource": "web",
+      "status": "running",
+      "latestRunId": "run:thread:2d0c005b-1e1b-4f8c-b7b8-b8c6297e4c90:ordinal:6",
+      "providerInstanceId": "claudeAgent",
+      "model": "claude-opus-5-5",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "linkedPullRequest": null,
+      "pullRequests": [],
+      "settled": false,
+      "settledAt": null,
+      "snoozed": false,
+      "snoozedUntil": null,
+      "parentThreadId": null,
+      "relationshipToParent": null,
+      "itemCount": 180,
+      "createdAt": "2026-11-09T16:16:49.128Z",
+      "updatedAt": "2026-11-09T17:01:01.128Z",
+      "branch": null
+    },
+    "t3_thread_list.envelopeKeys": [
+      "projectId",
+      "currentThreadId",
+      "threads",
+      "nextCursor",
+      "total"
+    ],
+    "t3_thread_search.matchKeys": [
+      "threadId",
+      "projectId",
+      "title",
+      "link",
+      "source"
+    ],
+    "t3_thread_search.envelopeKeys": [
+      "matches"
+    ]
+  },
+  "errors": {
+    "t3_thread_list.noTarget": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass projectId: this MCP client is not running inside a T3 thread."
+    },
+    "t3_pending_request.noThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass threadId: this MCP client is not running inside a T3 thread."
+    },
+    "t3_thread_organize.noThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass threadId: this MCP client is not running inside a T3 thread."
+    },
+    "task_status.outsideThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "thread_credential_required",
+      "message": "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread."
+    },
+    "note": "Tool failures are returned as isError results whose single text content is the JSON shown here."
+  },
+  "http": {
+    "noToken": {
+      "status": 401,
+      "wwwAuth": "Bearer resource_metadata=\"http://127.0.0.1:3773/.well-known/oauth-protected-resource/mcp\"",
+      "sid": null,
+      "body": "{\"error\":\"invalid_mcp_credential\",\"message\":\"A valid T3 Code MCP credential is required.\"}"
+    },
+    "sessionListTopLevelIsArray": true,
+    "sessionListKeys": null,
+    "sessionEntryShape": {
+      "sessionId": "<string>",
+      "method": "bearer-access-token",
+      "scopes": [
+        "orchestration:read",
+        "orchestration:operate",
+        "settings:write",
+        "source-control:write"
+      ],
+      "subject": "mcp-client",
+      "client": {
+        "label": "devspace-probe",
+        "ipAddress": "127.0.0.1",
+        "userAgent": "node",
+        "deviceType": "bot"
+      },
+      "connected": false,
+      "issuedAt": "2026-11-09T17:05:25.276Z",
+      "expiresAt": "2026-12-09T17:05:25.276Z",
+      "lastConnectedAt": null
+    },
+    "initOk": {
+      "status": 200,
+      "sid": "<present>"
+    },
+    "staleSession": {
+      "status": 404,
+      "wwwAuth": null,
+      "sid": null,
+      "body": ""
+    },
+    "revokeStdout": "Revoked session c8a4703c-ea74-4074-8a84-76a959f81f3d.\n\n",
+    "revokedTokenInit": {
+      "status": 401,
+      "wwwAuth": "Bearer resource_metadata=\"http://127.0.0.1:3773/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\"",
+      "sid": null,
+      "body": "{\"error\":\"invalid_mcp_credential\",\"message\":\"A valid T3 Code MCP credential is required.\"}"
+    },
+    "revokedTokenOnLiveSession": {
+      "status": 401,
+      "wwwAuth": "Bearer resource_metadata=\"http://127.0.0.1:3773/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\"",
+      "sid": null,
+      "body": "{\"error\":\"invalid_mcp_credential\",\"message\":\"A valid T3 Code MCP credential is required.\"}"
+    },
+    "pairingJsonKeys": [
+      "id",
+      "credential",
+      "label",
+      "scopes",
+      "expiresAt"
+    ],
+    "pairingListShape": "array",
+    "pairingRevokeStdout": "Revoked pairing credential 6604d16a-87fa-4f57-b3a4-350e9915114f.\n\n"
+  },
+  "cli": {
+    "auth pairing create --json": {
+      "keys": [
+        "id",
+        "credential",
+        "label",
+        "scopes",
+        "expiresAt"
+      ],
+      "example": {
+        "id": "6604d16a-87fa-4f57-b3a4-350e9915114f",
+        "credential": "<secret>",
+        "label": "devspace-t3-bridge",
+        "scopes": [
+          "orchestration:read",
+          "orchestration:operate",
+          "settings:write",
+          "source-control:write"
+        ],
+        "expiresAt": "2026-11-09T17:07:25.000Z"
+      }
+    },
+    "auth session list --json": {
+      "topLevel": "array",
+      "entry": {
+        "sessionId": "<string>",
+        "method": "bearer-access-token",
+        "scopes": [
+          "orchestration:read",
+          "orchestration:operate",
+          "settings:write",
+          "source-control:write"
+        ],
+        "subject": "mcp-client",
+        "client": {
+          "label": "devspace-probe",
+          "ipAddress": "127.0.0.1",
+          "userAgent": "node",
+          "deviceType": "bot"
+        },
+        "connected": false,
+        "issuedAt": "2026-11-09T17:05:25.276Z",
+        "expiresAt": "2026-12-09T17:05:25.276Z",
+        "lastConnectedAt": null
+      }
+    },
+    "auth session revoke <id>": {
+      "stdout": "Revoked session <sessionId>.\n\n"
+    },
+    "auth pairing list --json": {
+      "topLevel": "array"
+    },
+    "env": "The launcher sets ELECTRON_RUN_AS_NODE=1 itself; Electron may print a CompileAndCall warning on stderr, which is harmless."
+  }
+}

@@ -37,6 +37,8 @@ import { createGatewayWorkspaceStore } from "./gateway-workspace-store.js";
 import { LocalExecutor } from "./executor.js";
 import { RemoteNodeClient } from "./remote-node-client.js";
 import { envSecret, type GatewayRoleConfig } from "./role-config.js";
+import { closeSharedT3Bridges, registerT3Tools, sharedT3Bridge, T3_CAPABILITY, type T3Bridge } from "./t3-bridge.js";
+import { toolAnnotationsForProfile } from "./mcp-bridge-utils.js";
 import { loadAutoloadSkillDocuments, type AutoloadedSkillDocument } from "./skills.js";
 import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 
@@ -141,20 +143,6 @@ const SHELL_TOOL_ANNOTATIONS: ToolAnnotations = {
   idempotentHint: false,
   openWorldHint: true,
 };
-
-function toolAnnotationsForProfile(
-  profile: ServerConfig["annotationProfile"],
-  standard: ToolAnnotations,
-  trustedOverrides: Partial<ToolAnnotations> = {},
-): ToolAnnotations {
-  if (profile === "standard") return standard;
-  return {
-    ...standard,
-    destructiveHint: false,
-    openWorldHint: false,
-    ...trustedOverrides,
-  };
-}
 
 interface RunningServer {
   app: express.Express;
@@ -972,6 +960,7 @@ async function createMcpServer(
   executor: LocalExecutor | undefined,
   gatewayRouter?: GatewayExecutionRouter,
   effectiveDisabled?: Set<string>,
+  t3Bridge?: T3Bridge,
 ): Promise<McpServer> {
   const effective = effectiveDisabled ?? config.disabledCapabilities ?? new Set<string>();
   const toolNames = toolNamesFor(config);
@@ -1804,6 +1793,13 @@ async function createMcpServer(
     }
   }
 
+  // T3 Code orchestration bridge: opt-in through the `t3` settings block, hidden per session or
+  // per gateway machine through the `t3` capability. One bridge is shared by every MCP session.
+  if (config.t3?.enabled && !isCapabilityDisabled(effectiveSet, T3_CAPABILITY)) {
+    const bridge = t3Bridge ?? sharedT3Bridge(config);
+    if (bridge) await registerT3Tools(server, bridge, config.annotationProfile);
+  }
+
   return server;
 }
 
@@ -1811,6 +1807,8 @@ interface CreateServerOptions {
   gatewayRouter?: GatewayExecutionRouter;
   role?: "standalone" | "gateway";
   healthCheck?: () => void;
+  /** T3 bridge to use instead of the process-wide `sharedT3Bridge(config)`. */
+  t3Bridge?: T3Bridge;
 }
 
 /**
@@ -2104,7 +2102,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
         };
 
         const effectiveDisabled = pendingEffectiveDisabled;
-        const server = await createMcpServer(config, executor, options.gatewayRouter, effectiveDisabled);
+        const server = await createMcpServer(config, executor, options.gatewayRouter, effectiveDisabled, options.t3Bridge);
         serverForBridge = server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
         await server.connect(transport);
         serverTransportMap.set(server as unknown as object, transport);
@@ -2211,11 +2209,12 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
       // close sky bridges if created
       for (const p of skyBridgeCache.values()) void p.then((b) => b?.close()).catch(() => undefined);
       skyBridgeCache.clear();
+      void closeSharedT3Bridges();
     },
   };
 }
 
-export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServer {
+export function createGatewayServer(roleConfig: GatewayRoleConfig, options: { t3Bridge?: T3Bridge } = {}): RunningServer {
   const localMachine = roleConfig.machines.find((machine) => machine.kind === "local");
   const publicRootEnvironment = localMachine?.roots
     ? { DEVSPACE_ROOTS: JSON.stringify(localMachine.roots), DEVSPACE_ALLOWED_ROOTS: undefined }
@@ -2310,6 +2309,7 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig): RunningServe
     gatewayRouter: router,
     role: "gateway",
     healthCheck: () => bindings.ping(),
+    t3Bridge: options.t3Bridge,
   });
   return {
     ...running,

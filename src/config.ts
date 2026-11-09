@@ -31,6 +31,17 @@ export interface NodeReplConfig {
   maxPerHost: number;
 }
 
+/** T3 Code orchestration bridge settings, read only from the `t3` block of config.json. */
+export interface T3BridgeConfig {
+  enabled: boolean;
+  /** T3 CLI used to mint the bridge's credential. */
+  cliPath: string;
+  /** T3 server runtime file whose `origin` locates the server; re-read on reconnect. */
+  runtimeFile: string;
+  /** Fixed T3 origin (for example `http://127.0.0.1:3773`); when set, `runtimeFile` is ignored. */
+  url?: string;
+}
+
 export interface ServerConfig {
   host: string;
   port: number;
@@ -59,6 +70,8 @@ export interface ServerConfig {
   disabledCapabilities?: Set<string>;
   skyCua?: SkyCuaConfig;
   nodeRepl?: NodeReplConfig;
+  /** Absent or `enabled: false` means the T3 tools are not exposed. */
+  t3?: T3BridgeConfig;
 }
 
 export interface ShellConfig {
@@ -452,6 +465,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     disabledCapabilities,
     skyCua,
     nodeRepl,
+    t3: parseT3BridgeConfig(files.config.t3),
+  };
+}
+
+export function parseT3BridgeConfig(value: unknown): T3BridgeConfig {
+  const defaults: T3BridgeConfig = {
+    enabled: false,
+    cliPath: resolve(expandHomePath("~/.t3/bin/t3")),
+    runtimeFile: resolve(expandHomePath("~/.t3/userdata/server-runtime.json")),
+  };
+  if (value === undefined || value === null) return defaults;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid t3 in config.json: expected an object");
+  }
+  const raw = value as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!["enabled", "cliPath", "runtimeFile", "url"].includes(key)) {
+      throw new Error(`Invalid t3.${key} in config.json: unknown setting`);
+    }
+  }
+  if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") {
+    throw new Error("Invalid t3.enabled in config.json: expected a boolean");
+  }
+  const path = (key: "cliPath" | "runtimeFile"): string => {
+    const entry = raw[key];
+    if (entry === undefined) return defaults[key];
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new Error(`Invalid t3.${key} in config.json: expected a non-empty path`);
+    }
+    return resolve(expandHomePath(entry.trim()));
+  };
+  let url: string | undefined;
+  if (raw.url !== undefined && raw.url !== null) {
+    const parsed = typeof raw.url === "string" ? URL.parse(raw.url.trim()) : null;
+    if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+      throw new Error("Invalid t3.url in config.json: expected an http(s) URL");
+    }
+    url = parsed.origin;
+  }
+  return {
+    enabled: raw.enabled === true,
+    cliPath: path("cliPath"),
+    runtimeFile: path("runtimeFile"),
+    ...(url ? { url } : {}),
   };
 }
 

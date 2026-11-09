@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "./config.js";
+import { loadConfig, parseT3BridgeConfig } from "./config.js";
+import { createT3OriginResolver } from "./t3-bridge.js";
 
 const emptyConfigDir = mkdtempSync(join(tmpdir(), "devspace-empty-config-test-"));
 const baseEnv = {
@@ -245,3 +246,76 @@ assert.deepEqual(fileConfig.allowedHosts, [
   "::1",
   "devspace.example.com",
 ]);
+
+// B25: the `t3` settings block (plan 015).
+const t3Default = {
+  enabled: false,
+  cliPath: join(homedir(), ".t3", "bin", "t3"),
+  runtimeFile: join(homedir(), ".t3", "userdata", "server-runtime.json"),
+};
+assert.deepEqual(loadConfig(baseEnv).t3, t3Default);
+assert.deepEqual(parseT3BridgeConfig(undefined), t3Default);
+assert.deepEqual(parseT3BridgeConfig(null), t3Default);
+assert.deepEqual(parseT3BridgeConfig({}), t3Default);
+assert.deepEqual(parseT3BridgeConfig({ enabled: true }), { ...t3Default, enabled: true });
+assert.deepEqual(parseT3BridgeConfig({ enabled: false, url: null }), t3Default);
+assert.equal("url" in parseT3BridgeConfig({ url: null }), false);
+
+function loadT3(t3: unknown) {
+  const dir = mkdtempSync(join(tmpdir(), "devspace-t3-config-test-"));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ t3 }));
+  return loadConfig({ ...baseEnv, DEVSPACE_CONFIG_DIR: dir }).t3;
+}
+
+assert.deepEqual(loadT3({ enabled: true, cliPath: "~/tools/t3", runtimeFile: " ~/t3-runtime/server-runtime.json " }), {
+  enabled: true,
+  cliPath: join(homedir(), "tools", "t3"),
+  runtimeFile: join(homedir(), "t3-runtime", "server-runtime.json"),
+});
+assert.equal(loadT3({ cliPath: "relative/t3" })?.cliPath, join(process.cwd(), "relative", "t3"));
+assert.deepEqual(loadT3({ enabled: true, url: "http://127.0.0.1:3773/mcp/?x=1" }), {
+  ...t3Default,
+  enabled: true,
+  url: "http://127.0.0.1:3773",
+});
+assert.equal(loadT3({ url: " https://t3.example.com:8443/ " })?.url, "https://t3.example.com:8443");
+assert.equal("url" in (loadT3({ enabled: true, url: null }) ?? {}), false);
+assert.deepEqual(loadT3(null), t3Default);
+
+// `url` takes precedence over the runtime file, which is not read at all when `url` is set.
+const t3RuntimeDir = mkdtempSync(join(tmpdir(), "devspace-t3-runtime-test-"));
+const t3RuntimeFile = join(t3RuntimeDir, "server-runtime.json");
+writeFileSync(t3RuntimeFile, JSON.stringify({ origin: "http://127.0.0.1:4111/" }));
+const t3WithUrl = loadT3({ enabled: true, runtimeFile: t3RuntimeFile, url: "http://127.0.0.1:3773/mcp" });
+assert.ok(t3WithUrl);
+assert.equal(await createT3OriginResolver(t3WithUrl)(), "http://127.0.0.1:3773");
+assert.equal(
+  await createT3OriginResolver({ ...t3WithUrl, runtimeFile: join(t3RuntimeDir, "missing.json") })(),
+  "http://127.0.0.1:3773",
+);
+const t3WithRuntime = loadT3({ enabled: true, runtimeFile: t3RuntimeFile });
+assert.ok(t3WithRuntime);
+assert.equal(await createT3OriginResolver(t3WithRuntime)(), "http://127.0.0.1:4111");
+await assert.rejects(
+  createT3OriginResolver({ ...t3WithRuntime, runtimeFile: join(t3RuntimeDir, "missing.json") })(),
+  /T3 Code is not reachable on this machine\./,
+);
+
+for (const [t3, pattern] of [
+  [{ enabled: true, token: "x" }, /Invalid t3\.token in config\.json: unknown setting/],
+  [{ Enabled: true }, /Invalid t3\.Enabled in config\.json: unknown setting/],
+  [{ enabled: "true" }, /Invalid t3\.enabled in config\.json: expected a boolean/],
+  [{ enabled: 1 }, /Invalid t3\.enabled in config\.json: expected a boolean/],
+  [{ cliPath: 7 }, /Invalid t3\.cliPath in config\.json: expected a non-empty path/],
+  [{ cliPath: "  " }, /Invalid t3\.cliPath in config\.json: expected a non-empty path/],
+  [{ runtimeFile: false }, /Invalid t3\.runtimeFile in config\.json: expected a non-empty path/],
+  [{ url: 3773 }, /Invalid t3\.url in config\.json: expected an http\(s\) URL/],
+  [{ url: "127.0.0.1:3773" }, /Invalid t3\.url in config\.json: expected an http\(s\) URL/],
+  [{ url: "ftp://127.0.0.1:3773" }, /Invalid t3\.url in config\.json: expected an http\(s\) URL/],
+  [true, /Invalid t3 in config\.json: expected an object/],
+  [[], /Invalid t3 in config\.json: expected an object/],
+  ["enabled", /Invalid t3 in config\.json: expected an object/],
+] as const) {
+  assert.throws(() => parseT3BridgeConfig(t3), pattern);
+  assert.throws(() => loadT3(t3), pattern);
+}
