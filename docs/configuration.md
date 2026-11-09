@@ -150,7 +150,7 @@ The trusted-owner profile is an operator UX choice for MCP hosts that apply extr
 | `DEVSPACE_AGENT_DIR` | Skill/resource agent directory, defaulting to `~/.codex`. It is not used as DevSpace global instruction context. |
 | `DEVSPACE_SKILL_PATHS` | Optional comma-separated skill directories. Can also be set as `skillPaths` (string array) in `~/.devspace/config.json`. The environment variable overrides that array. |
 | `DEVSPACE_AUTOLOAD_SKILLS` | Optional comma-separated skill names to preload at **connection**; can also be configured as `autoLoadSkills` (string array) in `~/.devspace/config.json`. Defaults to none. Each skill found in the agent directory or skill paths has its entire `SKILL.md` appended to the MCP server instructions once per session, so it is available without opening a workspace. Skills larger than 64 KiB are skipped. `open_workspace` does not repeat the content; it names the autoloaded skills and makes their reference files readable without a separate skill activation. Skills unavailable in a workspace generate warnings there. Autoloaded sky-cua skills are omitted when sky-cua is disabled for the session. `DEVSPACE_SKILLS=0` disables preloading too. Clients may truncate long server instructions (Claude Code cuts at 4,096 characters by default), so keep autoloaded skills compact. |
-| `DISABLED_CAPABILITIES` | Comma-separated list of capabilities to hide for this instance or per-MCP-session. Hermes on Saga sets `DISABLED_CAPABILITIES=sky-cua` so ChatGPT sees phone/desktop/browser tools but Hermes does not. Future values use same list: `DISABLED_CAPABILITIES=sky-cua,other-cap`. Per-session: client may send `X-Disabled-Capabilities: sky-cua` header or `?disabled_capabilities=sky-cua` query or `params._meta.disabledCapabilities` at `initialize`; evaluated at session creation — ChatGPT “refresh tools” re-initializes (new MCP session) without reauth and picks up the new set; plain `tools/list` on the same session does not change until next session. |
+| `DISABLED_CAPABILITIES` | Comma-separated list of capabilities to hide for this instance or per-MCP-session. Hermes on Saga sets `DISABLED_CAPABILITIES=sky-cua` so ChatGPT sees phone/desktop/browser tools but Hermes does not. `t3` hides the T3 Code tools (see [T3 Code bridge](#t3-code-bridge)). Future values use same list: `DISABLED_CAPABILITIES=sky-cua,other-cap`. Per-session: client may send `X-Disabled-Capabilities: sky-cua` header or `?disabled_capabilities=sky-cua` query or `params._meta.disabledCapabilities` at `initialize`; evaluated at session creation — ChatGPT “refresh tools” re-initializes (new MCP session) without reauth and picks up the new set; plain `tools/list` on the same session does not change until next session. |
 | `DEVSPACE_SKY_CUA_PROJECT_ROOT` | Local checkout of sky-cua, default `~/projects/sky-cua`. Used to resolve `bin/sky-cua-client` and `skills/` for the live bridge. |
 | `DEVSPACE_SKY_CUA_BIN` | Override sky-cua MCP binary path, default `<projectRoot>/bin/sky-cua-client`. |
 | `SKY_CUA_SERVICE_SOCKET_PATH` | Passthrough to sky-cua service (default `XDG_RUNTIME_DIR/sky-cua/service.sock`). Also `SKY_CUA_PHONE_*`, `SKY_CUA_BROWSER` etc. are forwarded unchanged. |
@@ -163,6 +163,21 @@ DEVSPACE_SKILL_PATHS="$HOME/.agents/skills" \
 DEVSPACE_AUTOLOAD_SKILLS="agent-monitor" \
 npx @waishnav/devspace serve
 ```
+
+## T3 Code bridge
+
+The `t3` block in `config.json` controls the [T3 Code orchestration bridge](t3-code.md). It has no environment-variable equivalent. In gateway mode, DevSpace reads it from `<stateDir>/role-config-source/config.json`.
+
+| Key | Default | Purpose and validation |
+| --- | --- | --- |
+| `enabled` | `false` | Expose the twelve T3 tools. Must be a boolean. |
+| `cliPath` | `~/.t3/bin/t3` | T3 CLI used to mint the bridge's credential. Must be a non-empty string; `~` is expanded and the path made absolute. |
+| `runtimeFile` | `~/.t3/userdata/server-runtime.json` | T3 runtime file whose `origin` locates the server, re-read on every reconnect. Same rules as `cliPath`. |
+| `url` | none | Fixed T3 origin, such as `http://127.0.0.1:3773`. Must be an `http` or `https` URL; only its origin is kept, and `null` counts as unset. When set, `runtimeFile` is ignored. |
+
+A `t3` value that is not an object, an unknown key, or a wrong type fails configuration loading with an `Invalid t3…` error, so DevSpace does not start. Settings are read at startup; restart DevSpace after changing them.
+
+The capability name is `t3`. Hide the tools for an instance with `DISABLED_CAPABILITIES=t3`, for one MCP session with `X-Disabled-Capabilities: t3` (or the query and `_meta` forms above), or on a gateway with `t3` in the local machine's `disabledCapabilities`. The bridge runs in the gateway process, so remote machine entries do not affect it.
 
 ## Logging
 

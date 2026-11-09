@@ -71,6 +71,21 @@ This is intentional on a trusted engineering host. OAuth approval and the host's
 
 Persistent terminals use opaque IDs bound to one workspace and executor machine. The initial backend is tmux with an explicit private socket. Returned history is bounded and terminal escape sequences are displayed as text rather than interpreted as trusted HTML.
 
+## T3 Code bridge
+
+The [T3 Code bridge](t3-code.md) is opt-in: it is exposed only when `t3.enabled` is `true` and the `t3` capability is not disabled. When exposed, any authenticated DevSpace client can start, steer, interrupt, and answer coding-agent threads in the T3 Code instance on the DevSpace host. Every thread the bridge launches runs in T3's `full-access` runtime mode, and callers cannot select another mode. The bridge's T3 credential is a full-access credential with the `orchestration:read`, `orchestration:operate`, `settings:write`, and `source-control:write` scopes.
+
+When T3 Code runs as the DevSpace service user, this is equivalent to the shell and terminal authority DevSpace already grants: the bridge adds another path to that authority without widening it. Enable it only where shell authority is already acceptable. Only the twelve allowlisted tools are exposed; T3's other tools are not reachable through DevSpace. The bridged tools advertise `destructiveHint: false` and `openWorldHint: false`, like the sky-cua bridge; as with annotation profiles, these hints are not a security boundary.
+
+Credential handling:
+
+- The credential is minted through the local T3 CLI's pairing-code flow. There is no browser step and no stored secret; nothing is added to DevSpace configuration.
+- The token lives in process memory only. DevSpace never writes tokens, pairing codes, or authorization codes to disk, logs them, or returns them in tool results or errors.
+- Each DevSpace instance uses its own T3 session label, derived from its state directory, and revokes every session carrying that label before minting, so restarts do not accumulate live credentials.
+- The CLI child environment is built like the sky-cua and node_repl bridge children: the control-plane names listed under [Child environment filtering](#child-environment-filtering) are removed, along with `GH_TOKEN`, `GITHUB_TOKEN`, and every `*_NODE_TOKEN`. It adds `ELECTRON_RUN_AS_NODE=1`, runs with a 30-second timeout, and gets no stdin.
+
+The bridge persists nothing; its inbox cursor is also memory-only, and thread state stays in T3.
+
 ## Child environment filtering
 
 DevSpace control-plane credentials must not enter development subprocesses.
