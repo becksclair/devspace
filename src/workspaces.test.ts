@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, chmod, mkdtemp, mkdir, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -10,7 +10,8 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./workspace-store.js"
 import { WorkspaceRegistry } from "./workspaces.js";
 
 const execFileAsync = promisify(execFile);
-const root = await mkdtemp(join(tmpdir(), "devspace-workspace-test-"));
+// Canonicalize so expected paths match where tmpdir is a symlink (macOS /var -> /private/var).
+const root = await realpath(await mkdtemp(join(tmpdir(), "devspace-workspace-test-")));
 
 try {
   const agentDir = join(root, ".pi", "agent");

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,8 @@ import {
   resolveSkillReadPath,
 } from "./skills.js";
 
-const root = await mkdtemp(join(tmpdir(), "devspace-skills-test-"));
+// Canonicalize so skill paths compare equal where tmpdir is a symlink (macOS /var -> /private/var).
+const root = await realpath(await mkdtemp(join(tmpdir(), "devspace-skills-test-")));
 
 try {
   const projectRoot = join(root, "project");

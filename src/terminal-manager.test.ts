@@ -9,7 +9,9 @@ import { createShellRuntime } from "./shell-environment.js";
 import { TerminalManager } from "./terminal-manager.js";
 
 const execFileAsync = promisify(execFile);
-const root = await mkdtemp(join(tmpdir(), "devspace-terminal-test-"));
+// tmux.sock under macOS's per-user tmpdir exceeds the 104-byte Unix socket
+// path limit, so use the shorter /tmp there.
+const root = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "devspace-terminal-test-"));
 const stateDir = join(root, "state");
 const runtimeDir = join(root, "runtime");
 const config = {
