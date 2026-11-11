@@ -244,8 +244,13 @@ Stop and report back (do not improvise) if:
 - Do not remove the `undici` override as a side effect of that upgrade. Pi
   1.5.2 pins `undici` 8.12.3, which the advisories known at planning time do
   not flag (their ranges end at `<8.12.2`), but advisories keep arriving.
-  After the upgrade, run `bun pm why undici` and `bun audit`; drop the
-  override only if the version Pi pins has no advisory, and keep it otherwise.
+  While the override is present, `bun audit` checks the overridden version,
+  not the one Pi pins, so it cannot answer the question. After the upgrade,
+  copy `package.json` and `bun.lock` to a scratch directory, delete the
+  `undici` override there, run `bun install --lockfile-only` and then
+  `bun audit` in that directory, and look at the `undici` version that
+  `bun pm why undici` reports there. Drop the override in the repository only
+  if that audit reports nothing for `undici`; keep it otherwise.
 - Left as they are: the redundant `proxy-addr` override (Express 5.3 already
   requires `^2.0.8`) and the exact `ws` and `protobufjs` pins.
 - Reviewer focus: the `package.json` diff is two lines, and the lockfile diff

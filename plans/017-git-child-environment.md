@@ -235,13 +235,18 @@ export function gitChildEnvironment(
   overrides: NodeJS.ProcessEnv = {},
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
+  // Filter the merged result, so an override map cannot carry a stripped name back in.
+  const merged = { ...baseEnvironment, ...overrides };
+  // Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped even before any registry exists
+  // (for example by `devspace doctor`). Malformed entries are ignored here; config loading rejects them.
+  const listed = new Set((merged.DEVSPACE_INFRA_SECRET_NAMES ?? "").split(",").map((name) => name.trim()).filter(Boolean));
   const environment: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(baseEnvironment)) {
+  for (const [name, value] of Object.entries(merged)) {
     if (value === undefined) continue;
-    if (GIT_ALWAYS_STRIPPED.has(name) || registeredGitSecretNames.has(name)) continue;
+    if (GIT_ALWAYS_STRIPPED.has(name) || registeredGitSecretNames.has(name) || listed.has(name)) continue;
     environment[name] = value;
   }
-  return { ...environment, ...overrides };
+  return environment;
 }
 ```
 
@@ -422,8 +427,12 @@ Stop and report back (do not improvise) if:
   overrides, so an override map cannot re-introduce a stripped name. The test
   covers the worktree-add hook, both `git status` paths (through a
   `core.fsmonitor` probe), and the `src/git.ts` wrapper (through an alias).
-- Known and accepted: the names come from a process-wide registry that
-  `WorkspaceRegistry` fills, and each call site opts in with `env:`. Code that
-  starts git before any registry exists strips only the owner token.
+- Where the names come from: the owner token is always stripped; names listed
+  in `DEVSPACE_INFRA_SECRET_NAMES` are read from the environment at each call,
+  so they are stripped even before any configuration is loaded (the doctor's
+  `git --version` check runs that early); node bearer variable names come from
+  role configuration and are registered when a `WorkspaceRegistry` is
+  constructed. Only that last group depends on the registry, and every code
+  path that opens a repository builds the registry first.
 - Reviewer focus: confirm no call site still spreads `process.env`, and that
   `GH_TOKEN` is not stripped.

@@ -11,7 +11,7 @@
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding; on a
 > mismatch, treat it as a STOP condition. Changes to `reviewChanges` and its
-> test made by plan 021 (a third `git diff --name-status -z` call,
+> test made by plan 021 (a third `git diff --raw -z --no-abbrev` call,
 > `parseChangedFiles`, a new test block) are expected and are not a mismatch.
 
 ## Status
@@ -151,7 +151,7 @@ arguments in a few hundred bytes of metadata, so the node must accept slightly
 more than 4 MiB.
 
 `reviewChanges` at planning time (`src/review-checkpoints.ts:124-144`; plan 021
-adds a `nameStatus` call and renames the parser, nothing else):
+adds a `raw` status call and renames the parser, nothing else):
 
 ```ts
         const patch = (await git(root, ["diff", "--binary", "--no-color", baseline, current], {
@@ -394,10 +394,24 @@ Design (decided; do not substitute another):
 - With `since: "workspace_open"` and something deferred, the last-shown
   baseline is not moved at all. That view has no cursor to page with, and
   leaving the baseline alone loses nothing.
-- A `too-large` file is the one case where the baseline moves past a diff that
-  was not returned. It is unavoidable (holding the baseline would return the
-  same oversized diff forever), so it is stated in the result text and marked
-  on the file entry.
+- A `too-large` file is a case where the baseline moves past a diff that was
+  not returned. It is unavoidable (holding the baseline would return the same
+  oversized diff forever), so it is stated in the result text and marked on
+  the file entry.
+- Paging needs one patch section per listed file and a partial tree git can
+  represent. Two rare shapes break that, and for them paging is switched off
+  for the call (`pageable` is false):
+  - the patch sections cannot be matched one-to-one to the file list even
+    after merging git's two sections for a file-type change;
+  - the change replaces a file with a directory or the reverse (one changed
+    path is a parent directory of another). No tree can hold both the old
+    file and the new children, so a partial baseline would silently drop a
+    deferred diff.
+  When paging is off the result is all or nothing: the whole patch if it fits,
+  otherwise no patch with every file marked `too-large`. The baseline then
+  advances fully, and nothing is ever `deferred`. The call never throws for
+  these shapes, because a thrown error would leave the baseline in place and
+  fail the same way on every later call.
 - The first file is always listed and is never `deferred`, so every call makes
   progress.
 
@@ -466,6 +480,56 @@ In `src/review-checkpoints.ts`:
    }
    ```
 
+   Add these three helpers next to it:
+
+   ```ts
+   /**
+    * Per-file diff sections in file-list order. Git emits two consecutive sections with the same
+    * header when a file changes type (for example regular file to symlink); they belong together.
+    */
+   export function splitPatchByFile(patch: string): string[] {
+     const sections: string[] = [];
+     let previousHeader: string | undefined;
+     for (const section of patch.length === 0 ? [] : patch.split(/^(?=diff --git )/m)) {
+       const newline = section.indexOf("\n");
+       const header = newline === -1 ? section : section.slice(0, newline);
+       if (header === previousHeader && sections.length > 0) sections[sections.length - 1] += section;
+       else sections.push(section);
+       previousHeader = header;
+     }
+     return sections;
+   }
+
+   /** True when one changed path is a parent directory of another: a file replaced by a directory, or the reverse. */
+   export function hasFileDirectoryConflict(files: ReviewFile[]): boolean {
+     const paths = new Set(files.flatMap((file) => (file.previousPath ? [file.previousPath, file.path] : [file.path])));
+     for (const path of paths) {
+       for (let slash = path.indexOf("/"); slash !== -1; slash = path.indexOf("/", slash + 1)) {
+         if (paths.has(path.slice(0, slash))) return true;
+       }
+     }
+     return false;
+   }
+
+   /** Delivery when paging is off: the whole patch if it fits, otherwise no patch and every file marked. */
+   function planWholeDelivery(
+     patch: string,
+     files: ReviewFile[],
+     limits: { maxPatchBytes: number; maxFileListBytes: number },
+   ): { states: Array<"included" | PatchOmission>; listed: number } {
+     let listed = 0;
+     let listBytes = 0;
+     for (const file of files) {
+       const entryBytes = serializedBytes(file) + 64;
+       if (listed > 0 && listBytes + entryBytes > limits.maxFileListBytes) break;
+       listed += 1;
+       listBytes += entryBytes;
+     }
+     const fits = serializedBytes(patch) <= limits.maxPatchBytes;
+     return { states: files.map(() => (fits ? "included" : "too-large")), listed };
+   }
+   ```
+
 4. Add the partial-baseline helper next to `createWorkingTreeSnapshot`, which
    it is modeled on (temporary index, same environment):
 
@@ -512,11 +576,10 @@ In `src/review-checkpoints.ts`:
    to the end of the `return { … };` statement with:
 
    ```ts
-        const sections = patch.length === 0 ? [] : patch.split(/^(?=diff --git )/m);
-        if (sections.length !== files.length) {
-          throw new Error(`show_changes could not match ${sections.length} diff sections to ${files.length} changed files.`);
-        }
-        const { states, listed } = planDelivery(sections, files, { maxPatchBytes, maxFileListBytes });
+        const sections = splitPatchByFile(patch);
+        const limits = { maxPatchBytes, maxFileListBytes };
+        const pageable = sections.length === files.length && !hasFileDirectoryConflict(files);
+        const { states, listed } = pageable ? planDelivery(sections, files, limits) : planWholeDelivery(patch, files, limits);
         const deferred = states.filter((entry) => entry === "deferred").length;
         const tooLarge = states.filter((entry) => entry === "too-large").length;
 
@@ -550,7 +613,9 @@ In `src/review-checkpoints.ts`:
             const outcome = states[index];
             return outcome === undefined || outcome === "included" ? file : { ...file, patchOmitted: outcome };
           }),
-          patch: sections.filter((_section, index) => states[index] === "included").join(""),
+          patch: pageable
+            ? sections.filter((_section, index) => states[index] === "included").join("")
+            : states[0] === "included" ? patch : "",
           ...(deferred > 0 || tooLarge > 0 ? { patchTruncated: true } : {}),
           ...(deferred > 0 ? { pendingFiles: deferred } : {}),
           ...(listed < files.length ? { filesTruncated: true } : {}),
@@ -620,7 +685,41 @@ of the inner `try` block (before its `finally`):
     }
     assert.deepEqual(delivered.sort(), listedNames);
     await listedManager.removeWorkspace({ workspaceId: "ws_listed" });
+
+    // A file-type change is two patch sections for one file; it must not fail the call.
+    assert.deepEqual(splitPatchByFile("diff --git a/k b/k\ndeleted file mode 100644\ndiff --git a/k b/k\nnew file mode 120000\ndiff --git a/z b/z\n+z\n").length, 2);
+    const typeManager = createReviewCheckpointManager(stateDir);
+    await writeFile(join(root, "kind.txt"), "regular file\n");
+    await typeManager.initializeWorkspace({ workspaceId: "ws_type", root });
+    await unlink(join(root, "kind.txt"));
+    await symlink("README.md", join(root, "kind.txt"));
+    const typeChange = await typeManager.reviewChanges({ workspaceId: "ws_type", root });
+    assert.deepEqual(typeChange.files.map((file) => file.path), ["kind.txt"]);
+    assert.match(typeChange.patch, /new file mode 120000/);
+    assert.equal(typeChange.patchTruncated, undefined);
+    await typeManager.removeWorkspace({ workspaceId: "ws_type" });
+
+    // A file replaced by a directory cannot be paged: nothing is deferred and the baseline advances.
+    assert.equal(hasFileDirectoryConflict([entry("dir"), entry("dir/child")]), true);
+    assert.equal(hasFileDirectoryConflict([entry("dir.txt"), entry("dir/child")]), false);
+    const swapManager = createReviewCheckpointManager(stateDir, { maxPatchBytes: 150 });
+    await writeFile(join(root, "swap"), "i am a file\n");
+    await swapManager.initializeWorkspace({ workspaceId: "ws_swap", root });
+    await unlink(join(root, "swap"));
+    await mkdir(join(root, "swap"));
+    await writeFile(join(root, "swap", "child.txt"), "child\n");
+    const swapped = await swapManager.reviewChanges({ workspaceId: "ws_swap", root });
+    assert.equal(swapped.summary.files, 2);
+    assert.equal(swapped.pendingFiles, undefined, "paging is off for a file/directory swap");
+    assert.deepEqual(swapped.files.map((file) => file.patchOmitted), ["too-large", "too-large"]);
+    assert.equal(swapped.patch, "");
+    assert.equal((await swapManager.reviewChanges({ workspaceId: "ws_swap", root })).summary.files, 0);
+    await swapManager.removeWorkspace({ workspaceId: "ws_swap" });
 ```
+
+Add `mkdir`, `symlink`, and `unlink` to the test's `node:fs/promises` import if
+they are not already there, and import `splitPatchByFile` and
+`hasFileDirectoryConflict` alongside `planDelivery`.
 
 Confirm the paging test can fail: with `createPartialBaseline` replaced by a
 plain advance to `current`, `timesInPatch` contains a `0`.
@@ -655,7 +754,9 @@ is marked `patchOmitted: "too-large"` and is not returned.
   than the patch budget is returned over several calls with every deferred
   diff delivered exactly once and the oversized one marked; a truncated
   `workspace_open` overview does not consume the baseline; a bounded file list
-  defers, and later delivers, the files beyond it.
+  defers, and later delivers, the files beyond it; a file-type change returns
+  one file with both patch sections; a file/directory swap that does not fit
+  is marked `too-large`, defers nothing, and advances the baseline.
 - Verification: `bun run test` → exit 0.
 
 ## Done criteria
@@ -682,9 +783,8 @@ Stop and report back (do not improvise) if:
 - An existing assertion in `src/remote-node-client.test.ts` expects a node's
   JSON error on the legacy path to be reported as unavailable. Report it; do
   not rewrite it.
-- `reviewChanges` throws `could not match … diff sections` in any test. The
-  design relies on one diff section per listed file; do not work around a
-  mismatch by guessing.
+- A `reviewChanges` call throws for a file-type change or a file/directory
+  swap. Those shapes must take the non-paged path, not fail.
 - `git reset … --pathspec-from-file` is rejected by the installed git
   (`git --version` older than 2.26).
 - You are tempted to add an export to `src/build-metadata.ts`.
@@ -702,8 +802,10 @@ Stop and report back (do not improvise) if:
   limit; it then fails with `response_too_large`, which is truthful and loses
   no state.
 - A `too-large` diff is never returned by `show_changes`; the model has to
-  inspect that file another way. That is the one deliberate case where the
-  baseline moves past an unreturned diff.
+  inspect that file another way. The baseline moves past an unreturned diff in
+  exactly two deliberate cases: a single diff larger than the whole budget, and
+  a change that cannot be paged (unmatched patch sections, or a file replaced
+  by a directory or the reverse) and does not fit in one result.
 - A `workspace_open` overview that does not fit is truncated on every call; it
   has no cursor. Paging happens through the default `last_shown` view.
 - A diff larger than the 50 MiB `maxBuffer` still fails before the baseline
