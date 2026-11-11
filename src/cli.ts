@@ -17,7 +17,7 @@ import {
 } from "./user-config.js";
 import { configuredLogicalRoots, expandHomePath, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 import { loadRoleConfig } from "./role-config.js";
-import { createShellRuntime, runConfiguredShell } from "./shell-environment.js";
+import { createShellRuntime, gitChildEnvironment, runConfiguredShell } from "./shell-environment.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import { assertHermesOAuthConfigCompatible, mintHeadlessOAuth, writeHermesOAuthFiles, writeOAuthBundle } from "./headless-auth.js";
 import { StaticKeyStore, mintApiKey, DEFAULT_KEY_TTL_SECONDS } from "./static-key-provider.js";
@@ -791,7 +791,7 @@ function checkSqliteNative(): string {
 function checkGitAvailable(): string {
   try {
     const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
-    return execFileSync("git", ["--version"], { encoding: "utf8" }).trim();
+    return execFileSync("git", ["--version"], { encoding: "utf8", env: gitChildEnvironment() }).trim();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return `unavailable (${message})`;
