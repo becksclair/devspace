@@ -1,4 +1,4 @@
-# Plan 022: Align gateway and node payload limits, and keep `show_changes` deliverable
+# Plan 022: Align gateway and node payload limits, and make `show_changes` deliver large diffs in pieces
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
@@ -17,7 +17,7 @@
 ## Status
 
 - **Priority**: P1
-- **Effort**: M
+- **Effort**: M (Steps 1–2 are S; Step 3 is the larger part)
 - **Risk**: LOW
 - **Depends on**: plans/021-show-changes-file-list.md (same function and test file; run 021 first)
 - **Category**: bug
@@ -41,8 +41,10 @@ and returns only 1 MiB. Three things go wrong:
 
 After this plan there is one limit shared by both sides, an oversized request
 gets a JSON error the model can read, and `show_changes` always returns a
-result that fits: the patch is cut at a file boundary and flagged, while the
-file list and summary stay complete.
+result that fits. A large diff is delivered over several calls: each call
+returns the per-file diffs that fit, and the review baseline advances **only
+for the files whose diffs were returned**, so nothing is lost and the next
+call returns the rest.
 
 ## Current state
 
@@ -117,8 +119,28 @@ How the client classifies a node reply (`src/remote-node-client.ts:234-242`):
     }
 ```
 
-A JSON error body with its own `code` therefore already reaches the model as
-that message. A non-JSON body makes `readBoundedJson` throw, which the caller
+A JSON error body with its own `code` therefore reaches the model as that
+message on the resumable path. The non-resumable path, used for a node whose
+hello does not advertise `resumableCalls`, wraps **every** error
+(`src/remote-node-client.ts:143-153`):
+
+```ts
+        if (!resumable) {
+          try {
+            return await this.withTimeout(
+              options.signal,
+              (boundedSignal) => this.callOnce(body, boundedSignal),
+              remoteToolTimeoutMs(tool, args, this.config.timeoutMs),
+            );
+          } catch (error) {
+            throw normalizeTargetError(error, options.signal, "Remote node call failed");
+          }
+        }
+```
+
+`normalizeTargetError` (`:336-340`) turns anything that is not already a
+`TargetUnavailableError` into one, so on that path a node's JSON error would
+still read as "unavailable". A non-JSON body makes `readBoundedJson` throw, which the caller
 turns into `TargetUnavailableError`, and `src/gateway-router.ts:378-383`
 turns that into "Target <machine> is unavailable."
 
@@ -283,6 +305,17 @@ In `src/node-server.ts`:
    Import `NextFunction` as a type from `express` alongside the existing
    `Request` and `Response` imports.
 
+In `src/remote-node-client.ts`, in the non-resumable `catch` shown in "Current
+state", keep a node's own error instead of wrapping it:
+
+```ts
+          } catch (error) {
+            // A node's own JSON error (for example request_too_large) is not unavailability.
+            if (error instanceof RemoteNodeExecutionError) throw error;
+            throw normalizeTargetError(error, options.signal, "Remote node call failed");
+          }
+```
+
 In `src/node-server.test.ts`, before the final `server.close` line, add a
 second server with a small limit and these checks (reuse `config`, `executor`,
 `valid`, and the header pattern already in the file):
@@ -317,102 +350,280 @@ of this step, the `413` body is HTML, so `tooLarge.json()` throws.
 
 In `src/remote-node-client.test.ts`, following the file's existing pattern of
 replacing `globalThis.fetch` (hello on `/hello`, a canned response otherwise),
-add a case in which the call endpoint answers status `413` with the JSON body
-`{ ok: false, error: { code: "request_too_large", message: "Request exceeds the node's size limit; send less content per call" } }`.
-Assert that `execute("write_file", …)` rejects with an error whose `message`
-matches `/size limit/` and whose `name` is **not** `TargetUnavailableError`.
+add **two** cases in which the call endpoint answers status `413` with the JSON
+body
+`{ ok: false, error: { code: "request_too_large", message: "Request exceeds the node's size limit; send less content per call" } }`:
+
+1. with the resumable hello (`jsonResponse(resumableHello())`);
+2. with a legacy hello that has no `resumableCalls` and no `nodeInstanceId`
+   (copy the hello object from the existing "legacy node" case at lines
+   122-140 of the file).
+
+In both, assert that `execute("write_file", { workspaceId: "w", path: "x",
+content: "y" }, …)` rejects with an error whose `message` matches
+`/size limit/` and whose `name` is **not** `TargetUnavailableError`. Case 2
+fails before the `catch` change above.
 
 **Verify**:
 
 - `bunx tsx src/node-server.test.ts` → exit 0
 - `bunx tsx src/remote-node-client.test.ts` → exit 0
 
-### Step 3: Bound the `show_changes` patch at a file boundary
+### Step 3: Deliver large diffs in pieces, and advance the baseline only for what was delivered
+
+Design (decided; do not substitute another):
+
+- Sizes are measured **as serialized JSON** (`JSON.stringify`), because that is
+  what the node's response limit measures. Escaping can make a patch larger
+  than its raw byte count.
+- The patch is split into per-file sections. `git diff` emits them in the same
+  order as the file list, so section `i` belongs to `files[i]`.
+- Each file gets one of three outcomes, decided in order:
+  - `included` — its diff fits in the remaining patch budget and is returned.
+  - `deferred` — it does not fit now; a later call returns it.
+  - `too-large` — its diff alone exceeds the whole patch budget, so no call
+    could ever return it.
+- The file list is bounded too. Files beyond the list budget are not listed in
+  this response and are `deferred`.
+- With `markReviewed` (the default) and `since: "last_shown"` (the default):
+  - nothing deferred → the baseline moves to the current snapshot, as today;
+  - something deferred → the baseline moves **only for the `included` and
+    `too-large` files**. It becomes a commit equal to the old baseline with
+    just those files at their current state. The deferred files stay pending
+    and the next call returns them.
+- With `since: "workspace_open"` and something deferred, the last-shown
+  baseline is not moved at all. That view has no cursor to page with, and
+  leaving the baseline alone loses nothing.
+- A `too-large` file is the one case where the baseline moves past a diff that
+  was not returned. It is unavoidable (holding the baseline would return the
+  same oversized diff forever), so it is stated in the result text and marked
+  on the file entry.
+- The first file is always listed and is never `deferred`, so every call makes
+  progress.
 
 In `src/review-checkpoints.ts`:
 
 1. Add near the other constants:
 
    ```ts
-   /** Largest patch `show_changes` returns. The file list and summary are always complete. */
+   /** Budgets for one `show_changes` result, measured as serialized JSON. */
    const DEFAULT_MAX_PATCH_BYTES = 1_000_000;
+   const DEFAULT_MAX_FILE_LIST_BYTES = 1_000_000;
    ```
 
-2. Add and export a pure helper:
+2. Extend the result types:
 
    ```ts
-   /** Keeps whole per-file diffs, in order, until the next one would exceed `maxBytes`. */
-   export function boundPatch(patch: string, maxBytes: number): { patch: string; omittedFiles: number } {
-     if (Buffer.byteLength(patch) <= maxBytes) return { patch, omittedFiles: 0 };
-     const sections = patch.split(/^(?=diff --git )/m);
-     let kept = "";
-     let size = 0;
-     let index = 0;
-     for (; index < sections.length; index += 1) {
-       const bytes = Buffer.byteLength(sections[index] ?? "");
-       if (size + bytes > maxBytes) break;
-       kept += sections[index];
-       size += bytes;
+   export type PatchOmission = "deferred" | "too-large";
+   ```
+
+   Add `patchOmitted?: PatchOmission;` to `ReviewFile`, and add
+   `patchTruncated?: boolean;`, `pendingFiles?: number;`, and
+   `filesTruncated?: boolean;` to `ReviewChangesResult`. All four are present
+   only when they apply, so a result that fits is byte-for-byte what it is
+   today.
+
+3. Add and export the pure planner:
+
+   ```ts
+   /** Size of a value as it travels: JSON-escaped, which is what the node's response limit measures. */
+   function serializedBytes(value: unknown): number {
+     return Buffer.byteLength(JSON.stringify(value));
+   }
+
+   /**
+    * Decides, per changed file and in order, whether its diff is returned now ("included"),
+    * returned by a later call ("deferred"), or can never be returned because it alone exceeds the
+    * patch budget ("too-large"). `listed` is how many leading files fit in the file list; the
+    * rest are deferred. The first file is always listed, so every call makes progress.
+    */
+   export function planDelivery(
+     sections: string[],
+     files: ReviewFile[],
+     limits: { maxPatchBytes: number; maxFileListBytes: number },
+   ): { states: Array<"included" | PatchOmission>; listed: number } {
+     const states: Array<"included" | PatchOmission> = [];
+     let patchBytes = 0;
+     let listBytes = 0;
+     let listed = 0;
+     for (let index = 0; index < files.length; index += 1) {
+       // 64 bytes of headroom per entry covers the `patchOmitted` field and separators.
+       const entryBytes = serializedBytes(files[index]) + 64;
+       if (listed !== index || (listed > 0 && listBytes + entryBytes > limits.maxFileListBytes)) {
+         states.push("deferred");
+         continue;
+       }
+       listed += 1;
+       listBytes += entryBytes;
+       const size = serializedBytes(sections[index] ?? "");
+       if (size > limits.maxPatchBytes) states.push("too-large");
+       else if (patchBytes + size <= limits.maxPatchBytes) {
+         states.push("included");
+         patchBytes += size;
+       } else states.push("deferred");
      }
-     return { patch: kept, omittedFiles: sections.length - index };
+     return { states, listed };
    }
    ```
 
-3. Change the factory signature to
-   `createReviewCheckpointManager(stateDir: string, options: { maxPatchBytes?: number } = {})`
-   and read `const maxPatchBytes = options.maxPatchBytes ?? DEFAULT_MAX_PATCH_BYTES;`
-   at the top of the function.
-4. Add `patchTruncated?: boolean;` to `ReviewChangesResult`.
-5. In `reviewChanges`, after `summary` is computed, add
-   `const bounded = boundPatch(patch, maxPatchBytes);` and build the return
-   value from it:
+4. Add the partial-baseline helper next to `createWorkingTreeSnapshot`, which
+   it is modeled on (temporary index, same environment):
 
    ```ts
+   /** A commit equal to `baseline` except that the given files are at their `current` state. */
+   async function createPartialBaseline(
+     state: WorkspaceReviewState,
+     baseline: string,
+     current: string,
+     advanced: ReviewFile[],
+   ): Promise<string> {
+     const tempDir = await mkdtemp(join(tmpdir(), "devspace-review-index-"));
+     const pathspecFile = join(tempDir, "paths");
+     const env = {
+       ...reviewEnv(state),
+       ...checkpointIdentity(),
+       GIT_INDEX_FILE: join(tempDir, "index"),
+       GIT_LITERAL_PATHSPECS: "1",
+     };
+     try {
+       const paths = advanced.flatMap((file) => (file.previousPath ? [file.previousPath, file.path] : [file.path]));
+       await writeFile(pathspecFile, paths.map((path) => `${path}\0`).join(""));
+       await git(state.root, ["read-tree", baseline], { env });
+       await git(state.root, ["reset", "-q", current, `--pathspec-from-file=${pathspecFile}`, "--pathspec-file-nul"], { env });
+       const tree = (await git(state.root, ["write-tree"], { env })).stdout.trim();
+       return (await git(state.root, ["commit-tree", tree, "-p", baseline, "-m", "DevSpace partial review baseline"], { env })).stdout.trim();
+     } finally {
+       await rm(tempDir, { recursive: true, force: true });
+     }
+   }
+   ```
+
+   `git reset <commit> --pathspec-from-file` with a temporary `GIT_INDEX_FILE`
+   only rewrites index entries; it does not touch the working tree. A renamed
+   file needs both its old and its new path. The option needs git 2.26 or
+   newer.
+
+5. Change the factory signature to
+   `createReviewCheckpointManager(stateDir: string, options: { maxPatchBytes?: number; maxFileListBytes?: number } = {})`
+   and read both values, with the defaults above, at the top of the function.
+
+6. In `reviewChanges`, replace everything from the line
+   `if (markReviewed) await git(root, ["update-ref", state.baselineRef, current], { env });`
+   to the end of the `return { … };` statement with:
+
+   ```ts
+        const sections = patch.length === 0 ? [] : patch.split(/^(?=diff --git )/m);
+        if (sections.length !== files.length) {
+          throw new Error(`show_changes could not match ${sections.length} diff sections to ${files.length} changed files.`);
+        }
+        const { states, listed } = planDelivery(sections, files, { maxPatchBytes, maxFileListBytes });
+        const deferred = states.filter((entry) => entry === "deferred").length;
+        const tooLarge = states.filter((entry) => entry === "too-large").length;
+
+        if (markReviewed) {
+          if (deferred === 0) {
+            await git(root, ["update-ref", state.baselineRef, current], { env });
+          } else if (since !== "workspace_open") {
+            // Advance only for the files this result accounts for; the rest stay pending.
+            const advanced = files.filter((_file, index) => states[index] !== "deferred");
+            const partial = await createPartialBaseline(state, baseline, current, advanced);
+            await git(root, ["update-ref", state.baselineRef, partial], { env });
+          }
+        }
+
+        const notes: string[] = [];
+        if (deferred > 0) {
+          notes.push(since === "workspace_open"
+            ? `${deferred} more file ${deferred === 1 ? "diff does" : "diffs do"} not fit in this overview`
+            : `${deferred} more file ${deferred === 1 ? "diff" : "diffs"} will be returned by the next show_changes call`);
+        }
+        if (tooLarge > 0) {
+          notes.push(`${tooLarge} file ${tooLarge === 1 ? "diff is" : "diffs are"} too large to return and ${tooLarge === 1 ? "is" : "are"} marked in the file list`);
+        }
         const changed = `Changed ${summary.files} ${summary.files === 1 ? "file" : "files"} (+${summary.additions} -${summary.removals}).`;
-        const truncation = bounded.omittedFiles > 0
-          ? ` The patch is truncated: ${bounded.omittedFiles} file ${bounded.omittedFiles === 1 ? "diff is" : "diffs are"} omitted because of size; the file list is complete, so read those files directly.`
-          : "";
         return {
           result: summary.files === 0
             ? `No changes since ${since === "workspace_open" ? "workspace open" : "last shown changes"}.`
-            : `${changed}${truncation}`,
+            : `${changed}${notes.length > 0 ? ` Not every diff is included: ${notes.join("; ")}.` : ""}`,
           summary,
-          files,
-          patch: bounded.patch,
-          ...(bounded.omittedFiles > 0 ? { patchTruncated: true } : {}),
+          files: files.slice(0, listed).map((file, index) => {
+            const outcome = states[index];
+            return outcome === undefined || outcome === "included" ? file : { ...file, patchOmitted: outcome };
+          }),
+          patch: sections.filter((_section, index) => states[index] === "included").join(""),
+          ...(deferred > 0 || tooLarge > 0 ? { patchTruncated: true } : {}),
+          ...(deferred > 0 ? { pendingFiles: deferred } : {}),
+          ...(listed < files.length ? { filesTruncated: true } : {}),
         };
    ```
 
-   Leave the `update-ref` line where it is: the result is now always
-   deliverable, so advancing the baseline is correct.
+   `summary` stays computed over **all** changed files, so the result line
+   always states the full pending change.
 
-In `src/review-checkpoints.test.ts`, import `boundPatch` and add at the end of
-the inner `try` block (before its `finally`):
+In `src/review-checkpoints.test.ts`, import `planDelivery` and add at the end
+of the inner `try` block (before its `finally`):
 
 ```ts
-    // boundPatch keeps whole file diffs and reports what it dropped.
-    const twoFiles = "diff --git a/a.txt b/a.txt\n+a\ndiff --git a/b.txt b/b.txt\n+b\n";
-    assert.deepEqual(boundPatch(twoFiles, 10_000), { patch: twoFiles, omittedFiles: 0 });
-    assert.deepEqual(boundPatch(twoFiles, 40), { patch: "diff --git a/a.txt b/a.txt\n+a\n", omittedFiles: 1 });
-    assert.deepEqual(boundPatch(twoFiles, 5), { patch: "", omittedFiles: 2 });
+    // planDelivery: serialized sizes, in order, and always some progress.
+    const entry = (path: string) => ({ path, type: "change" as const, additions: 1, removals: 0 });
+    const section = "diff --git a/x b/x\n+x\n"; // 26 bytes once serialized
+    const roomy = { maxPatchBytes: 10_000, maxFileListBytes: 10_000 };
+    assert.deepEqual(planDelivery([section, section], [entry("a"), entry("b")], roomy), { states: ["included", "included"], listed: 2 });
+    assert.deepEqual(planDelivery([section, section], [entry("a"), entry("b")], { ...roomy, maxPatchBytes: 30 }).states, ["included", "deferred"]);
+    assert.deepEqual(planDelivery([section, section], [entry("a"), entry("b")], { ...roomy, maxPatchBytes: 10 }).states, ["too-large", "too-large"]);
+    assert.deepEqual(planDelivery([section, section], [entry("a"), entry("b")], { ...roomy, maxFileListBytes: 1 }), { states: ["included", "deferred"], listed: 1 });
 
-    // An oversized patch is truncated, flagged, and still advances the baseline.
-    const boundedManager = createReviewCheckpointManager(stateDir, { maxPatchBytes: 300 });
-    await boundedManager.initializeWorkspace({ workspaceId: "ws_bounded", root });
-    await writeFile(join(root, "big-one.txt"), `${"one\n".repeat(60)}`);
-    await writeFile(join(root, "big-two.txt"), `${"two\n".repeat(60)}`);
-    const boundedReview = await boundedManager.reviewChanges({ workspaceId: "ws_bounded", root });
-    assert.equal(boundedReview.patchTruncated, true);
-    assert.equal(boundedReview.files.length, 2, "the file list stays complete");
-    assert.ok(Buffer.byteLength(boundedReview.patch) <= 300);
-    assert.match(boundedReview.result, /patch is truncated/);
-    assert.equal((await boundedManager.reviewChanges({ workspaceId: "ws_bounded", root })).summary.files, 0);
-    await boundedManager.removeWorkspace({ workspaceId: "ws_bounded" });
+    // A diff that does not fit is delivered over several calls; nothing is skipped or repeated.
+    const pagedManager = createReviewCheckpointManager(stateDir, { maxPatchBytes: 1500 });
+    await pagedManager.initializeWorkspace({ workspaceId: "ws_paged", root });
+    const segments = ["seg-a", "seg-b", "seg-c"];
+    for (const name of segments) {
+      await writeFile(join(root, `${name}.txt`), `${Array.from({ length: 30 }, (_value, index) => `payload ${name} ${index}`).join("\n")}\n`);
+    }
+    await writeFile(join(root, "huge.txt"), `${Array.from({ length: 400 }, (_value, index) => `huge line ${index}`).join("\n")}\n`);
+    const overview = await pagedManager.reviewChanges({ workspaceId: "ws_paged", root, since: "workspace_open" });
+    assert.equal(overview.patchTruncated, true);
+    assert.equal(overview.summary.files, 4, "the summary always covers every changed file");
+    const timesInPatch = new Map<string, number>(segments.map((name) => [name, 0]));
+    const tooLarge = new Set<string>();
+    let pages = 0;
+    for (;;) {
+      const page = await pagedManager.reviewChanges({ workspaceId: "ws_paged", root });
+      if (page.summary.files === 0) break;
+      pages += 1;
+      assert.ok(pages <= 6, "paging terminates");
+      if (pages === 1) assert.equal(page.summary.files, 4, "a truncated overview does not consume the baseline");
+      assert.ok(Buffer.byteLength(JSON.stringify(page.patch)) <= 1500, "the serialized patch stays within its budget");
+      assert.equal(page.patch.includes("b/huge.txt"), false);
+      for (const name of segments) if (page.patch.includes(`b/${name}.txt`)) timesInPatch.set(name, (timesInPatch.get(name) ?? 0) + 1);
+      for (const file of page.files) if (file.patchOmitted === "too-large") tooLarge.add(file.path);
+    }
+    assert.ok(pages >= 2, "the diff needed more than one call");
+    assert.deepEqual([...timesInPatch.values()], [1, 1, 1], "each deferred diff is returned exactly once");
+    assert.deepEqual([...tooLarge], ["huge.txt"]);
+    await pagedManager.removeWorkspace({ workspaceId: "ws_paged" });
+
+    // The file list is bounded too, and files beyond it are deferred, not lost.
+    const listedManager = createReviewCheckpointManager(stateDir, { maxFileListBytes: 200 });
+    await listedManager.initializeWorkspace({ workspaceId: "ws_listed", root });
+    const listedNames = ["list-a.txt", "list-b.txt", "list-c.txt"];
+    for (const name of listedNames) await writeFile(join(root, name), `${name}\n`);
+    const firstListed = await listedManager.reviewChanges({ workspaceId: "ws_listed", root });
+    assert.equal(firstListed.filesTruncated, true);
+    assert.equal(firstListed.summary.files, 3);
+    assert.ok(firstListed.files.length < 3);
+    const delivered = [...firstListed.files.map((file) => file.path)];
+    for (let call = 0; call < 6; call += 1) {
+      const next = await listedManager.reviewChanges({ workspaceId: "ws_listed", root });
+      if (next.summary.files === 0) break;
+      delivered.push(...next.files.map((file) => file.path));
+    }
+    assert.deepEqual(delivered.sort(), listedNames);
+    await listedManager.removeWorkspace({ workspaceId: "ws_listed" });
 ```
 
-If plan 021's test block left other untracked files in `root`, the count of
-`2` above will be higher: assert on the two `big-*.txt` paths being present
-in `boundedReview.files` instead of on the length.
+Confirm the paging test can fail: with `createPartialBaseline` replaced by a
+plain advance to `current`, `timesInPatch` contains a `0`.
 
 **Verify**:
 
@@ -424,8 +635,10 @@ in `boundedReview.files` instead of on the length.
 Add an entry to `docs/gotchas.md` (match the file's existing heading style):
 gateway and nodes share one internal payload limit, slightly above the 4 MiB
 `/mcp` limit; an oversized request to a node returns `request_too_large`;
-`show_changes` returns at most about 1 MB of patch, flags `patchTruncated`,
-and always returns the complete file list.
+`show_changes` returns at most about 1 MB of patch and 1 MB of file list per
+call, sets `patchTruncated` and `pendingFiles` when diffs remain, and returns
+the rest on the next call; a single file whose diff alone exceeds the budget
+is marked `patchOmitted: "too-large"` and is not returned.
 
 **Verify**: `grep -n "patchTruncated" docs/gotchas.md` → one match.
 `bun run test` → exit 0.
@@ -436,9 +649,13 @@ and always returns the complete file list.
   `request_too_large`; oversized request with a wrong token → `401`; oversized
   response → `500` with `response_too_large`.
 - `src/remote-node-client.test.ts`: a `413` JSON reply surfaces as a readable
-  error, not as target-unavailable.
-- `src/review-checkpoints.test.ts`: `boundPatch` unit cases; a truncated review
-  keeps the full file list, is flagged, and advances the baseline.
+  error, not as target-unavailable, on both the resumable and the legacy
+  (non-resumable) path.
+- `src/review-checkpoints.test.ts`: `planDelivery` unit cases; a diff larger
+  than the patch budget is returned over several calls with every deferred
+  diff delivered exactly once and the oversized one marked; a truncated
+  `workspace_open` overview does not consume the baseline; a bounded file list
+  defers, and later delivers, the files beyond it.
 - Verification: `bun run test` → exit 0.
 
 ## Done criteria
@@ -447,7 +664,8 @@ and always returns the complete file list.
 - [ ] `bun run test` exits 0
 - [ ] `grep -rn "NODE_MAX_BODY_BYTES" src --include='*.ts' | grep -v test` shows the definition plus uses in `src/node-server.ts` and `src/remote-node-client.ts`
 - [ ] `grep -n "1024 \* 1024" src/node-server.ts src/remote-node-client.ts` returns no matches
-- [ ] `git diff --stat 63d6d81..HEAD -- src/build-metadata.ts src/tool-contract.ts scripts` prints nothing
+- [ ] `grep -c "createPartialBaseline" src/review-checkpoints.ts` prints `2` (definition and one call)
+- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD -- src/build-metadata.ts src/tool-contract.ts scripts` prints nothing (the merge base is the commit your plan branch started from, so work merged by other plans is not counted)
 - [ ] `git status --short` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 
@@ -461,6 +679,14 @@ Stop and report back (do not improvise) if:
   "parseChangedFiles" src/review-checkpoints.ts` returns nothing).
 - Moving `express.json` after the bearer check makes an existing assertion in
   `src/node-server.test.ts` fail.
+- An existing assertion in `src/remote-node-client.test.ts` expects a node's
+  JSON error on the legacy path to be reported as unavailable. Report it; do
+  not rewrite it.
+- `reviewChanges` throws `could not match … diff sections` in any test. The
+  design relies on one diff section per listed file; do not work around a
+  mismatch by guessing.
+- `git reset … --pathspec-from-file` is rejected by the installed git
+  (`git --version` older than 2.26).
 - You are tempted to add an export to `src/build-metadata.ts`.
 - A step's verification fails twice after a reasonable fix attempt.
 
@@ -469,12 +695,21 @@ Stop and report back (do not improvise) if:
 - Nodes pick up the larger limit only when they are upgraded; the gateway
   works with old and new nodes. Deploy the node after the gateway to get the
   full benefit.
-- `multi_read` with a caller-raised `maxTotalBytes` can still exceed the
+- The worst-case `show_changes` result is about 2 MB serialized (patch budget
+  plus file-list budget), well under the node limit. If either budget is
+  raised, keep their sum below `NODE_MAX_BODY_BYTES`.
+- `multi_read` with a caller-raised `maxTotalBytes` can still exceed the node
   limit; it then fails with `response_too_large`, which is truthful and loses
   no state.
+- A `too-large` diff is never returned by `show_changes`; the model has to
+  inspect that file another way. That is the one deliberate case where the
+  baseline moves past an unreturned diff.
+- A `workspace_open` overview that does not fit is truncated on every call; it
+  has no cursor. Paging happens through the default `last_shown` view.
 - A diff larger than the 50 MiB `maxBuffer` still fails before the baseline
   moves, so it fails the same way on every call. Not addressed here.
-- The 1 MB patch budget is paid twice in the gateway's result (backlog F09).
-  If that duplication is removed, the budget can be reconsidered.
-- Reviewer focus: the middleware order in `createNodeServer`, and that the
-  truncation message reaches the model through `result`.
+- The patch is paid for twice in the gateway's result (backlog F09). If that
+  duplication is removed, the budgets can be reconsidered.
+- Reviewer focus: the middleware order in `createNodeServer`; that
+  `createPartialBaseline` receives both paths of a rename; and that the
+  baseline never moves for a `deferred` file.

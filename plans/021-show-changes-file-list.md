@@ -120,6 +120,13 @@ followed by two NUL-terminated paths (old, then new). The current parser sees
 three parts, finds the empty path, skips the record, and then reads
 `old-name.txt` as a header.
 
+Line counts alone cannot tell whether a rename is pure. A binary file has no
+line counts (`-<TAB>-`, parsed as 0 and 0), so a renamed binary whose content
+changed would look unchanged; git reports it as, for example, `R098`. The
+similarity score alone is not enough either: a rename with two lines swapped
+is `R100` with counts 1 and 1. A rename is pure only when the status is
+exactly `R100` **and** both counts are zero.
+
 Conventions: tests are standalone `tsx` scripts with `node:assert/strict`;
 commit style is conventional commits, for example
 `fix(executor): read whole files up to maxBytesPerFile in multi_read`.
@@ -207,6 +214,23 @@ add:
     await renameFile(join(root, "added.txt"), join(root, "moved.txt"));
     const pureRename = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
     assert.deepEqual(pureRename.files, [{ path: "moved.txt", previousPath: "added.txt", type: "rename-pure", additions: 0, removals: 0 }]);
+
+    // A pure rename needs both of git's signals: a changed binary has no line counts, and
+    // reordered lines still score a similarity of 100.
+    const binary = Buffer.from(Array.from({ length: 4096 }, (_value, index) => (index * 7 + (index >> 6)) % 256));
+    await writeFile(join(root, "logo.bin"), binary);
+    await writeFile(join(root, "order.txt"), "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n");
+    await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    binary[100] ^= 0xff;
+    await renameFile(join(root, "logo.bin"), join(root, "brand.bin"));
+    await writeFile(join(root, "brand.bin"), binary);
+    await renameFile(join(root, "order.txt"), join(root, "reordered.txt"));
+    await writeFile(join(root, "reordered.txt"), "bravo\nalpha\ncharlie\ndelta\necho\nfoxtrot\n");
+    const changedRenames = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    assert.deepEqual(changedRenames.files, [
+      { path: "brand.bin", previousPath: "logo.bin", type: "rename-changed", additions: 0, removals: 0 },
+      { path: "reordered.txt", previousPath: "order.txt", type: "rename-changed", additions: 1, removals: 1 },
+    ]);
 ```
 
 `assert.deepEqual` is used on purpose: an entry without a rename must not
@@ -236,7 +260,10 @@ In `src/review-checkpoints.ts`:
 2. Replace `parseNumstat` and `fileType` with:
 
    ```ts
-   /** Status letter per path from `git diff --name-status -z` (renames and copies carry two paths). */
+   /**
+    * Git's status per path from `git diff --name-status -z`, such as `M` or `R085` (renames and
+    * copies carry a similarity score and two paths).
+    */
    function parseNameStatus(output: string): Map<string, string> {
      const fields = output.split("\0");
      const statuses = new Map<string, string>();
@@ -245,7 +272,7 @@ In `src/review-checkpoints.ts`:
        if (!status) continue;
        if (status.startsWith("R") || status.startsWith("C")) index += 1;
        const path = fields[index++];
-       if (path) statuses.set(path, status[0] ?? "M");
+       if (path) statuses.set(path, status);
      }
      return statuses;
    }
@@ -274,15 +301,17 @@ In `src/review-checkpoints.ts`:
        if (!path) continue;
        const status = statuses.get(path);
        const type = fileType(status, additions, removals);
-       files.push(status === "R" && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
+       files.push(status?.startsWith("R") && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
      }
      return files;
    }
 
    function fileType(status: string | undefined, additions: number, removals: number): ReviewFile["type"] {
-     if (status === "A" || status === "C") return "new";
-     if (status === "D") return "deleted";
-     if (status === "R") return additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
+     const kind = status?.[0];
+     if (kind === "A" || kind === "C") return "new";
+     if (kind === "D") return "deleted";
+     // A changed binary has no line counts and reordered lines still score 100, so a pure rename needs both.
+     if (kind === "R") return status === "R100" && additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
      return "change";
    }
    ```
@@ -293,7 +322,7 @@ In `src/review-checkpoints.ts`:
 
 - `bun run typecheck` → exit 0
 - `bunx tsx src/review-checkpoints.test.ts` → exit 0
-- `grep -n "parseNumstat" src/` → no matches
+- `grep -rn "parseNumstat" src/` → no matches
 
 ### Step 3: Full suite
 
@@ -302,8 +331,9 @@ In `src/review-checkpoints.ts`:
 ## Test plan
 
 - New block in `src/review-checkpoints.test.ts`: a rename with a change, a
-  shrink-only edit, an append-only edit, a deletion, an addition, and a pure
-  rename, asserted entry by entry with `deepEqual`, plus the summary line.
+  shrink-only edit, an append-only edit, a deletion, an addition, a pure
+  rename, a renamed binary with changed content, and a rename with reordered
+  lines, asserted entry by entry with `deepEqual`, plus the summary line.
 - Pattern: the existing assertions in the same file.
 - Verification: `bun run test` → exit 0.
 
@@ -312,7 +342,7 @@ In `src/review-checkpoints.ts`:
 - [ ] `bun run typecheck` exits 0
 - [ ] `bunx tsx src/review-checkpoints.test.ts` exits 0 with the new block present
 - [ ] `bun run test` exits 0
-- [ ] `grep -n "parseNumstat" src/` returns no matches
+- [ ] `grep -rn "parseNumstat" src/` returns no matches
 - [ ] `git status --short` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 
@@ -333,6 +363,8 @@ Stop and report back (do not improvise) if:
 - The three `git diff` calls (`--binary`, `--numstat -z`, `--name-status -z`)
   must keep identical revision arguments and rename-detection options, or the
   list and the patch will disagree.
+- `parseNameStatus` keeps git's whole status token (`R085`, not `R`) because
+  the similarity score is needed to classify renames; do not shorten it.
 - Plan 022 edits the same function (`reviewChanges`) to bound the patch size.
   Land this plan first; 022's excerpts assume it.
 - A copy (`C`) only appears if copy detection is ever enabled; it is reported

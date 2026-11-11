@@ -356,7 +356,7 @@ In `cleanupStoredManagedWorkspace`, replace the two lines starting with
     if (retention) return { removed: false, dirty: true };
 ```
 
-**Verify**: `bun run typecheck` → exit 0. `grep -n "managedWorkspaceDirty" src/` → no matches.
+**Verify**: `bun run typecheck` → exit 0. `grep -rn "managedWorkspaceDirty" src/` → no matches.
 
 ### Step 3: Run the suites
 
@@ -397,7 +397,7 @@ In `cleanupStoredManagedWorkspace`, replace the two lines starting with
 - [ ] `bun run typecheck` exits 0
 - [ ] `bun run test` exits 0
 - [ ] `bunx tsx src/workspace-unpublished-work.test.ts` exits 0 and the file is in the `"test"` script of `package.json`
-- [ ] `grep -n "managedWorkspaceDirty" src/` returns no matches
+- [ ] `grep -rn "managedWorkspaceDirty" src/` returns no matches
 - [ ] `grep -rn "Dirty managed work is retained" src docs` returns no matches
 - [ ] `git status --short` lists only in-scope files
 - [ ] `plans/README.md` status row updated

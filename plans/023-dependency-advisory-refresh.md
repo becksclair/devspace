@@ -44,7 +44,7 @@ Files:
 
 | Package (locked) | Advisories | Why it is locked there | Fixed in |
 |---|---|---|---|
-| `undici@8.9.0` | 6 high, 9 moderate, 3 low | `@earendil-works/pi-coding-agent@0.84.3` requires exactly `8.9.0` | `8.12.4` (same major) |
+| `undici@8.9.0` | 6 high, 9 moderate, 3 low | `@earendil-works/pi-coding-agent@0.84.3` requires exactly `8.9.0` | `8.12.2` per the advisory ranges at planning time (`<8.10.2` and `<8.12.2`); the dry run resolved `8.12.4`, the newest `8.x` |
 | `vite@8.2.2` | 1 high, 4 moderate, 1 low | direct devDependency `^8.2.2`; lock is stale | `8.3.8` |
 | `source-map-js@1.2.1` | 1 high | `vite > postcss` requires `^1.2.1` | `1.2.2` |
 | `brace-expansion@5.0.9` | 2 high, 1 moderate | `pi-coding-agent > minimatch` requires `^5.0.5` | `5.0.12` |
@@ -216,7 +216,7 @@ run on the new `ip-address`, and the MCP suites run on the new `hono`) and by
 - [ ] `bun audit` reports no high or critical advisory
 - [ ] `bun install --frozen-lockfile` exits 0 from a clean `node_modules`
 - [ ] `bun run typecheck`, `bun run test`, and `bun run build:check` exit 0
-- [ ] `git diff --stat 63d6d81..HEAD -- src scripts .github .gitea` prints nothing
+- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD -- src scripts .github .gitea` prints nothing (the merge base is the commit your plan branch started from, so source changes merged by other plans are not counted)
 - [ ] `git diff package.json` shows only the `vite` range and the `undici` override (plus test-script edits from other plans, if present before you started)
 - [ ] `plans/README.md` status row updated
 
@@ -241,7 +241,11 @@ Stop and report back (do not improvise) if:
   `undici` 8.12.3. That upgrade touches four import sites and about eleven
   symbols (`src/pi-tools.ts:1-18`, `src/skills.ts:5-8`,
   `src/shell-environment.ts:5`, `src/cli.ts:8`); it is a separate decision.
-- When that upgrade happens, remove the `undici` override.
+- Do not remove the `undici` override as a side effect of that upgrade. Pi
+  1.5.2 pins `undici` 8.12.3, which the advisories known at planning time do
+  not flag (their ranges end at `<8.12.2`), but advisories keep arriving.
+  After the upgrade, run `bun pm why undici` and `bun audit`; drop the
+  override only if the version Pi pins has no advisory, and keep it otherwise.
 - Left as they are: the redundant `proxy-addr` override (Express 5.3 already
   requires `^2.0.8`) and the exact `ws` and `protobufjs` pins.
 - Reviewer focus: the `package.json` diff is two lines, and the lockfile diff

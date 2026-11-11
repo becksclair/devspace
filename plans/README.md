@@ -24,13 +24,19 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | — | TODO |
 | 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | 016 (merge order) | TODO |
 | 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | TODO |
-| 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | TODO |
+| 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | DONE (approved on `advisor/019-workspace-card-multi-read` at `ccc775b`; not merged) |
 | 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |
-| 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | TODO |
-| 022  | Align gateway and node payload limits, and keep `show_changes` deliverable | P1 | M | 021 | TODO |
+| 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | IN PROGRESS (executed and reviewed on `advisor/021-show-changes-file-list`: `83152fe` plus an uncommitted code-review fix; not merged) |
+| 022  | Align gateway and node payload limits, and make `show_changes` deliver large diffs in pieces | P1 | M | 021 | TODO |
 | 023  | Clear the high-severity dependency advisories with an in-range refresh | P2 | S | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
+
+## Execution notes
+
+- **019 (2026-11-11).** Executor followed the plan (`ccc775b`); the typecheck found a second exhaustive switch (`getToolDisplay`), handled as the plan directed. Advisor review passed every done criterion including `build:check`, with a clean scope. `/code-review xhigh --fix` applied nothing. Advisory findings left open: after a gateway restart the activity poller resets its cursor and then overwrites it with the stale page's `latestSeq`, so the first new events are never fetched (pre-existing, `src/ui/workspace-app.tsx:385-401`); a `multi_read` now shows its parent row plus one `read_file` row per file while the header counts one operation (`src/gateway-router.ts:180`); the `multi_read` activity detail counts lines of the summary text (`src/workspace-activity.ts:121`); the drift test checks `isToolName` but not the `ToolName` union; the tolerant page validator has no automated test.
+- **Plan review on PR #6 (2026-11-11).** CodeRabbit raised seven findings on plans 021-023; all were checked against the code and fixed in the plans. 021: classify a rename as pure only for `R100` with zero counts (the same defect `/code-review` found in the executed branch), and search `src/` recursively in the verification greps (also fixed in 016). 022: keep a node's JSON error on the non-resumable client path; measure `show_changes` output as serialized JSON and bound the file list as well as the patch; and replace "truncate and advance the baseline" with delivery in pieces, where the baseline advances only for files whose diffs were returned (prototyped against a shadow repository before the plan was rewritten). 023: compare against the plan branch's starting commit in the done criteria (also fixed in 018 and 022), and keep the `undici` override until the version Pi pins is checked against `bun audit`.
+- **021 (2026-11-11).** Executor followed the plan verbatim (`83152fe`); advisor review passed every done criterion with a clean scope. `/code-review xhigh --fix` then found a defect in the plan's own design: purity of a rename was decided from line counts alone, so a renamed binary with changed content was reported as `rename-pure`. The fix keeps git's full status token and requires `R100` with zero counts; a new test covers a changed binary rename and a reordered-lines rename and fails on the pre-fix parser. Advisory findings left open: `diff.renames=copies` in the service account's git config reports a copy as `new` with counts relative to its source; the new test inherits the developer's global git rename settings; the two-command join could be one `git diff --raw --numstat -z` call.
 
 ## Dependency notes (016-023)
 
