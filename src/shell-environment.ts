@@ -187,6 +187,36 @@ export function bridgeChildEnvironment(baseEnvironment: NodeJS.ProcessEnv, secre
   return env;
 }
 
+const GIT_ALWAYS_STRIPPED = new Set(["DEVSPACE_OAUTH_OWNER_TOKEN"]);
+const registeredGitSecretNames = new Set<string>();
+
+/**
+ * Adds control-plane secret names that git children must never receive. The process
+ * environment is process-wide, so the names accumulate for the life of the process.
+ */
+export function registerGitChildSecretNames(secretNames: string[]): void {
+  for (const name of normalizeSecretNames(secretNames)) registeredGitSecretNames.add(name);
+}
+
+/**
+ * Environment for git processes DevSpace starts itself (worktrees, clones, status probes,
+ * review snapshots). Git runs repository-configured programs (hooks, fsmonitor, credential
+ * helpers), so these children get the service environment minus DevSpace's control-plane
+ * secrets. Development credentials such as GH_TOKEN are kept.
+ */
+export function gitChildEnvironment(
+  overrides: NodeJS.ProcessEnv = {},
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(baseEnvironment)) {
+    if (value === undefined) continue;
+    if (GIT_ALWAYS_STRIPPED.has(name) || registeredGitSecretNames.has(name)) continue;
+    environment[name] = value;
+  }
+  return { ...environment, ...overrides };
+}
+
 export function createDevspaceShellSpawnHook(runtime: ShellRuntime): BashSpawnHook {
   return ({ command, cwd }) => ({
     command: runtime.mode === "login"

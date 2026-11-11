@@ -110,6 +110,8 @@ DevSpace does not delete every variable containing `TOKEN`, `KEY`, or `SECRET`. 
 
 Diagnostics report filtered variable names, never values.
 
+The git processes DevSpace starts itself (worktree and clone creation, status probes, and review snapshots) receive the same exact-name filtering, because git runs repository-configured hooks and helpers. Development credentials such as `GH_TOKEN` are left in place for them.
+
 ## Shell modes and executor PATH
 
 Service mode does not source the user's shell profile. DevSpace instead builds a deterministic executor `PATH` from conventional user tool locations, configured runtime-manager homes, and the service environment it inherited. This keeps bounded commands predictable while still exposing tools installed under locations such as `~/.local/bin`, `~/bin`, Bun, Cargo, and mise shims.
