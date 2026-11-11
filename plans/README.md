@@ -22,7 +22,7 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 014  | Turn AGENTS.md into an accurate operating guide and add CLAUDE.md | P2 | S | — | DONE |
 | 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (two phases) | P1 | M + S | — | IN PROGRESS (Phase 2 deployed; voice pass pending) |
 | 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | 017 (merge order) | TODO |
-| 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | — | IN PROGRESS (executor dispatched 2026-11-11) |
+| 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | — | IN PROGRESS (executor stopped on an unlisted `git --version` call in `src/cli.ts`; plan amended to cover it and executor resumed, 2026-11-11) |
 | 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | TODO |
 | 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | DONE (approved at `ccc775b`; PR #7 into `advisor/audit-2026-11-11`, not merged) |
 | 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |

@@ -53,6 +53,12 @@ Files and their git call sites:
   `managedWorkspaceRetentionReason`.
 - `src/workspace-capabilities.ts` — private `git()` helper used by `probeGit`
   on every `open_workspace` and `workspace_status`.
+- `src/cli.ts` — `checkGitAvailable()` (line 794) runs `git --version` for the
+  startup and doctor output:
+  `return execFileSync("git", ["--version"], { encoding: "utf8" }).trim();`
+  It opens no repository, so no hook or helper runs, but it is brought in line
+  so that no git child in `src/` copies the raw environment. `src/cli.ts`
+  already imports from `./shell-environment.js` (line 20).
 
 `src/git.ts:19-31`:
 
@@ -174,6 +180,7 @@ worktree or clone: on the host Svartal the checkout
 - `src/git-worktrees.ts`
 - `src/workspaces.ts`
 - `src/workspace-capabilities.ts`
+- `src/cli.ts` (the one `git --version` call only)
 - `src/git-child-environment.test.ts` (create)
 - `package.json` (append the new test to the `"test"` script only)
 - `docs/security.md` (one paragraph)
@@ -332,6 +339,9 @@ git hooks configuration.
    private `git` helper.
 4. `src/workspace-capabilities.ts`: import `gitChildEnvironment` and add
    `env: gitChildEnvironment(),` to the options in the private `git` helper.
+5. `src/cli.ts`: add `gitChildEnvironment` to the existing import from
+   `./shell-environment.js` and change the options in `checkGitAvailable()` to
+   `{ encoding: "utf8", env: gitChildEnvironment() }`.
 
 **Verify**:
 
@@ -339,7 +349,8 @@ git hooks configuration.
   `git-child-environment checks passed`
 - `grep -n "process.env" src/git.ts` → no matches
 - `test "$(grep -c 'execFileAsync("git"' src/workspaces.ts)" = "$(grep -c 'env: gitChildEnvironment()' src/workspaces.ts)" && echo equal` → prints `equal`
-- `grep -c "gitChildEnvironment" src/git-worktrees.ts src/workspace-capabilities.ts` → each file reports at least `2` (import and use)
+- `grep -c "gitChildEnvironment" src/git-worktrees.ts src/workspace-capabilities.ts src/cli.ts` → each file reports at least `2` (import and use)
+- `grep -rn '"git"' src --include='*.ts' | grep -v "test.ts" | grep -v "gitChildEnvironment\|execFileAsync(\"git\", args\|probeGit"` → prints only the `src/build-metadata.ts` line (deferred, see Maintenance notes) and the multi-line calls in `src/git.ts` and `src/workspaces.ts` whose `env:` is on a following line; inspect each remaining line and confirm its call passes `gitChildEnvironment`
 - `bun run typecheck` → exit 0
 
 ### Step 4: Document the rule
@@ -373,7 +384,7 @@ git hooks configuration.
 - [ ] `bun run test` exits 0
 - [ ] `bunx tsx src/git-child-environment.test.ts` exits 0 and the file is in the `"test"` script
 - [ ] `grep -n "process.env" src/git.ts` returns no matches
-- [ ] Every `execFileAsync("git"` call in `src/workspaces.ts`, `src/git-worktrees.ts`, and `src/workspace-capabilities.ts` passes `env: gitChildEnvironment()` (the Step 3 commands succeed)
+- [ ] Every `execFileAsync("git"` call in `src/workspaces.ts`, `src/git-worktrees.ts`, and `src/workspace-capabilities.ts`, and the `git --version` call in `src/cli.ts`, passes `env: gitChildEnvironment()` (the Step 3 commands succeed)
 - [ ] `git status --short` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 
@@ -388,7 +399,8 @@ Stop and report back (do not improvise) if:
   variable it needs. Report which variable; do not widen the environment or
   special-case it.
 - You find a git child started from a module not listed in "Current state"
-  (check with `grep -rn '"git"' src --include='*.ts' | grep -v test`). Report it
+  (check with `grep -rn '"git"' src --include='*.ts' | grep -v test`), other
+  than `src/build-metadata.ts`, which is deliberately deferred. Report it
   rather than extending scope, unless it is in `src/workspaces.ts`.
 
 ## Maintenance notes
