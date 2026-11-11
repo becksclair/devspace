@@ -24,9 +24,9 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | — | TODO |
 | 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | 016 (merge order) | TODO |
 | 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | TODO |
-| 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | DONE (approved on `advisor/019-workspace-card-multi-read` at `ccc775b`; not merged) |
+| 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | DONE (approved at `ccc775b`; PR #7 into `advisor/audit-2026-11-11`, not merged) |
 | 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |
-| 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | IN PROGRESS (executed and reviewed on `advisor/021-show-changes-file-list`: `83152fe` plus an uncommitted code-review fix; not merged) |
+| 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | DONE (approved at `467cf7f`; PR #8 into `advisor/audit-2026-11-11`, not merged) |
 | 022  | Align gateway and node payload limits, and make `show_changes` deliver large diffs in pieces | P1 | M | 021 | TODO |
 | 023  | Clear the high-severity dependency advisories with an in-range refresh | P2 | S | — | TODO |
 
