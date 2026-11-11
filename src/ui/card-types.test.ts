@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isExpandableCard, isTerminalTool, isToolName, machineDisplayName, type ToolResultCard } from "./card-types.js";
+import { CANONICAL_TOOL_NAMES } from "../tool-contract.js";
 
 test("machineDisplayName returns the configured display name", () => {
   const card = {
@@ -24,4 +25,8 @@ test("machineDisplayName preserves standalone cards without a machine", () => {
     machineDisplayName({ tool: "read_file", machine: { id: "orion", displayName: "  " } } as ToolResultCard),
     undefined,
   );
+});
+
+test("every canonical tool name is a known card tool", () => {
+  for (const name of CANONICAL_TOOL_NAMES) assert.equal(isToolName(name), true, name);
 });
