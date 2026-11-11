@@ -269,23 +269,23 @@ In `src/review-checkpoints.ts`:
    same options:
 
    ```ts
-        const raw = (await git(root, ["diff", "--raw", "-z", "--no-abbrev", baseline, current], {
+        const rawDiff = (await git(root, ["diff", "--raw", "--no-abbrev", "-z", baseline, current], {
           env,
           maxBuffer: 50 * 1024 * 1024,
         })).stdout;
    ```
 
    and change `const files = parseNumstat(numstat);` to
-   `const files = parseChangedFiles(numstat, raw);`.
+   `const files = parseChangedFiles(numstat, rawDiff);`.
 
 2. Replace `parseNumstat` and `fileType` with:
 
    ```ts
-   interface RawStatus {
-     /** Git's status letter: A, C, D, M, R, or T. */
-     kind: string;
+   interface FileChange {
+     /** Git's status token, such as `M` or `R100`. */
+     status: string;
      /** True when the old and the new blob are the same object, so the content is byte-identical. */
-     sameContent: boolean;
+     sameBlob: boolean;
    }
 
    /**
@@ -293,26 +293,26 @@ In `src/review-checkpoints.ts`:
     * `:<old mode> <new mode> <old blob> <new blob> <status>` followed by one path, or by the old
     * and the new path for a rename or copy.
     */
-   function parseRawStatus(output: string): Map<string, RawStatus> {
+   function parseRawDiff(output: string): Map<string, FileChange> {
      const fields = output.split("\0");
-     const statuses = new Map<string, RawStatus>();
+     const changes = new Map<string, FileChange>();
      for (let index = 0; index < fields.length;) {
        const header = fields[index++] ?? "";
-       if (!header.startsWith(":")) continue;
+       if (!header) continue;
        const [, , oldBlob, newBlob, status = ""] = header.split(" ");
        if (status.startsWith("R") || status.startsWith("C")) index += 1;
        const path = fields[index++];
-       if (path) statuses.set(path, { kind: status.charAt(0), sameContent: oldBlob !== undefined && oldBlob === newBlob });
+       if (path) changes.set(path, { status, sameBlob: Boolean(oldBlob && oldBlob === newBlob) });
      }
-     return statuses;
+     return changes;
    }
 
    /**
     * One entry per changed file. Counts come from `git diff --numstat -z`, where a rename is a
     * header with an empty path followed by the old and the new path; types come from git's status.
     */
-   function parseChangedFiles(numstat: string, raw: string): ReviewFile[] {
-     const statuses = parseRawStatus(raw);
+   function parseChangedFiles(numstat: string, rawDiff: string): ReviewFile[] {
+     const changes = parseRawDiff(rawDiff);
      const fields = numstat.split("\0");
      const files: ReviewFile[] = [];
      for (let index = 0; index < fields.length;) {
@@ -323,25 +323,26 @@ In `src/review-checkpoints.ts`:
        const removals = parseStatNumber(parts[1]);
        const inlinePath = parts.slice(2).join("\t");
        if (inlinePath) {
-         files.push({ path: inlinePath, type: fileType(statuses.get(inlinePath)), additions, removals });
+         files.push({ path: inlinePath, type: fileType(changes.get(inlinePath)), additions, removals });
          continue;
        }
        const previousPath = fields[index++];
        const path = fields[index++];
        if (!path) continue;
-       const status = statuses.get(path);
-       const type = fileType(status);
-       files.push(status?.kind === "R" && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
+       const change = changes.get(path);
+       const type = fileType(change);
+       files.push(change?.status.startsWith("R") && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
      }
      return files;
    }
 
-   function fileType(status: RawStatus | undefined): ReviewFile["type"] {
-     if (status?.kind === "A" || status?.kind === "C") return "new";
-     if (status?.kind === "D") return "deleted";
+   function fileType(change: FileChange | undefined): ReviewFile["type"] {
+     const kind = change?.status[0];
+     if (kind === "A" || kind === "C") return "new";
+     if (kind === "D") return "deleted";
      // A rename is pure only when the content is byte-identical. Git's similarity score and the
      // line counts are not enough: reordered content can score 100, and a binary has no counts.
-     if (status?.kind === "R") return status.sameContent ? "rename-pure" : "rename-changed";
+     if (kind === "R") return change?.sameBlob ? "rename-pure" : "rename-changed";
      return "change";
    }
    ```
