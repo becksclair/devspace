@@ -5,6 +5,7 @@ export type ToolName =
   | "workspace_status"
   | "close_workspace"
   | "read_file"
+  | "multi_read"
   | "write_file"
   | "edit_file"
   | "grep_files"
@@ -95,6 +96,7 @@ export function isToolName(value: unknown): value is ToolName {
     value === "workspace_status" ||
     value === "close_workspace" ||
     value === "read_file" ||
+    value === "multi_read" ||
     value === "write_file" ||
     value === "edit_file" ||
     value === "grep_files" ||
