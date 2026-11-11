@@ -19,7 +19,7 @@
 - **Priority**: P1
 - **Effort**: S–M
 - **Risk**: LOW
-- **Depends on**: plans/016-retain-unpublished-managed-work.md (merge order only: both edit git call sites in `src/workspaces.ts`; run 016 first)
+- **Depends on**: none. Plan 016 adds git calls to `src/workspaces.ts`; this plan runs first, and plan 016 then passes the filtered environment in the calls it adds. If 016 has already landed, Step 3 covers its calls.
 - **Category**: security
 - **Planned at**: commit `63d6d81`, 2026-11-11
 
@@ -393,6 +393,9 @@ Stop and report back (do not improvise) if:
 
 ## Maintenance notes
 
+- This plan was moved ahead of plan 016 because the repository is public and
+  the weakness is described in it. Plan 016 was updated to use
+  `gitChildEnvironment()` in the git calls it adds.
 - New code that starts git must pass `env: gitChildEnvironment()`. The registry
   of names is filled by the `WorkspaceRegistry` constructor; code that runs git
   without a registry still strips the owner token but not node bearers.

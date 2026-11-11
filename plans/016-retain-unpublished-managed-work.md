@@ -17,7 +17,7 @@
 - **Priority**: P1
 - **Effort**: S–M
 - **Risk**: LOW
-- **Depends on**: none
+- **Depends on**: plans/017-git-child-environment.md (merge order only: both edit git call sites in `src/workspaces.ts`; 017 runs first and this plan's new git calls must use its filtered environment)
 - **Category**: bug
 - **Planned at**: commit `63d6d81`, 2026-11-11
 
@@ -166,7 +166,9 @@ a separate git worktree or clone: on the host Svartal the checkout
   `TOOL_CONTRACT_HASH` — no wire-shape change is needed.
 - Automatic pruning or pushing of retained checkouts — retention is reported,
   the operator decides.
-- The environment passed to git child processes — plan 017 owns that.
+- The environment of the **existing** git calls — plan 017 owns that. The one
+  git helper this plan adds must use plan 017's filtered environment when it
+  is available (Step 2).
 
 ## Git workflow
 
@@ -325,6 +327,14 @@ Add the constant near the top of the file, after the imports:
 const UNPUBLISHED_WORK_REASON = "managed workspace contains commits or stashes that exist nowhere else";
 ```
 
+Git child environment: check whether plan 017 has landed with
+`grep -n "export function gitChildEnvironment" src/shell-environment.ts`. If
+it prints a match, the `run` helper above must not inherit the raw service
+environment: make sure `gitChildEnvironment` is imported from
+`./shell-environment.js` in `src/workspaces.ts` and change the helper's options
+to `{ cwd, env: gitChildEnvironment(), maxBuffer: 2 * 1024 * 1024 }`. If it
+prints nothing, leave the helper as shown.
+
 In `closeWorkspace`, replace the `dirty = await this.managedWorkspaceDirty(...)`
 line and the `if (dirty) { ... }` block that follows it with:
 
@@ -399,6 +409,7 @@ In `cleanupStoredManagedWorkspace`, replace the two lines starting with
 - [ ] `bunx tsx src/workspace-unpublished-work.test.ts` exits 0 and the file is in the `"test"` script of `package.json`
 - [ ] `grep -rn "managedWorkspaceDirty" src/` returns no matches
 - [ ] `grep -rn "Dirty managed work is retained" src docs` returns no matches
+- [ ] If `gitChildEnvironment` exists in `src/shell-environment.ts`: `test "$(grep -c 'execFileAsync("git"' src/workspaces.ts)" = "$(grep -c 'env: gitChildEnvironment()' src/workspaces.ts)" && echo equal` prints `equal`
 - [ ] `git status --short` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 
@@ -422,9 +433,9 @@ Stop and report back (do not improvise) if:
   them in `retainedDirty` on every pass. Removing them is an operator action.
 - Old stored sessions can have an empty `baseSha`. The check then omits the
   base commit, which can only cause extra retention, never deletion.
-- Plan 017 gives every git child a filtered environment. If it lands after this
-  plan, the `run` helper added here must pass that environment too; plan 017's
-  done criteria check for it.
+- Plan 017 gives every git child a filtered environment and is scheduled
+  before this plan; Step 2 makes the `run` helper added here use it. If this
+  plan somehow lands first, plan 017's Step 3 covers the helper instead.
 - Reviewer focus: the `--not` argument order in the two `rev-list` calls (all
   revisions after `--not` are excluded), and that a `cat-file` failure for any
   reason keeps the checkout.
