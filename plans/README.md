@@ -1,6 +1,6 @@
 # Implementation Plans
 
-Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcdd`). Plans 006-014 come from a second deep audit on 2026-11-04 (at `97e507c`). The user selected F01-F08 plus F15 from that audit's findings table. Execute in the recommended order given under "Dependency notes (006-014)"; the table is numeric, not an execution order. Each executor: read the plan fully before starting, honor its STOP conditions, and update your row when done.
+Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcdd`). Plans 006-014 come from a second deep audit on 2026-11-04 (at `97e507c`). The user selected F01-F08 plus F15 from that audit's findings table. Plans 016-020 come from a standard audit on 2026-11-11 (at `63d6d81`); the run did not wait for a selection, so they are the advisor's default top five from that audit's findings table (see "2026-11-11 audit"). Execute in the recommended order given under the dependency notes; the table is numeric, not an execution order. Each executor: read the plan fully before starting, honor its STOP conditions, and update your row when done.
 
 ## Execution order & status
 
@@ -21,8 +21,81 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 013  | Key OAuth rate limits on the real client when DevSpace sits behind a local tunnel | P1 | S | 008 | DONE |
 | 014  | Turn AGENTS.md into an accurate operating guide and add CLAUDE.md | P2 | S | — | DONE |
 | 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (two phases) | P1 | M + S | — | IN PROGRESS (Phase 2 deployed; voice pass pending) |
+| 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | — | TODO |
+| 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | 016 (merge order) | TODO |
+| 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | TODO |
+| 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | TODO |
+| 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
+
+## Dependency notes (016-020)
+
+- **Every executor works in a separate git worktree or clone.** On Svartal, `/Users/rclair/projects/devspace` serves the production gateway from its `dist/` (finding G03, plan 018). `bun run build:check` and `bun install` in that directory are deploy steps.
+- **017 after 016.** Both edit git call sites in `src/workspaces.ts`. 016 adds new git calls; 017's done criteria require every git call in that file to pass the filtered environment, so running 017 second covers them.
+- **018 Step 1 can merge alone.** It is a documentation commit that makes `AGENTS.md` truthful today. The rest of 018 adds tooling; the production cutover is an operator step that no executor performs.
+- 019 and 020 are independent of the others. 020 touches `src/server.ts` in `createServer` only.
+- Recommended order if run sequentially: 018 Step 1 → 019 → 016 → 017 → 020 → rest of 018. 016, 018, 019 and 020 can run in parallel worktrees.
+- 016, 017 and 019 each append or extend a test in the `package.json` `"test"` script; 018 extends the `node --test` part of it. Merge those lines carefully.
+- 020 changes T3 bridge behavior. `docs/t3-code.md` asks for `bun run test:t3-live` before merging bridge changes; that suite spends provider credits and is an operator decision.
+
+## 2026-11-11 audit (at `63d6d81`): scope and baseline
+
+- **Baseline**: `bun run typecheck` clean; `bun run test` green (39 suites); working tree clean. `bun audit`: 37 advisories (10 high, 23 moderate, 4 low).
+- **Audited**: standard depth, all nine categories, five read-only auditors: T3 bridge correctness and everything changed since `97e507c`; core runtime correctness; security across the repository; performance, tests and tech debt; dependencies, DX, docs and direction. Every finding below was re-opened and confirmed by the advisor against the cited lines. Auditors reproduced several with throwaway probes outside the repository (workspace removal after a commit, `show_changes` rename parsing, the parent `.gitignore` case, a busy-port start, the nested root policy, a dropped SSE stream against a stand-in server, a stuck CLI descendant, inbox call counts against the fake T3). The deployment layout in plan 018 was decided by a separate read-only decision review.
+- **Not audited**: real T3 Code behavior (no live or deployed suite was run); runtime profiling; UI component internals beyond the activity poller and HTML sinks; Pi SDK and MCP SDK internals; Gitea run history, secrets and the out-of-repo deploy controller; whether the GitHub remote is public; `src/t3-live.test.ts` beyond its contract section.
+- **Backlog status from the 2026-11-04 table**: F28 is fixed (`src/server.ts:1832`, `src/server-mcp-body-limit.test.ts`). F12 is worse: the 1 MiB node limit now also rejects requests that `/mcp` accepts (G08) and can consume `show_changes` state (G07). F23's high advisories can be cleared without the 1.x upgrade (G12). F16, F20, F21 and F25 grew slightly with the T3 work. F10, F11, F13, F14, F19, F22, F24, F26 and F27 are unchanged.
+
+## 2026-11-11 findings (vetted, leverage order)
+
+| # | Finding | Cat | Eff | Risk | Evidence | Plan |
+|---|---|---|---|---|---|---|
+| G01 | A managed checkout with committed (not uncommitted) work is deleted on close and by idle maintenance; the commits are lost | bug | S–M | LOW | `src/workspaces.ts:673-680,183-198,605-618`; `src/git-worktrees.ts:48,70` | 016 |
+| G02 | Git children inherit the unfiltered service environment, so repository hooks and fsmonitor can read the owner token and node bearers; contradicts `AGENTS.md` and `docs/security.md` | security | S–M | LOW | `src/git.ts:26`; `src/git-worktrees.ts:187`; `src/workspaces.ts:197,617,670,675`; `src/workspace-capabilities.ts:133` | 017 |
+| G03 | The production gateway runs from the working checkout's `dist`; `AGENTS.md` calls the command that deletes `dist` "non-mutating"; `/healthz` reports the checkout's HEAD, not the build's commit | dx | S + M | MED | `AGENTS.md:43,75`; `package.json` `clean`/`build:check`; `src/build-metadata.ts:7-10`; launcher outside the repo | 018 |
+| G04 | The widget's tool-name list lacks `multi_read`; one such activity event makes the workspace card fail and re-poll every 2 s | bug | S | LOW | `src/ui/card-types.ts:3-27,92-119`; `src/ui/workspace-app.tsx:378-381,423-431`; `src/gateway-router.ts:119-122` | 019 |
+| G05 | T3 bridge liveness: no catalog load until the first session (schema-less tools after every restart); CLI timeout waits for pipes to close and can wedge minting; blank optional arguments are rejected | bug | S | LOW | `src/t3-bridge.ts:717-728,395-423,1686-1688,1280-1284`; `src/server.ts:1798-1801` | 020 |
+| G06 | `show_changes` misreports files: a rename corrupts the list and drops the next file's stats; an append-only edit is typed `new`, a shrink-only edit `deleted` | bug | S | LOW | `src/review-checkpoints.ts:271-303` | — |
+| G07 | `show_changes` advances its baseline before the result is deliverable; through a node, a diff over 1 MiB returns an error and the next call says "No changes" | bug | S–M | LOW | `src/review-checkpoints.ts:124-135`; `src/node-server.ts:222-229` | — |
+| G08 | Node request limit is 1 MiB while `/mcp` and the client allow 4 MiB; an oversized write gets an HTML 413 that the gateway reports as "target unavailable" | bug | S | LOW | `src/node-server.ts:57,67`; `src/remote-node-client.ts:8`; `src/server.ts:1832` | — |
+| G09 | A failed `listen` (for example a busy port) prints "listening" and exits 0; standalone `serve` has no forced-exit timer on SIGTERM | bug | S | LOW | `src/cli.ts:105,314-328`; `src/server.ts:2335-2346`; `node_modules/express/lib/application.js:598-606` | — |
+| G10 | `show_changes` and `workspace_status` ignore `.gitignore` files above a workspace that is a repository subdirectory; ignored trees are snapshotted and reported | bug | S–M | MED | `src/review-checkpoints.ts:245-259` | — |
+| G11 | Every non-shell tool gets a 30 s remote deadline; a slow `open_workspace` is reported as "target unavailable" while the node finishes and leaves an unbound managed checkout | bug | S–M | LOW | `src/remote-node-client.ts:7,178,194-196,329-334` | — |
+| G12 | All 10 high advisories clear with an in-range lockfile refresh plus an `undici` override; the `proxy-addr` override is redundant and the exact `ws`/`protobufjs` pins block patches | deps | S | LOW | `package.json` `overrides`; `bun outdated` (vite 8.2.2 → 8.3.8); `bun pm why undici` | — |
+| G13 | The phone guidance injected into every `open_workspace` still routes phone work to `machine:saga`, which the Svartal gateway does not have | docs | S | LOW | `src/server.ts:398-400,1113-1134`; `docs/svartal-gateway.md:5` | — |
+| G14 | File tools use the workspace's access for any target inside it and ignore a more specific nested root policy; the correct helper exists but is unused | bug | S | LOW–MED | `src/workspaces.ts:519-525`; `src/roots.ts:153-171` | — |
+| G15 | `t3_inbox` re-lists every unsettled thread and reads each active thread on every check (26-36 T3 calls in a probe against the fake); T3's list already accepts status and snooze filters | perf | S–M | LOW–MED | `src/t3-bridge.ts:1379-1407,1418` | — |
+| G16 | A T3 response stream that ends without a result holds the call for up to 120 s, and one dropped stream fails every in-flight call; real T3's transport behavior is unverified | bug | M | MED | `src/t3-bridge.ts:887-893,909-915,58`; `src/testing/fake-t3.ts:1192` | — (investigate first) |
+| G17 | T3 drift is detectable only by the credit-spending live suite: no version logged, new T3 properties pass through deny-list trimming, description rewrites miss silently | tests | S–M | LOW | `src/t3-bridge.ts:787-806,1786-1844`; `src/t3-live.test.ts:504-528` | — (see direction 1) |
+| G18 | Bridged execution tools (node_repl `js`, sky-cua) advertise non-destructive hints under every annotation profile, and `docs/security.md` lists only two execution surfaces | security | S | LOW–MED | `src/server.ts:1717,1746-1750`; `docs/configuration.md:128`; `docs/security.md:7` | — (needs an owner decision on sky-cua) |
+| G19 | CI runs on Ubuntu only; the production gateway and the T3 bridge run on macOS | tests | S | LOW | `.github/workflows/ci.yml`; `docs/svartal-gateway.md:5` | — |
+| G20 | Stale review and session state: a failure diagnostic is cached for the process lifetime; one stale stored session blocks `open_workspace`; sessions for deleted managed directories are probed hourly forever | bug | S | LOW | `src/review-checkpoints.ts:111-118`; `src/workspaces.ts:442-447,494-500` | — |
+| G21 | Small T3 items: early renewal revokes the working token before its replacement exists; the inbox can announce an outcome twice; inbox workers keep calling T3 after a failure; non-loopback `http:` T3 origins are accepted | bug | S each | LOW–MED | `src/t3-bridge.ts:521-523,1279,1331-1348,1950-1961,444-448` | — |
+| G22 | Hardening and hygiene: OAuth redirect URIs are checked by host, not scheme; `auth mint --owner-token` takes the password on the command line; the publish workflow can deploy a non-main ref; config errors name the wrong field; three reference docs contradict the code (`docs/configuration.md:173` "twelve T3 tools") | mixed | S each | LOW | `src/oauth-provider.ts:227-237`; `src/cli.ts:615,628`; `.gitea/workflows/publish-runtime-artifact.yml:2-5,93-108`; `src/role-config.ts:237` | — |
+| G23 | Per-session and per-spawn blocking work: synchronous skill-tree walk on every MCP initialize; synchronous `busctl` on Linux spawns; wall-clock upper bounds in the T3 catalog tests | perf/tests | S each | LOW | `src/server.ts:968-970`; `src/skills.ts:47-50`; `src/shell-environment.ts:131-139`; `src/t3-bridge.test.ts:455,490,505` | — |
+
+Suggested bundles for later planning: G06 alone (pure parsing, clean tests); G07 + G08 with backlog F12 (one node payload-limit plan); G09 alone; G12 alone (needs a non-production checkout for `bun install`).
+
+## 2026-11-11 considered and rejected
+
+| Finding | Reason |
+|---|---|
+| Splitting `src/t3-bridge.ts` (1,961 lines) | New, sectioned, with injected credential and CLI seams; revisit after the voice pass. |
+| Folding T3 retry classes into `TOOL_SPECS`; merging the two JSON-Schema-to-Zod converters | Real duplication, but the test-side copies are deliberate independent oracles and switching sky-cua to the stricter converter risks rejecting live phone calls. Not worth a plan now. |
+| Removing `clientRequestId` from the exposed T3 schemas | Plan 015 specifies "added if absent"; the dedupe risk depends on unverified T3 retention. |
+| Reusing one T3 OAuth client across mints | No evidence that T3 caps or retains registrations; investigate only if minting ever fails. |
+| Stale graphical-session variables after a session change; `tmux new-session -e` on tmux older than 3.2 | Linux nodes only, low confidence, no observed failure. |
+| MCP SDK v2 / ext-apps 2 migration | v1 is still patched (1.32.2); large blast radius across the auth boundary. Worth a one-day spike only before a chassis extraction (direction 3). |
+| Lint and formatter | Formatter drift is visible, but a reformat conflicts with every open worktree; land Biome's formatter only when no long-lived worktrees are open. |
+| Config-driven generic MCP bridges | The three bridges have different lifecycles and T3 needed behavior a config file cannot express; a small shared bridge interface is the proportionate version (direction 2). |
+| macOS CI as a default plan | Cheap to add, but hosted macOS runners cost paid minutes on a private repository; an owner decision (G19). |
+
+## 2026-11-11 direction options (not ranked against bugs)
+
+1. **Credit-free T3 drift detection.** Split the three contract checks that start no threads (`src/t3-live.test.ts:504-528`) into a `test:t3-contract` command, log T3's server version on catalog load, and warn on unknown properties or missed description rewrites. Evidence: T3 ships nightly, the bridge is verified against one build (`docs/t3-code.md:79`), and the only detector spends credits. Trade-off: one more command to keep in step with the fake; it could run from launchd after each T3 update.
+2. **Move the phone runbook out of code and give bridges one small interface.** The hard-coded runbook (`src/server.ts:398-425`, about 8 KB in every `open_workspace`) is already wrong for Svartal (G13) and has a natural home in sky-cua's `phone-use` skill. A shared interface (capability name, register, close, health) would give backlog F24 a health hook. Trade-off: the runbook's facts are the owner's, not the repository's, so its content needs the owner.
+3. **Chassis extraction, after an SDK-version decision.** The owner treats DevSpace as a reusable connector base, but the HTTP/OAuth layer depends on v1-only SDK auth exports and the T3 work added more DevSpace-specific plumbing through it (`src/server.ts:963,1798-1811,2217,2312`). Extracting now hands every consumer a later v1-to-v2 migration. Trade-off: a spike first costs a day and may conclude "stay on v1".
+4. **`list_workspaces`.** Unchanged from 2026-11-04 and still small: `WorkspaceStore.listSessions()` exists (`src/workspace-store.ts:122`) and plan 016 makes retained checkouts more common, so a way to find them from a new chat gains value.
 
 ## Dependency notes (006-014)
 
@@ -67,7 +140,7 @@ After writing, plans 006-014 were cold-read by seven parallel Fable reviewers: 0
 | F25 | Tech-debt cluster: `server.ts` god module, duplicate bridges, 5 hand DDLs drifted from drizzle schema, schemas declared 3×, cast clusters, dead code | tech-debt | M-L | MED | `src/server.ts`; `src/db/schema.ts`; `src/sky-cua/bridge.ts` vs `src/node-repl-bridge.ts` |
 | F26 | OAuth hygiene: 500-client cap with no pruning, no refresh-reuse detection, expired tokens kept (local DB has 1 client, 166 expired tokens) | security | M | LOW | `src/oauth-store.ts:111-125`; `src/oauth-provider.ts:385` |
 | F27 | Small items: node bearer has no minimum length; react/`@pierre/diffs` in runtime deps (~37 MB artifact); `@types/node ^26` vs Node 24 floor; no lint/formatter; shutdown ordering; `inFlight` Set | mixed | S each | LOW | per audit transcript |
-| F28 | `/mcp` request bodies cap at 100 KiB (`createMcpExpressApp` mounts bare `express.json()`), so `write_file`/`edit_file` with larger content returns 413. Found by the plan 008 reviewer, who verified it before and after the SDK bump | bug | S | LOW | `src/server.ts:1810`; `node_modules/@modelcontextprotocol/sdk/dist/esm/server/express.js:29` |
+| F28 | **Fixed in `d652aee`** (`src/server.ts:1832`, `src/server-mcp-body-limit.test.ts`). Was: `/mcp` request bodies cap at 100 KiB (`createMcpExpressApp` mounts bare `express.json()`), so `write_file`/`edit_file` with larger content returns 413. Found by the plan 008 reviewer, who verified it before and after the SDK bump | bug | S | LOW | `src/server.ts:1810`; `node_modules/@modelcontextprotocol/sdk/dist/esm/server/express.js:29` |
 
 Prior-audit items resolved by this audit:
 - CORRECTNESS-04 (node_repl cap race): the cap race is fixed. A narrower leak remains when a session closes mid-create (part of F24/F25).
