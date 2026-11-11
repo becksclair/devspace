@@ -239,7 +239,13 @@ export function gitChildEnvironment(
   const merged = { ...baseEnvironment, ...overrides };
   // Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped even before any registry exists
   // (for example by `devspace doctor`). Malformed entries are ignored here; config loading rejects them.
-  const listed = new Set((merged.DEVSPACE_INFRA_SECRET_NAMES ?? "").split(",").map((name) => name.trim()).filter(Boolean));
+  // Both lists count, so an override of the variable cannot unlist a name the base listed.
+  const listed = new Set(
+    [baseEnvironment.DEVSPACE_INFRA_SECRET_NAMES, overrides.DEVSPACE_INFRA_SECRET_NAMES]
+      .flatMap((names) => (names ?? "").split(","))
+      .map((name) => name.trim())
+      .filter(Boolean),
+  );
   const environment: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(merged)) {
     if (value === undefined) continue;
@@ -432,7 +438,166 @@ Stop and report back (do not improvise) if:
   so they are stripped even before any configuration is loaded (the doctor's
   `git --version` check runs that early); node bearer variable names come from
   role configuration and are registered when a `WorkspaceRegistry` is
-  constructed. Only that last group depends on the registry, and every code
-  path that opens a repository builds the registry first.
+  constructed. Only that last group depends on the registry. Every git child
+  left in `src/` starts after a registry exists: the one exception, a
+  `git rev-parse HEAD` that ran when `src/remote-node-client.ts` was imported,
+  was removed by the follow-up below.
 - Reviewer focus: confirm no call site still spreads `process.env`, and that
   `GH_TOKEN` is not stripped.
+
+## Follow-up 1: two gaps found by review after the merge
+
+> **Executor instructions**: this section is a complete, separate task. The
+> steps above are already merged; do not redo them. Follow only this section,
+> run every verification command, and stop on any STOP condition below. A
+> reviewer maintains `plans/README.md`; do not edit it.
+
+- **Planned at**: commit `c9c692c` on `advisor/audit-2026-11-11`, 2026-11-11
+- **Effort**: S
+- **Risk**: LOW
+
+### Why
+
+Two cases remain where a DevSpace control-plane secret can be present in the
+environment of a git child:
+
+1. `gitChildEnvironment` reads `DEVSPACE_INFRA_SECRET_NAMES` from the merged
+   base and overrides. An override that sets the variable (even to an empty
+   string) replaces the base value, so a name the base listed is no longer
+   stripped. No caller does this today; the function should not allow it.
+2. `src/remote-node-client.ts` ends with
+   `export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");`.
+   `src/server.ts` imports that module, so the gateway runs
+   `git rev-parse HEAD` in its working directory while modules load, before
+   any `WorkspaceRegistry` has registered the node bearer variable names taken
+   from role configuration. When `DEVSPACE_SOURCE_COMMIT` is unset, that git
+   child receives those bearer variables. Nothing references the constant:
+   `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` finds only its
+   definition.
+
+### Current state
+
+`src/shell-environment.ts`, inside `gitChildEnvironment`:
+
+```ts
+  const merged = { ...baseEnvironment, ...overrides };
+  // Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped even before any registry exists
+  // (for example by `devspace doctor`). Malformed entries are ignored here; config loading rejects them.
+  const listed = new Set((merged.DEVSPACE_INFRA_SECRET_NAMES ?? "").split(",").map((name) => name.trim()).filter(Boolean));
+```
+
+`src/remote-node-client.ts`, line 3 and the last line:
+
+```ts
+import { getBuildMetadata, PROTOCOL_MAJOR } from "./build-metadata.js";
+…
+export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");
+```
+
+`src/git-child-environment.test.ts` has a block that begins with the comment
+`// Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped without registration`
+and defines `listedBase`.
+
+### Commands
+
+| Purpose | Command | Expected |
+|---|---|---|
+| Install (your worktree only) | `bun install --frozen-lockfile` | exit 0 |
+| Typecheck | `bun run typecheck` | exit 0 |
+| This suite | `bunx tsx src/git-child-environment.test.ts` | prints `git-child-environment checks passed` |
+| Full suite (about 65 s, needs `tmux`) | `bun run test` | exit 0 |
+
+Do not run `bun test`, `bun run build`, `bun run rebuild:local`,
+`bun run test:t3-live`, or `bun run test:t3-deployed`. Work in a separate git
+worktree, never in `/Users/rclair/projects/devspace`.
+
+### Scope
+
+In scope: `src/shell-environment.ts`, `src/remote-node-client.ts`,
+`src/git-child-environment.test.ts`. Nothing else.
+
+Out of scope: when and how secret names are registered, the other filters in
+`src/shell-environment.ts`, `src/build-metadata.ts`, and every other caller of
+`getBuildMetadata` (`src/server.ts` and `src/node-server.ts` call it after a
+registry exists).
+
+### Git workflow
+
+- Branch: `advisor/017-followup-git-environment-gaps`, created from
+  `advisor/audit-2026-11-11`.
+- One commit:
+  `fix(git): keep base-listed secret names under overrides and drop the import-time rev-parse`
+- Do not push or open a pull request.
+
+### Steps
+
+**Step A: add the failing test.** In `src/git-child-environment.test.ts`,
+directly after the assertion that ends the `listedBase` block
+(`"listed names must not reach git children without registration"`), add:
+
+```ts
+// An override of the list variable must not unlist a name the base listed, and a name only
+// the override lists is stripped too.
+for (const override of ["", "DEVSPACE_TEST_OVERRIDE_LISTED"]) {
+  const overridden = gitChildEnvironment(
+    { DEVSPACE_INFRA_SECRET_NAMES: override, DEVSPACE_TEST_OVERRIDE_LISTED: "placeholder" },
+    listedBase,
+  );
+  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_UNREGISTERED_TUNNEL"), false, "an override must not unlist a base-listed name");
+  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_OVERRIDE_LISTED"), override === "", "a name listed only by the override is stripped");
+}
+```
+
+**Verify (must fail before the fix)**:
+`bunx tsx src/git-child-environment.test.ts` → exits non-zero with
+`an override must not unlist a base-listed name`.
+
+**Step B: read both lists.** In `src/shell-environment.ts`, replace the
+`const listed = …` line shown above with:
+
+```ts
+  // Both lists count, so an override of the variable cannot unlist a name the base listed.
+  const listed = new Set(
+    [baseEnvironment.DEVSPACE_INFRA_SECRET_NAMES, overrides.DEVSPACE_INFRA_SECRET_NAMES]
+      .flatMap((names) => (names ?? "").split(","))
+      .map((name) => name.trim())
+      .filter(Boolean),
+  );
+```
+
+Keep the two comment lines above it.
+
+**Verify**: `bunx tsx src/git-child-environment.test.ts` → prints
+`git-child-environment checks passed`.
+
+**Step C: remove the import-time git call.** In `src/remote-node-client.ts`,
+delete the line
+`export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");` and
+change line 3 to `import { PROTOCOL_MAJOR } from "./build-metadata.js";`.
+
+**Verify**:
+
+- `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` → no matches
+- `grep -n "getBuildMetadata" src/remote-node-client.ts` → no matches
+- `bun run typecheck` → exit 0
+- `bun run test` → exit 0
+- `git status --short` → only the three in-scope files
+
+### Done criteria
+
+- [ ] The new test block fails before Step B and passes after it
+- [ ] `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` prints nothing
+- [ ] `bun run typecheck` and `bun run test` exit 0
+- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD` lists only the three in-scope files
+
+### STOP conditions
+
+Stop and report back (do not improvise) if:
+
+- Your working directory is `/Users/rclair/projects/devspace`.
+- The code does not match the "Current state" excerpts.
+- `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` finds a reference other
+  than the definition. Something uses the constant; report where.
+- The new test block passes before Step B.
+- Typecheck or a suite fails after Step C for a reason other than the removed
+  constant.
