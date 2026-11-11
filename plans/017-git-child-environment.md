@@ -181,6 +181,9 @@ worktree or clone: on the host Svartal the checkout
 - `src/workspaces.ts`
 - `src/workspace-capabilities.ts`
 - `src/cli.ts` (the one `git --version` call only)
+- `src/build-metadata.ts` (the one `git rev-parse HEAD` call only; do not add
+  or remove exports, because `scripts/package-runtime-artifact.mjs` replaces
+  this module's build output with a hand-written file)
 - `src/git-child-environment.test.ts` (create)
 - `package.json` (append the new test to the `"test"` script only)
 - `docs/security.md` (one paragraph)
@@ -195,8 +198,7 @@ worktree or clone: on the host Svartal the checkout
   by the change there; do not thread parameters through it.
 - git commands that the model runs through `run_shell` or terminals — those
   already use the shell runtime's filtered environment.
-- `src/build-metadata.ts` (`git rev-parse HEAD` for `/healthz`) and
-  `scripts/*.mjs` — build and release tooling, not workspace children.
+- `scripts/*.mjs` — build and release tooling, not service children.
 - Any name heuristic such as stripping every `*_TOKEN`.
 
 ## Git workflow
@@ -399,8 +401,7 @@ Stop and report back (do not improvise) if:
   variable it needs. Report which variable; do not widen the environment or
   special-case it.
 - You find a git child started from a module not listed in "Current state"
-  (check with `grep -rn '"git"' src --include='*.ts' | grep -v test`), other
-  than `src/build-metadata.ts`, which is deliberately deferred. Report it
+  (check with `grep -rn '"git"' src --include='*.ts' | grep -v test`). Report it
   rather than extending scope, unless it is in `src/workspaces.ts`.
 
 ## Maintenance notes
@@ -413,8 +414,16 @@ Stop and report back (do not improvise) if:
   without a registry still strips the owner token but not node bearers.
 - The registry is process-wide and only grows. That is intended: the secrets
   are process-wide environment variables.
-- Deferred: `src/build-metadata.ts` runs `git rev-parse HEAD` with the raw
-  environment in DevSpace's own checkout, not in a user repository. It is not a
-  workspace child, so it was left out.
+- Review outcome (2026-11-11): `src/build-metadata.ts` was first deferred on
+  the grounds that it runs in DevSpace's own checkout. That was wrong: its
+  `git rev-parse HEAD` runs in the process working directory, which can be a
+  user's project. It now passes `gitChildEnvironment()` too, so no git child in
+  `src/` is an exception. `gitChildEnvironment` filters the merged base and
+  overrides, so an override map cannot re-introduce a stripped name. The test
+  covers the worktree-add hook, both `git status` paths (through a
+  `core.fsmonitor` probe), and the `src/git.ts` wrapper (through an alias).
+- Known and accepted: the names come from a process-wide registry that
+  `WorkspaceRegistry` fills, and each call site opts in with `env:`. Code that
+  starts git before any registry exists strips only the owner token.
 - Reviewer focus: confirm no call site still spreads `process.env`, and that
   `GH_TOKEN` is not stripped.
