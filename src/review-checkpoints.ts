@@ -272,7 +272,10 @@ function checkpointIdentity(): NodeJS.ProcessEnv {
   };
 }
 
-/** Status letter per path from `git diff --name-status -z` (renames and copies carry two paths). */
+/**
+ * Git's status per path from `git diff --name-status -z`, such as `M` or `R085` (renames and
+ * copies carry a similarity score and two paths).
+ */
 function parseNameStatus(output: string): Map<string, string> {
   const fields = output.split("\0");
   const statuses = new Map<string, string>();
@@ -281,7 +284,7 @@ function parseNameStatus(output: string): Map<string, string> {
     if (!status) continue;
     if (status.startsWith("R") || status.startsWith("C")) index += 1;
     const path = fields[index++];
-    if (path) statuses.set(path, status[0] ?? "M");
+    if (path) statuses.set(path, status);
   }
   return statuses;
 }
@@ -310,7 +313,7 @@ function parseChangedFiles(numstat: string, nameStatus: string): ReviewFile[] {
     if (!path) continue;
     const status = statuses.get(path);
     const type = fileType(status, additions, removals);
-    files.push(status === "R" && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
+    files.push(status?.startsWith("R") && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
   }
   return files;
 }
@@ -322,9 +325,11 @@ function parseStatNumber(value: string | undefined): number {
 }
 
 function fileType(status: string | undefined, additions: number, removals: number): ReviewFile["type"] {
-  if (status === "A" || status === "C") return "new";
-  if (status === "D") return "deleted";
-  if (status === "R") return additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
+  const kind = status?.[0];
+  if (kind === "A" || kind === "C") return "new";
+  if (kind === "D") return "deleted";
+  // A changed binary has no line counts and reordered lines still score 100, so a pure rename needs both.
+  if (kind === "R") return status === "R100" && additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
   return "change";
 }
 

@@ -82,6 +82,23 @@ try {
     const pureRename = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
     assert.deepEqual(pureRename.files, [{ path: "moved.txt", previousPath: "added.txt", type: "rename-pure", additions: 0, removals: 0 }]);
 
+    // A pure rename needs both of git's signals: a changed binary has no line counts, and
+    // reordered lines still score a similarity of 100.
+    const binary = Buffer.from(Array.from({ length: 4096 }, (_value, index) => (index * 7 + (index >> 6)) % 256));
+    await writeFile(join(root, "logo.bin"), binary);
+    await writeFile(join(root, "order.txt"), "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\n");
+    await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    binary[100] ^= 0xff;
+    await renameFile(join(root, "logo.bin"), join(root, "brand.bin"));
+    await writeFile(join(root, "brand.bin"), binary);
+    await renameFile(join(root, "order.txt"), join(root, "reordered.txt"));
+    await writeFile(join(root, "reordered.txt"), "bravo\nalpha\ncharlie\ndelta\necho\nfoxtrot\n");
+    const changedRenames = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    assert.deepEqual(changedRenames.files, [
+      { path: "brand.bin", previousPath: "logo.bin", type: "rename-changed", additions: 0, removals: 0 },
+      { path: "reordered.txt", previousPath: "order.txt", type: "rename-changed", additions: 1, removals: 1 },
+    ]);
+
     await assert.rejects(() => access(join(root, ".git", "refs", "devspace")));
     const shadowPath = restartedManager.status({ workspaceId: "ws_review" }).shadowGitDir!;
     assert.equal((await stat(shadowPath)).isDirectory(), true);
