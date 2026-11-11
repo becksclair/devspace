@@ -438,10 +438,11 @@ Stop and report back (do not improvise) if:
   so they are stripped even before any configuration is loaded (the doctor's
   `git --version` check runs that early); node bearer variable names come from
   role configuration and are registered when a `WorkspaceRegistry` is
-  constructed. Only that last group depends on the registry. Every git child
-  left in `src/` starts after a registry exists: the one exception, a
-  `git rev-parse HEAD` that ran when `src/remote-node-client.ts` was imported,
-  was removed by the follow-up below.
+  constructed, and by `createGatewayServer` for a gateway that has no local
+  machine and so builds no registry. Only that last group depends on
+  registration. The follow-up below removed the one git child that started
+  before it, a `git rev-parse HEAD` that ran when `src/remote-node-client.ts`
+  was imported.
 - Reviewer focus: confirm no call site still spreads `process.env`, and that
   `GH_TOKEN` is not stripped.
 
@@ -514,12 +515,13 @@ worktree, never in `/Users/rclair/projects/devspace`.
 ### Scope
 
 In scope: `src/shell-environment.ts`, `src/remote-node-client.ts`,
-`src/git-child-environment.test.ts`. Nothing else.
+`src/git-child-environment.test.ts`, and for Step D `src/server.ts` and
+`AGENTS.md`. Nothing else.
 
-Out of scope: when and how secret names are registered, the other filters in
-`src/shell-environment.ts`, `src/build-metadata.ts`, and every other caller of
-`getBuildMetadata` (`src/server.ts` and `src/node-server.ts` call it after a
-registry exists).
+Out of scope: the other filters in `src/shell-environment.ts`,
+`src/build-metadata.ts`, and the callers of `getBuildMetadata`
+(`src/node-server.ts` calls it after the node's registry exists; the gateway's
+`/healthz` handler in `src/server.ts` is covered by Step D).
 
 ### Git workflow
 
@@ -583,12 +585,56 @@ change line 3 to `import { PROTOCOL_MAJOR } from "./build-metadata.js";`.
 - `bun run test` → exit 0
 - `git status --short` → only the three in-scope files
 
+**Step D: register the names on a gateway without a local machine.** Added
+after code review of Steps A to C. `registerGitChildSecretNames` is called only
+by the `WorkspaceRegistry` constructor, and a gateway whose machines are all
+`remote` never builds a registry. Its `/healthz` handler calls
+`getBuildMetadata("gateway")`, so with `DEVSPACE_SOURCE_COMMIT` unset every
+health probe starts a `git rev-parse HEAD` that receives the node bearer
+variables.
+
+1. In `src/git-child-environment.test.ts`, add a block that builds a gateway
+   with `createGatewayServer` (from `./server.js`) whose only machine is of
+   kind `remote` with `nodeTokenEnv: "DEVSPACE_TEST_REMOTE_NODE_TOKEN"`, using
+   a temporary state directory set up as `startGateway` in
+   `src/t3-e2e.test.ts` does, with the variable set in `process.env`. Assert:
+
+   ```ts
+   const afterGateway = gitChildEnvironment({}, { PATH: "/usr/bin", DEVSPACE_TEST_REMOTE_NODE_TOKEN: "placeholder" });
+   assert.equal(Object.hasOwn(afterGateway, "DEVSPACE_TEST_REMOTE_NODE_TOKEN"), false, "a gateway with only remote machines registers its node bearer names");
+   ```
+
+   Close the server, delete the variable, and remove the directory in a
+   `finally`. **Verify (must fail first)**: the suite exits non-zero with that
+   message.
+2. In `src/server.ts`, import `registerGitChildSecretNames` from
+   `./shell-environment.js`, and in `createGatewayServer`, directly after the
+   statement that assigns `publicConfig.secretNames`, add:
+
+   ```ts
+   // A gateway whose machines are all remote builds no WorkspaceRegistry, so register the names here.
+   registerGitChildSecretNames(publicConfig.secretNames);
+   ```
+
+3. In `AGENTS.md`, under "Security invariants for contributors", change the
+   parenthesis after `gitChildEnvironment` to: strips the names that
+   `WorkspaceRegistry` and `createGatewayServer` register from
+   `config.secretNames`, and the names listed in `DEVSPACE_INFRA_SECRET_NAMES`.
+
+Second commit:
+`fix(git): register node bearer names on a gateway that has no local machine`
+
+**Verify**: `bunx tsx src/git-child-environment.test.ts` passes;
+`bun run typecheck` and `bun run test` exit 0; `git status --short` lists only
+in-scope files.
+
 ### Done criteria
 
 - [ ] The new test block fails before Step B and passes after it
+- [ ] The gateway block fails before the `src/server.ts` change and passes after it
 - [ ] `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` prints nothing
 - [ ] `bun run typecheck` and `bun run test` exit 0
-- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD` lists only the three in-scope files
+- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD` lists only the five in-scope files
 
 ### STOP conditions
 

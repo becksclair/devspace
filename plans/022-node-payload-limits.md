@@ -407,11 +407,24 @@ Design (decided; do not substitute another):
     path is a parent directory of another). No tree can hold both the old
     file and the new children, so a partial baseline would silently drop a
     deferred diff.
-  When paging is off the result is all or nothing: the whole patch if it fits,
-  otherwise no patch with every file marked `too-large`. The baseline then
-  advances fully, and nothing is ever `deferred`. The call never throws for
-  these shapes, because a thrown error would leave the baseline in place and
-  fail the same way on every later call.
+  When paging is off the patch is all or nothing: the whole patch if it fits,
+  otherwise no patch with every listed file marked `too-large`. The call never
+  throws for these shapes, because a thrown error would leave the baseline in
+  place and fail the same way on every later call. What happens to files
+  beyond the file-list budget depends on the shape:
+  - the whole patch is returned → the baseline advances fully. The patch text
+    covers every file, including the ones the list had no room for.
+  - no patch, unmatched sections → the files beyond the list are `deferred`
+    and the baseline advances only for the listed ones, exactly as in paging.
+    Only patch sections were unmatched; a partial tree is still possible.
+  - no patch, file/directory replacement → nothing can be deferred, so the
+    baseline advances fully and the files beyond the list are **not reported
+    by any call**. This is the one case where a path is dropped. It needs a
+    file/directory replacement, a patch over the budget, and more changed
+    files than the list holds (several thousand), all at once; the result
+    states how many files are not listed, and `summary` still counts them.
+    Holding the baseline instead would return the same oversized result
+    forever.
 - The first file is always listed and is never `deferred`, so every call makes
   progress.
 
@@ -511,11 +524,16 @@ In `src/review-checkpoints.ts`:
      return false;
    }
 
-   /** Delivery when paging is off: the whole patch if it fits, otherwise no patch and every file marked. */
-   function planWholeDelivery(
+   /**
+    * Delivery when paging is off: the whole patch if it fits, otherwise no patch. Without a patch,
+    * files beyond the list are deferred when a partial baseline can hold them back (`canDefer`);
+    * otherwise they are marked like the rest and the caller reports them as not listed.
+    */
+   export function planWholeDelivery(
      patch: string,
      files: ReviewFile[],
      limits: { maxPatchBytes: number; maxFileListBytes: number },
+     canDefer: boolean,
    ): { states: Array<"included" | PatchOmission>; listed: number } {
      let listed = 0;
      let listBytes = 0;
@@ -526,7 +544,10 @@ In `src/review-checkpoints.ts`:
        listBytes += entryBytes;
      }
      const fits = serializedBytes(patch) <= limits.maxPatchBytes;
-     return { states: files.map(() => (fits ? "included" : "too-large")), listed };
+     return {
+       states: files.map((_file, index) => (fits ? "included" : canDefer && index >= listed ? "deferred" : "too-large")),
+       listed,
+     };
    }
    ```
 
@@ -578,10 +599,13 @@ In `src/review-checkpoints.ts`:
    ```ts
         const sections = splitPatchByFile(patch);
         const limits = { maxPatchBytes, maxFileListBytes };
-        const pageable = sections.length === files.length && !hasFileDirectoryConflict(files);
-        const { states, listed } = pageable ? planDelivery(sections, files, limits) : planWholeDelivery(patch, files, limits);
+        const conflict = hasFileDirectoryConflict(files);
+        const pageable = sections.length === files.length && !conflict;
+        const { states, listed } = pageable ? planDelivery(sections, files, limits) : planWholeDelivery(patch, files, limits, !conflict);
         const deferred = states.filter((entry) => entry === "deferred").length;
-        const tooLarge = states.filter((entry) => entry === "too-large").length;
+        const tooLarge = states.slice(0, listed).filter((entry) => entry === "too-large").length;
+        // Only a file/directory replacement that fits neither budget leaves files in neither the list nor a later call.
+        const unlisted = states.slice(listed).filter((entry) => entry === "too-large").length;
 
         if (markReviewed) {
           if (deferred === 0) {
@@ -602,6 +626,9 @@ In `src/review-checkpoints.ts`:
         }
         if (tooLarge > 0) {
           notes.push(`${tooLarge} file ${tooLarge === 1 ? "diff is" : "diffs are"} too large to return and ${tooLarge === 1 ? "is" : "are"} marked in the file list`);
+        }
+        if (unlisted > 0) {
+          notes.push(`${unlisted} more changed ${unlisted === 1 ? "file is" : "files are"} not listed, because this change replaces a file with a directory (or the reverse) and cannot be split across calls`);
         }
         const changed = `Changed ${summary.files} ${summary.files === 1 ? "file" : "files"} (+${summary.additions} -${summary.removals}).`;
         return {
@@ -715,11 +742,32 @@ of the inner `try` block (before its `finally`):
     assert.equal(swapped.patch, "");
     assert.equal((await swapManager.reviewChanges({ workspaceId: "ws_swap", root })).summary.files, 0);
     await swapManager.removeWorkspace({ workspaceId: "ws_swap" });
+
+    // Paging off, no patch: files beyond the list are deferred when a partial baseline is possible.
+    const tight = { maxPatchBytes: 10, maxFileListBytes: 1 };
+    assert.deepEqual(planWholeDelivery("x".repeat(100), [entry("a"), entry("b")], tight, true), { states: ["too-large", "deferred"], listed: 1 });
+    assert.deepEqual(planWholeDelivery("x".repeat(100), [entry("a"), entry("b")], tight, false), { states: ["too-large", "too-large"], listed: 1 });
+    assert.deepEqual(planWholeDelivery("x", [entry("a"), entry("b")], tight, true), { states: ["included", "included"], listed: 1 });
+
+    // The documented limit: a directory replaced by a file that fits neither budget advances the
+    // baseline, and the result says how many files it could not list.
+    const unlistedManager = createReviewCheckpointManager(stateDir, { maxPatchBytes: 1, maxFileListBytes: 1 });
+    await unlistedManager.initializeWorkspace({ workspaceId: "ws_unlisted", root });
+    await rm(join(root, "swap"), { recursive: true });
+    await writeFile(join(root, "swap"), "a file with content unlike the child it replaces\n");
+    const unlisted = await unlistedManager.reviewChanges({ workspaceId: "ws_unlisted", root });
+    assert.equal(unlisted.summary.files, 2);
+    assert.equal(unlisted.files.length, 1);
+    assert.equal(unlisted.filesTruncated, true);
+    assert.equal(unlisted.pendingFiles, undefined);
+    assert.match(unlisted.result, /1 more changed file is not listed/);
+    assert.equal((await unlistedManager.reviewChanges({ workspaceId: "ws_unlisted", root })).summary.files, 0);
+    await unlistedManager.removeWorkspace({ workspaceId: "ws_unlisted" });
 ```
 
-Add `mkdir`, `symlink`, and `unlink` to the test's `node:fs/promises` import if
-they are not already there, and import `splitPatchByFile` and
-`hasFileDirectoryConflict` alongside `planDelivery`.
+Add `mkdir`, `rm`, `symlink`, and `unlink` to the test's `node:fs/promises`
+import if they are not already there, and import `splitPatchByFile`,
+`hasFileDirectoryConflict`, and `planWholeDelivery` alongside `planDelivery`.
 
 Confirm the paging test can fail: with `createPartialBaseline` replaced by a
 plain advance to `current`, `timesInPatch` contains a `0`.
@@ -737,7 +785,10 @@ gateway and nodes share one internal payload limit, slightly above the 4 MiB
 `show_changes` returns at most about 1 MB of patch and 1 MB of file list per
 call, sets `patchTruncated` and `pendingFiles` when diffs remain, and returns
 the rest on the next call; a single file whose diff alone exceeds the budget
-is marked `patchOmitted: "too-large"` and is not returned.
+is marked `patchOmitted: "too-large"` and is not returned; a change that
+replaces a file with a directory (or the reverse) cannot be split, so when it
+fits neither budget the files beyond the list are counted in the result text
+but never listed.
 
 **Verify**: `grep -n "patchTruncated" docs/gotchas.md` → one match.
 `bun run test` → exit 0.
@@ -756,7 +807,10 @@ is marked `patchOmitted: "too-large"` and is not returned.
   `workspace_open` overview does not consume the baseline; a bounded file list
   defers, and later delivers, the files beyond it; a file-type change returns
   one file with both patch sections; a file/directory swap that does not fit
-  is marked `too-large`, defers nothing, and advances the baseline.
+  is marked `too-large`, defers nothing, and advances the baseline;
+  `planWholeDelivery` defers the files beyond the list when it may; a
+  directory replaced by a file that fits neither budget reports how many files
+  it could not list.
 - Verification: `bun run test` → exit 0.
 
 ## Done criteria
