@@ -45,6 +45,16 @@ assert.doesNotThrow(() => {
 }, "a malformed DEVSPACE_INFRA_SECRET_NAMES entry must not throw");
 assert.equal(listedEnv.PATH, "/usr/bin");
 assert.equal(Object.hasOwn(listedEnv, "DEVSPACE_TEST_UNREGISTERED_TUNNEL"), false, "listed names must not reach git children without registration");
+// An override of the list variable must not unlist a name the base listed, and a name only
+// the override lists is stripped too.
+for (const override of ["", "DEVSPACE_TEST_OVERRIDE_LISTED"]) {
+  const overridden = gitChildEnvironment(
+    { DEVSPACE_INFRA_SECRET_NAMES: override, DEVSPACE_TEST_OVERRIDE_LISTED: "placeholder" },
+    listedBase,
+  );
+  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_UNREGISTERED_TUNNEL"), false, "an override must not unlist a base-listed name");
+  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_OVERRIDE_LISTED"), override === "", "a name listed only by the override is stripped");
+}
 
 // A repository hook run by `git worktree add` records the variable names it can see.
 const execFileAsync = promisify(execFile);

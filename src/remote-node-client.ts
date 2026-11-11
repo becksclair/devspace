@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { TargetUnavailableError, type ExecutionTarget, type ExecutorResult } from "./gateway-router.js";
-import { getBuildMetadata, PROTOCOL_MAJOR } from "./build-metadata.js";
+import { PROTOCOL_MAJOR } from "./build-metadata.js";
 import { TOOL_CONTRACT_HASH, type ToolName } from "./tool-contract.js";
 import { isTailnetUrl } from "./tailnet.js";
 
@@ -415,5 +415,3 @@ async function readBoundedJson<T>(response: Response, maxBytes: number): Promise
     throw new Error("Remote node returned invalid JSON", { cause: error });
   }
 }
-
-export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");
