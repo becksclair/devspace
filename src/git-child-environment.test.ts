@@ -32,6 +32,19 @@ assert.equal(fromFullEnvironment.GIT_DIR, "/tmp/shadow");
 for (const name of ["DEVSPACE_OAUTH_OWNER_TOKEN", "DEVSPACE_TEST_NODE_BEARER"]) {
   assert.equal(Object.hasOwn(fromFullEnvironment, name), false, `${name} must not return through overrides`);
 }
+// Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped without registration, and a
+// malformed entry must not make the call throw.
+const listedBase = {
+  PATH: "/usr/bin",
+  DEVSPACE_INFRA_SECRET_NAMES: "DEVSPACE_TEST_UNREGISTERED_TUNNEL, BAD-NAME",
+  DEVSPACE_TEST_UNREGISTERED_TUNNEL: "placeholder",
+};
+let listedEnv: NodeJS.ProcessEnv = {};
+assert.doesNotThrow(() => {
+  listedEnv = gitChildEnvironment({}, listedBase);
+}, "a malformed DEVSPACE_INFRA_SECRET_NAMES entry must not throw");
+assert.equal(listedEnv.PATH, "/usr/bin");
+assert.equal(Object.hasOwn(listedEnv, "DEVSPACE_TEST_UNREGISTERED_TUNNEL"), false, "listed names must not reach git children without registration");
 
 // A repository hook run by `git worktree add` records the variable names it can see.
 const execFileAsync = promisify(execFile);
