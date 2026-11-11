@@ -214,7 +214,13 @@ export function gitChildEnvironment(
   const merged = { ...baseEnvironment, ...overrides };
   // Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped even before any registry exists
   // (for example by `devspace doctor`). Malformed entries are ignored here; config loading rejects them.
-  const listed = new Set((merged.DEVSPACE_INFRA_SECRET_NAMES ?? "").split(",").map((name) => name.trim()).filter(Boolean));
+  // Both lists count, so an override of the variable cannot unlist a name the base listed.
+  const listed = new Set(
+    [baseEnvironment.DEVSPACE_INFRA_SECRET_NAMES, overrides.DEVSPACE_INFRA_SECRET_NAMES]
+      .flatMap((names) => (names ?? "").split(","))
+      .map((name) => name.trim())
+      .filter(Boolean),
+  );
   const environment: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(merged)) {
     if (value === undefined) continue;
