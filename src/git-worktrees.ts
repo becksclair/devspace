@@ -6,6 +6,7 @@ import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ServerConfig } from "./config.js";
 import { assertAllowedPath, isPathInsideRoot } from "./roots.js";
+import { gitChildEnvironment } from "./shell-environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -184,7 +185,7 @@ function sanitizePathSegment(value: string): string {
 
 async function git(args: string[], cwd: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 10 * 1024 * 1024 });
+    const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 10 * 1024 * 1024, env: gitChildEnvironment() });
     return stdout;
   } catch (error) {
     if (isGitUnavailable(error)) throw error;

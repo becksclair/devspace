@@ -213,7 +213,7 @@ separate git worktree or clone: on the host Svartal the checkout
 
 ## Git workflow
 
-- Branch: `advisor/020-t3-bridge-liveness`
+- Branch: `advisor/020-t3-bridge-liveness`, created from the integration branch `advisor/audit-2026-11-11`.
 - One commit per step; message style `fix(t3): load the catalog at startup`.
 - Do NOT push or open a PR unless the operator instructed it.
 

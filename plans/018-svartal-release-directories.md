@@ -179,7 +179,7 @@ Never run: `bun run release:activate`, `launchctl`, `bun run build`,
 
 ## Git workflow
 
-- Branch: `advisor/018-svartal-release-directories`
+- Branch: `advisor/018-svartal-release-directories`, created from the integration branch `advisor/audit-2026-11-11`.
 - Step 1 is its own commit (`docs(agents): say that build:check rewrites dist and that the Svartal checkout serves production`), so it can be merged alone.
 - Later steps: `feat(scripts): add local release directories with health-checked activation`, then a docs commit.
 - Do NOT push or open a PR unless the operator instructed it.
@@ -436,7 +436,7 @@ each at least `1`. `bun run typecheck` → exit 0. `bun run test` → exit 0.
 - [ ] `bun run test` exits 0 and runs `scripts/local-release.test.mjs`
 - [ ] The Step 2 scratch `prepare` run produced all expected outputs, and a second run reported `already prepared`
 - [ ] `node scripts/local-release.mjs activate HEAD` exits non-zero with a usage message
-- [ ] `git diff --stat 63d6d81..HEAD -- scripts/package-runtime-artifact.mjs scripts/smoke-runtime-artifact.mjs .gitea src` prints nothing
+- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD -- scripts/package-runtime-artifact.mjs scripts/smoke-runtime-artifact.mjs .gitea src` prints nothing (the merge base is the commit your plan branch started from, so work merged by other plans is not counted)
 - [ ] `git status --short` lists only in-scope files; `git worktree list` shows no `devspace-release-build-` entry
 - [ ] `plans/README.md` status row updated, noting that the operator cutover is still pending
 

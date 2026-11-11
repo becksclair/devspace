@@ -41,6 +41,7 @@ import { closeSharedT3Bridges, registerT3Tools, sharedT3Bridge, T3_CAPABILITY, t
 import { toolAnnotationsForProfile } from "./mcp-bridge-utils.js";
 import { loadAutoloadSkillDocuments, type AutoloadedSkillDocument } from "./skills.js";
 import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
+import { registerGitChildSecretNames } from "./shell-environment.js";
 
 type Transport = StreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
@@ -2247,6 +2248,8 @@ export function createGatewayServer(roleConfig: GatewayRoleConfig, options: { t3
       .filter((entry) => entry.kind === "remote" && typeof entry.nodeTokenEnv === "string" && entry.nodeTokenEnv.length > 0)
       .map((entry) => entry.nodeTokenEnv as string),
   ]));
+  // A gateway whose machines are all remote builds no WorkspaceRegistry, so register the names here.
+  registerGitChildSecretNames(publicConfig.secretNames);
   const bindings = createGatewayWorkspaceStore(roleConfig.stateDir);
   const targets = new Map<string, ExecutionTarget>();
   const localExecutors: LocalExecutor[] = [];

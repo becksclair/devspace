@@ -25,7 +25,7 @@ import {
   type LoadedSkills,
   type SkillReadResolution,
 } from "./skills.js";
-import { createShellRuntime, type ShellRuntime } from "./shell-environment.js";
+import { createShellRuntime, gitChildEnvironment, registerGitChildSecretNames, type ShellRuntime } from "./shell-environment.js";
 import { probeWorkspaceCapabilities, type WorkspaceCapabilities } from "./workspace-capabilities.js";
 import type { WorkspaceMode, WorkspaceSession, WorkspaceStore } from "./workspace-store.js";
 
@@ -115,6 +115,7 @@ export class WorkspaceRegistry {
     private readonly store?: WorkspaceStore,
   ) {
     this.shellRuntime = createShellRuntime(config.shell, config.secretNames);
+    registerGitChildSecretNames(config.secretNames);
   }
 
   async openWorkspace(input: string | OpenWorkspaceInput): Promise<WorkspaceContext> {
@@ -194,7 +195,7 @@ export class WorkspaceRegistry {
             reason = sourceIdentity.reason;
           } else {
             try {
-              await execFileAsync("git", ["worktree", "remove", "--force", workspace.root], { cwd: sourceIdentity.canonicalRoot, maxBuffer: 2 * 1024 * 1024 });
+              await execFileAsync("git", ["worktree", "remove", "--force", workspace.root], { cwd: sourceIdentity.canonicalRoot, maxBuffer: 2 * 1024 * 1024, env: gitChildEnvironment() });
               removed = true;
             } catch (error) {
               retainedPath = workspace.root;
@@ -614,7 +615,7 @@ export class WorkspaceRegistry {
     const sourceIdentity = await this.verifySourceIdentity(session.sourceRoot, session.sourceCanonicalRoot);
     if (!sourceIdentity.ok) return { removed: false, dirty: false, reason: sourceIdentity.reason };
     try {
-      await execFileAsync("git", ["worktree", "remove", "--force", session.root], { cwd: sourceIdentity.canonicalRoot, maxBuffer: 2 * 1024 * 1024 });
+      await execFileAsync("git", ["worktree", "remove", "--force", session.root], { cwd: sourceIdentity.canonicalRoot, maxBuffer: 2 * 1024 * 1024, env: gitChildEnvironment() });
       return { removed: true, dirty: false };
     } catch (error) {
       return {
@@ -667,12 +668,12 @@ export class WorkspaceRegistry {
       await rm(canonicalRoot, { recursive: true, force: true });
       return;
     }
-    await execFileAsync("git", ["worktree", "remove", "--force", worktree.path], { cwd: worktree.sourceCanonicalRoot, maxBuffer: 2 * 1024 * 1024 });
+    await execFileAsync("git", ["worktree", "remove", "--force", worktree.path], { cwd: worktree.sourceCanonicalRoot, maxBuffer: 2 * 1024 * 1024, env: gitChildEnvironment() });
   }
 
   private async managedWorkspaceDirty(root: string): Promise<boolean> {
     try {
-      const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1"], { cwd: root, maxBuffer: 2 * 1024 * 1024 });
+      const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1"], { cwd: root, maxBuffer: 2 * 1024 * 1024, env: gitChildEnvironment() });
       return stdout.trim().length > 0;
     } catch {
       return true;

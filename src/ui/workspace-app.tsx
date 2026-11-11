@@ -388,6 +388,7 @@ async function startActivityPolling(): Promise<void> {
       }
       activityTotalOperations = page.totalOperations;
       for (const event of page.events) {
+        if (!isToolName(event.tool)) continue;
         const existing = activityEvents.get(event.operationId);
         if (!existing || event.seq >= existing.seq) activityEvents.set(event.operationId, event);
       }
@@ -425,7 +426,7 @@ function isWorkspaceActivityPage(value: unknown): value is WorkspaceActivityPage
     const candidate = event as Partial<WorkspaceActivityEvent>;
     return typeof candidate.seq === "number"
       && typeof candidate.operationId === "string"
-      && isToolName(candidate.tool)
+      && typeof candidate.tool === "string"
       && (candidate.status === "running" || candidate.status === "success" || candidate.status === "error")
       && typeof candidate.label === "string";
   });
@@ -755,6 +756,7 @@ function toolTitle(tool: ToolName): string {
     case "close_workspace": return "Close Workspace";
     case "read_file":
     case "read": return "Read";
+    case "multi_read": return "Read Files";
     case "write_file":
     case "write": return "Write";
     case "edit_file":
@@ -790,6 +792,8 @@ function getToolDisplay(card: ToolResultCard): ToolDisplay {
     case "read_file":
     case "read":
       return { icon: fileIcon(), title: "Read File", label, tone: "read" };
+    case "multi_read":
+      return { icon: filesIcon(), title: "Read Files", label, tone: "read" };
     case "write_file":
     case "write":
       return { icon: filePlusIcon(), title: "Write File", label, tone: "write" };

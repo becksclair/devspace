@@ -19,7 +19,7 @@
 - **Priority**: P1
 - **Effort**: S–M
 - **Risk**: LOW
-- **Depends on**: plans/016-retain-unpublished-managed-work.md (merge order only: both edit git call sites in `src/workspaces.ts`; run 016 first)
+- **Depends on**: none. Plan 016 adds git calls to `src/workspaces.ts`; this plan runs first, and plan 016 then passes the filtered environment in the calls it adds. If 016 has already landed, Step 3 covers its calls.
 - **Category**: security
 - **Planned at**: commit `63d6d81`, 2026-11-11
 
@@ -53,6 +53,12 @@ Files and their git call sites:
   `managedWorkspaceRetentionReason`.
 - `src/workspace-capabilities.ts` — private `git()` helper used by `probeGit`
   on every `open_workspace` and `workspace_status`.
+- `src/cli.ts` — `checkGitAvailable()` (line 794) runs `git --version` for the
+  startup and doctor output:
+  `return execFileSync("git", ["--version"], { encoding: "utf8" }).trim();`
+  It opens no repository, so no hook or helper runs, but it is brought in line
+  so that no git child in `src/` copies the raw environment. `src/cli.ts`
+  already imports from `./shell-environment.js` (line 20).
 
 `src/git.ts:19-31`:
 
@@ -174,6 +180,10 @@ worktree or clone: on the host Svartal the checkout
 - `src/git-worktrees.ts`
 - `src/workspaces.ts`
 - `src/workspace-capabilities.ts`
+- `src/cli.ts` (the one `git --version` call only)
+- `src/build-metadata.ts` (the one `git rev-parse HEAD` call only; do not add
+  or remove exports, because `scripts/package-runtime-artifact.mjs` replaces
+  this module's build output with a hand-written file)
 - `src/git-child-environment.test.ts` (create)
 - `package.json` (append the new test to the `"test"` script only)
 - `docs/security.md` (one paragraph)
@@ -188,13 +198,12 @@ worktree or clone: on the host Svartal the checkout
   by the change there; do not thread parameters through it.
 - git commands that the model runs through `run_shell` or terminals — those
   already use the shell runtime's filtered environment.
-- `src/build-metadata.ts` (`git rev-parse HEAD` for `/healthz`) and
-  `scripts/*.mjs` — build and release tooling, not workspace children.
+- `scripts/*.mjs` — build and release tooling, not service children.
 - Any name heuristic such as stripping every `*_TOKEN`.
 
 ## Git workflow
 
-- Branch: `advisor/017-git-child-environment`
+- Branch: `advisor/017-git-child-environment`, created from the integration branch `advisor/audit-2026-11-11`.
 - Message style: `fix(git): filter control-plane secrets from git child environments`
 - Do NOT push or open a PR unless the operator instructed it.
 
@@ -226,13 +235,24 @@ export function gitChildEnvironment(
   overrides: NodeJS.ProcessEnv = {},
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
+  // Filter the merged result, so an override map cannot carry a stripped name back in.
+  const merged = { ...baseEnvironment, ...overrides };
+  // Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped even before any registry exists
+  // (for example by `devspace doctor`). Malformed entries are ignored here; config loading rejects them.
+  // Both lists count, so an override of the variable cannot unlist a name the base listed.
+  const listed = new Set(
+    [baseEnvironment.DEVSPACE_INFRA_SECRET_NAMES, overrides.DEVSPACE_INFRA_SECRET_NAMES]
+      .flatMap((names) => (names ?? "").split(","))
+      .map((name) => name.trim())
+      .filter(Boolean),
+  );
   const environment: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(baseEnvironment)) {
+  for (const [name, value] of Object.entries(merged)) {
     if (value === undefined) continue;
-    if (GIT_ALWAYS_STRIPPED.has(name) || registeredGitSecretNames.has(name)) continue;
+    if (GIT_ALWAYS_STRIPPED.has(name) || registeredGitSecretNames.has(name) || listed.has(name)) continue;
     environment[name] = value;
   }
-  return { ...environment, ...overrides };
+  return environment;
 }
 ```
 
@@ -332,6 +352,9 @@ git hooks configuration.
    private `git` helper.
 4. `src/workspace-capabilities.ts`: import `gitChildEnvironment` and add
    `env: gitChildEnvironment(),` to the options in the private `git` helper.
+5. `src/cli.ts`: add `gitChildEnvironment` to the existing import from
+   `./shell-environment.js` and change the options in `checkGitAvailable()` to
+   `{ encoding: "utf8", env: gitChildEnvironment() }`.
 
 **Verify**:
 
@@ -339,7 +362,8 @@ git hooks configuration.
   `git-child-environment checks passed`
 - `grep -n "process.env" src/git.ts` → no matches
 - `test "$(grep -c 'execFileAsync("git"' src/workspaces.ts)" = "$(grep -c 'env: gitChildEnvironment()' src/workspaces.ts)" && echo equal` → prints `equal`
-- `grep -c "gitChildEnvironment" src/git-worktrees.ts src/workspace-capabilities.ts` → each file reports at least `2` (import and use)
+- `grep -c "gitChildEnvironment" src/git-worktrees.ts src/workspace-capabilities.ts src/cli.ts` → each file reports at least `2` (import and use)
+- `grep -rn '"git"' src --include='*.ts' | grep -v "test.ts" | grep -v "gitChildEnvironment\|execFileAsync(\"git\", args\|probeGit"` → prints only the `src/build-metadata.ts` line (deferred, see Maintenance notes) and the multi-line calls in `src/git.ts` and `src/workspaces.ts` whose `env:` is on a following line; inspect each remaining line and confirm its call passes `gitChildEnvironment`
 - `bun run typecheck` → exit 0
 
 ### Step 4: Document the rule
@@ -373,7 +397,7 @@ git hooks configuration.
 - [ ] `bun run test` exits 0
 - [ ] `bunx tsx src/git-child-environment.test.ts` exits 0 and the file is in the `"test"` script
 - [ ] `grep -n "process.env" src/git.ts` returns no matches
-- [ ] Every `execFileAsync("git"` call in `src/workspaces.ts`, `src/git-worktrees.ts`, and `src/workspace-capabilities.ts` passes `env: gitChildEnvironment()` (the Step 3 commands succeed)
+- [ ] Every `execFileAsync("git"` call in `src/workspaces.ts`, `src/git-worktrees.ts`, and `src/workspace-capabilities.ts`, and the `git --version` call in `src/cli.ts`, passes `env: gitChildEnvironment()` (the Step 3 commands succeed)
 - [ ] `git status --short` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 
@@ -393,13 +417,233 @@ Stop and report back (do not improvise) if:
 
 ## Maintenance notes
 
+- This plan was moved ahead of plan 016 because the repository is public and
+  the weakness is described in it. Plan 016 was updated to use
+  `gitChildEnvironment()` in the git calls it adds.
 - New code that starts git must pass `env: gitChildEnvironment()`. The registry
   of names is filled by the `WorkspaceRegistry` constructor; code that runs git
   without a registry still strips the owner token but not node bearers.
 - The registry is process-wide and only grows. That is intended: the secrets
   are process-wide environment variables.
-- Deferred: `src/build-metadata.ts` runs `git rev-parse HEAD` with the raw
-  environment in DevSpace's own checkout, not in a user repository. It is not a
-  workspace child, so it was left out.
+- Review outcome (2026-11-11): `src/build-metadata.ts` was first deferred on
+  the grounds that it runs in DevSpace's own checkout. That was wrong: its
+  `git rev-parse HEAD` runs in the process working directory, which can be a
+  user's project. It now passes `gitChildEnvironment()` too, so no git child in
+  `src/` is an exception. `gitChildEnvironment` filters the merged base and
+  overrides, so an override map cannot re-introduce a stripped name. The test
+  covers the worktree-add hook, both `git status` paths (through a
+  `core.fsmonitor` probe), and the `src/git.ts` wrapper (through an alias).
+- Where the names come from: the owner token is always stripped; names listed
+  in `DEVSPACE_INFRA_SECRET_NAMES` are read from the environment at each call,
+  so they are stripped even before any configuration is loaded (the doctor's
+  `git --version` check runs that early); node bearer variable names come from
+  role configuration and are registered when a `WorkspaceRegistry` is
+  constructed, and by `createGatewayServer` for a gateway that has no local
+  machine and so builds no registry. Only that last group depends on
+  registration. The follow-up below removed the one git child that started
+  before it, a `git rev-parse HEAD` that ran when `src/remote-node-client.ts`
+  was imported.
 - Reviewer focus: confirm no call site still spreads `process.env`, and that
   `GH_TOKEN` is not stripped.
+
+## Follow-up 1: two gaps found by review after the merge
+
+> **Executor instructions**: this section is a complete, separate task. The
+> steps above are already merged; do not redo them. Follow only this section,
+> run every verification command, and stop on any STOP condition below. A
+> reviewer maintains `plans/README.md`; do not edit it.
+
+- **Planned at**: commit `c9c692c` on `advisor/audit-2026-11-11`, 2026-11-11
+- **Effort**: S
+- **Risk**: LOW
+
+### Why
+
+Two cases remain where a DevSpace control-plane secret can be present in the
+environment of a git child:
+
+1. `gitChildEnvironment` reads `DEVSPACE_INFRA_SECRET_NAMES` from the merged
+   base and overrides. An override that sets the variable (even to an empty
+   string) replaces the base value, so a name the base listed is no longer
+   stripped. No caller does this today; the function should not allow it.
+2. `src/remote-node-client.ts` ends with
+   `export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");`.
+   `src/server.ts` imports that module, so the gateway runs
+   `git rev-parse HEAD` in its working directory while modules load, before
+   any `WorkspaceRegistry` has registered the node bearer variable names taken
+   from role configuration. When `DEVSPACE_SOURCE_COMMIT` is unset, that git
+   child receives those bearer variables. Nothing references the constant:
+   `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` finds only its
+   definition.
+
+### Current state
+
+`src/shell-environment.ts`, inside `gitChildEnvironment`:
+
+```ts
+  const merged = { ...baseEnvironment, ...overrides };
+  // Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped even before any registry exists
+  // (for example by `devspace doctor`). Malformed entries are ignored here; config loading rejects them.
+  const listed = new Set((merged.DEVSPACE_INFRA_SECRET_NAMES ?? "").split(",").map((name) => name.trim()).filter(Boolean));
+```
+
+`src/remote-node-client.ts`, line 3 and the last line:
+
+```ts
+import { getBuildMetadata, PROTOCOL_MAJOR } from "./build-metadata.js";
+…
+export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");
+```
+
+`src/git-child-environment.test.ts` has a block that begins with the comment
+`// Names listed in DEVSPACE_INFRA_SECRET_NAMES are stripped without registration`
+and defines `listedBase`.
+
+### Commands
+
+| Purpose | Command | Expected |
+|---|---|---|
+| Install (your worktree only) | `bun install --frozen-lockfile` | exit 0 |
+| Typecheck | `bun run typecheck` | exit 0 |
+| This suite | `bunx tsx src/git-child-environment.test.ts` | prints `git-child-environment checks passed` |
+| Full suite (about 65 s, needs `tmux`) | `bun run test` | exit 0 |
+
+Do not run `bun test`, `bun run build`, `bun run rebuild:local`,
+`bun run test:t3-live`, or `bun run test:t3-deployed`. Work in a separate git
+worktree, never in `/Users/rclair/projects/devspace`.
+
+### Scope
+
+In scope: `src/shell-environment.ts`, `src/remote-node-client.ts`,
+`src/git-child-environment.test.ts`, and for Step D `src/server.ts` and
+`AGENTS.md`. Nothing else.
+
+Out of scope: the other filters in `src/shell-environment.ts`,
+`src/build-metadata.ts`, and the callers of `getBuildMetadata`
+(`src/node-server.ts` calls it after the node's registry exists; the gateway's
+`/healthz` handler in `src/server.ts` is covered by Step D).
+
+### Git workflow
+
+- Branch: `advisor/017-followup-git-environment-gaps`, created from
+  `advisor/audit-2026-11-11`.
+- One commit:
+  `fix(git): keep base-listed secret names under overrides and drop the import-time rev-parse`
+- Do not push or open a pull request.
+
+### Steps
+
+**Step A: add the failing test.** In `src/git-child-environment.test.ts`,
+directly after the assertion that ends the `listedBase` block
+(`"listed names must not reach git children without registration"`), add:
+
+```ts
+// An override of the list variable must not unlist a name the base listed, and a name only
+// the override lists is stripped too.
+for (const override of ["", "DEVSPACE_TEST_OVERRIDE_LISTED"]) {
+  const overridden = gitChildEnvironment(
+    { DEVSPACE_INFRA_SECRET_NAMES: override, DEVSPACE_TEST_OVERRIDE_LISTED: "placeholder" },
+    listedBase,
+  );
+  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_UNREGISTERED_TUNNEL"), false, "an override must not unlist a base-listed name");
+  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_OVERRIDE_LISTED"), override === "", "a name listed only by the override is stripped");
+}
+```
+
+**Verify (must fail before the fix)**:
+`bunx tsx src/git-child-environment.test.ts` → exits non-zero with
+`an override must not unlist a base-listed name`.
+
+**Step B: read both lists.** In `src/shell-environment.ts`, replace the
+`const listed = …` line shown above with:
+
+```ts
+  // Both lists count, so an override of the variable cannot unlist a name the base listed.
+  const listed = new Set(
+    [baseEnvironment.DEVSPACE_INFRA_SECRET_NAMES, overrides.DEVSPACE_INFRA_SECRET_NAMES]
+      .flatMap((names) => (names ?? "").split(","))
+      .map((name) => name.trim())
+      .filter(Boolean),
+  );
+```
+
+Keep the two comment lines above it.
+
+**Verify**: `bunx tsx src/git-child-environment.test.ts` → prints
+`git-child-environment checks passed`.
+
+**Step C: remove the import-time git call.** In `src/remote-node-client.ts`,
+delete the line
+`export const REMOTE_NODE_BUILD_IDENTITY = getBuildMetadata("gateway");` and
+change line 3 to `import { PROTOCOL_MAJOR } from "./build-metadata.js";`.
+
+**Verify**:
+
+- `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` → no matches
+- `grep -n "getBuildMetadata" src/remote-node-client.ts` → no matches
+- `bun run typecheck` → exit 0
+- `bun run test` → exit 0
+- `git status --short` → only the three in-scope files
+
+**Step D: register the names on a gateway without a local machine.** Added
+after code review of Steps A to C. `registerGitChildSecretNames` is called only
+by the `WorkspaceRegistry` constructor, and a gateway whose machines are all
+`remote` never builds a registry. Its `/healthz` handler calls
+`getBuildMetadata("gateway")`, so with `DEVSPACE_SOURCE_COMMIT` unset every
+health probe starts a `git rev-parse HEAD` that receives the node bearer
+variables.
+
+1. In `src/git-child-environment.test.ts`, add a block that builds a gateway
+   with `createGatewayServer` (from `./server.js`) whose only machine is of
+   kind `remote` with `nodeTokenEnv: "DEVSPACE_TEST_REMOTE_NODE_TOKEN"`, using
+   a temporary state directory set up as `startGateway` in
+   `src/t3-e2e.test.ts` does, with the variable set in `process.env`. Assert:
+
+   ```ts
+   const afterGateway = gitChildEnvironment({}, { PATH: "/usr/bin", DEVSPACE_TEST_REMOTE_NODE_TOKEN: "placeholder" });
+   assert.equal(Object.hasOwn(afterGateway, "DEVSPACE_TEST_REMOTE_NODE_TOKEN"), false, "a gateway with only remote machines registers its node bearer names");
+   ```
+
+   Close the server, delete the variable, and remove the directory in a
+   `finally`. **Verify (must fail first)**: the suite exits non-zero with that
+   message.
+2. In `src/server.ts`, import `registerGitChildSecretNames` from
+   `./shell-environment.js`, and in `createGatewayServer`, directly after the
+   statement that assigns `publicConfig.secretNames`, add:
+
+   ```ts
+   // A gateway whose machines are all remote builds no WorkspaceRegistry, so register the names here.
+   registerGitChildSecretNames(publicConfig.secretNames);
+   ```
+
+3. In `AGENTS.md`, under "Security invariants for contributors", change the
+   parenthesis after `gitChildEnvironment` to: strips the names that
+   `WorkspaceRegistry` and `createGatewayServer` register from
+   `config.secretNames`, and the names listed in `DEVSPACE_INFRA_SECRET_NAMES`.
+
+Second commit:
+`fix(git): register node bearer names on a gateway that has no local machine`
+
+**Verify**: `bunx tsx src/git-child-environment.test.ts` passes;
+`bun run typecheck` and `bun run test` exit 0; `git status --short` lists only
+in-scope files.
+
+### Done criteria
+
+- [ ] The new test block fails before Step B and passes after it
+- [ ] The gateway block fails before the `src/server.ts` change and passes after it
+- [ ] `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` prints nothing
+- [ ] `bun run typecheck` and `bun run test` exit 0
+- [ ] `git diff --stat "$(git merge-base HEAD advisor/audit-2026-11-11)"..HEAD` lists only the five in-scope files
+
+### STOP conditions
+
+Stop and report back (do not improvise) if:
+
+- Your working directory is `/Users/rclair/projects/devspace`.
+- The code does not match the "Current state" excerpts.
+- `grep -rn "REMOTE_NODE_BUILD_IDENTITY" src scripts` finds a reference other
+  than the definition. Something uses the constant; report where.
+- The new test block passes before Step B.
+- Typecheck or a suite fails after Step C for a reason other than the removed
+  constant.

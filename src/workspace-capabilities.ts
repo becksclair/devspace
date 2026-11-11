@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isPathInsideRoot, type RootAccess } from "./roots.js";
 import type { ShellRuntime } from "./shell-environment.js";
-import { runConfiguredShell } from "./shell-environment.js";
+import { gitChildEnvironment, runConfiguredShell } from "./shell-environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -135,6 +135,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
     encoding: "utf8",
     timeout: 5_000,
     maxBuffer: 2 * 1024 * 1024,
+    env: gitChildEnvironment(),
   });
   return stdout;
 }
