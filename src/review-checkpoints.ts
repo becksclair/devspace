@@ -129,7 +129,11 @@ export function createReviewCheckpointManager(stateDir: string): ReviewCheckpoin
           env,
           maxBuffer: 50 * 1024 * 1024,
         })).stdout;
-        const files = parseNumstat(numstat);
+        const nameStatus = (await git(root, ["diff", "--name-status", "-z", baseline, current], {
+          env,
+          maxBuffer: 50 * 1024 * 1024,
+        })).stdout;
+        const files = parseChangedFiles(numstat, nameStatus);
         const summary = summarizeFiles(files);
 
         if (markReviewed) await git(root, ["update-ref", state.baselineRef, current], { env });
@@ -268,23 +272,45 @@ function checkpointIdentity(): NodeJS.ProcessEnv {
   };
 }
 
-function parseNumstat(output: string): ReviewFile[] {
-  const fields = output.split("\0").filter((field) => field.length > 0);
+/** Status letter per path from `git diff --name-status -z` (renames and copies carry two paths). */
+function parseNameStatus(output: string): Map<string, string> {
+  const fields = output.split("\0");
+  const statuses = new Map<string, string>();
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++] ?? "";
+    if (!status) continue;
+    if (status.startsWith("R") || status.startsWith("C")) index += 1;
+    const path = fields[index++];
+    if (path) statuses.set(path, status[0] ?? "M");
+  }
+  return statuses;
+}
+
+/**
+ * One entry per changed file. Counts come from `git diff --numstat -z`, where a rename is a
+ * header with an empty path followed by the old and the new path; types come from git's status.
+ */
+function parseChangedFiles(numstat: string, nameStatus: string): ReviewFile[] {
+  const statuses = parseNameStatus(nameStatus);
+  const fields = numstat.split("\0");
   const files: ReviewFile[] = [];
   for (let index = 0; index < fields.length;) {
     const header = fields[index++] ?? "";
+    if (!header) continue;
     const parts = header.split("\t");
     const additions = parseStatNumber(parts[0]);
     const removals = parseStatNumber(parts[1]);
-    if (parts.length >= 3) {
-      const path = parts[2] ?? "";
-      if (path) files.push({ path, type: fileType(path, undefined, additions, removals), additions, removals });
+    const inlinePath = parts.slice(2).join("\t");
+    if (inlinePath) {
+      files.push({ path: inlinePath, type: fileType(statuses.get(inlinePath), additions, removals), additions, removals });
       continue;
     }
     const previousPath = fields[index++];
     const path = fields[index++];
     if (!path) continue;
-    files.push({ path, previousPath, type: fileType(path, previousPath, additions, removals), additions, removals });
+    const status = statuses.get(path);
+    const type = fileType(status, additions, removals);
+    files.push(status === "R" && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
   }
   return files;
 }
@@ -295,10 +321,10 @@ function parseStatNumber(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function fileType(_path: string, previousPath: string | undefined, additions: number, removals: number): ReviewFile["type"] {
-  if (previousPath) return additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
-  if (additions > 0 && removals === 0) return "new";
-  if (additions === 0 && removals > 0) return "deleted";
+function fileType(status: string | undefined, additions: number, removals: number): ReviewFile["type"] {
+  if (status === "A" || status === "C") return "new";
+  if (status === "D") return "deleted";
+  if (status === "R") return additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
   return "change";
 }
 

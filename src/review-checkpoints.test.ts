@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, rename as renameFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -53,6 +53,34 @@ try {
 
     const afterReviewed = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
     assert.equal(afterReviewed.summary.files, 0);
+
+    // File types come from git's own status, and a rename is one entry.
+    await writeFile(join(root, "rename-me.txt"), "a\nb\nc\nd\ne\nf\n");
+    await writeFile(join(root, "shrink.txt"), "1\n2\n3\n");
+    await writeFile(join(root, "append.txt"), "x\n");
+    await writeFile(join(root, "remove-me.txt"), "gone\n");
+    const seeded = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    assert.deepEqual(seeded.files.map((file) => file.type), ["new", "new", "new", "new"]);
+
+    await renameFile(join(root, "rename-me.txt"), join(root, "renamed.txt"));
+    await writeFile(join(root, "renamed.txt"), "a\nb\nc\nd\ne\nf\ng\n");
+    await writeFile(join(root, "shrink.txt"), "1\n");
+    await writeFile(join(root, "append.txt"), "x\ny\n");
+    await unlink(join(root, "remove-me.txt"));
+    await writeFile(join(root, "added.txt"), "n\n");
+    const mixed = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    const byPath = new Map(mixed.files.map((file) => [file.path, file]));
+    assert.equal(mixed.files.length, 5);
+    assert.deepEqual(byPath.get("renamed.txt"), { path: "renamed.txt", previousPath: "rename-me.txt", type: "rename-changed", additions: 1, removals: 0 });
+    assert.deepEqual(byPath.get("shrink.txt"), { path: "shrink.txt", type: "change", additions: 0, removals: 2 });
+    assert.deepEqual(byPath.get("append.txt"), { path: "append.txt", type: "change", additions: 1, removals: 0 });
+    assert.deepEqual(byPath.get("remove-me.txt"), { path: "remove-me.txt", type: "deleted", additions: 0, removals: 1 });
+    assert.deepEqual(byPath.get("added.txt"), { path: "added.txt", type: "new", additions: 1, removals: 0 });
+    assert.equal(mixed.result, "Changed 5 files (+3 -3).");
+
+    await renameFile(join(root, "added.txt"), join(root, "moved.txt"));
+    const pureRename = await restartedManager.reviewChanges({ workspaceId: "ws_review", root });
+    assert.deepEqual(pureRename.files, [{ path: "moved.txt", previousPath: "added.txt", type: "rename-pure", additions: 0, removals: 0 }]);
 
     await assert.rejects(() => access(join(root, ".git", "refs", "devspace")));
     const shadowPath = restartedManager.status({ workspaceId: "ws_review" }).shadowGitDir!;
