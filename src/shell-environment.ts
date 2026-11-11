@@ -202,19 +202,20 @@ export function registerGitChildSecretNames(secretNames: string[]): void {
  * Environment for git processes DevSpace starts itself (worktrees, clones, status probes,
  * review snapshots). Git runs repository-configured programs (hooks, fsmonitor, credential
  * helpers), so these children get the service environment minus DevSpace's control-plane
- * secrets. Development credentials such as GH_TOKEN are kept.
+ * secrets. Development credentials such as GH_TOKEN are kept. The filter runs on the merged
+ * result, so an override map cannot carry a stripped name back in.
  */
 export function gitChildEnvironment(
   overrides: NodeJS.ProcessEnv = {},
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(baseEnvironment)) {
+  for (const [name, value] of Object.entries({ ...baseEnvironment, ...overrides })) {
     if (value === undefined) continue;
     if (GIT_ALWAYS_STRIPPED.has(name) || registeredGitSecretNames.has(name)) continue;
     environment[name] = value;
   }
-  return { ...environment, ...overrides };
+  return environment;
 }
 
 export function createDevspaceShellSpawnHook(runtime: ShellRuntime): BashSpawnHook {
