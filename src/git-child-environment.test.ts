@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { loadConfig } from "./config.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { git as gitWrapper } from "./git.js";
+import type { GatewayRoleConfig } from "./role-config.js";
+import { createGatewayServer } from "./server.js";
 import { gitChildEnvironment, registerGitChildSecretNames } from "./shell-environment.js";
 
 registerGitChildSecretNames(["DEVSPACE_TEST_NODE_BEARER"]);
@@ -53,7 +55,48 @@ for (const override of ["", "DEVSPACE_TEST_OVERRIDE_LISTED"]) {
     listedBase,
   );
   assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_UNREGISTERED_TUNNEL"), false, "an override must not unlist a base-listed name");
-  assert.equal(Object.hasOwn(overridden, "DEVSPACE_TEST_OVERRIDE_LISTED"), override === "", "a name listed only by the override is stripped");
+  assert.equal(
+    Object.hasOwn(overridden, "DEVSPACE_TEST_OVERRIDE_LISTED"),
+    override === "",
+    override === "" ? "a name neither list names is kept" : "a name listed only by the override is stripped",
+  );
+}
+
+// A gateway whose machines are all remote builds no WorkspaceRegistry, yet its node bearer
+// names must still be stripped from git children (for example the /healthz rev-parse).
+{
+  const gatewayStateDir = await mkdtemp(join(tmpdir(), "devspace-git-env-gateway-"));
+  let gateway: ReturnType<typeof createGatewayServer> | undefined;
+  try {
+    const source = join(gatewayStateDir, "role-config-source");
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, "auth.json"), JSON.stringify({ ownerToken: "test-owner-token" }));
+    process.env.DEVSPACE_TEST_REMOTE_NODE_TOKEN = "placeholder";
+    const roleConfig: GatewayRoleConfig = {
+      role: "gateway",
+      host: "127.0.0.1",
+      port: 7699,
+      publicBaseUrl: "http://127.0.0.1:7699",
+      stateDir: gatewayStateDir,
+      machines: [
+        {
+          id: "remote",
+          displayName: "Remote",
+          canonical: true,
+          kind: "remote",
+          url: "https://remote.test",
+          nodeTokenEnv: "DEVSPACE_TEST_REMOTE_NODE_TOKEN",
+        },
+      ],
+    };
+    gateway = createGatewayServer(roleConfig);
+    const afterGateway = gitChildEnvironment({}, { PATH: "/usr/bin", DEVSPACE_TEST_REMOTE_NODE_TOKEN: "placeholder" });
+    assert.equal(Object.hasOwn(afterGateway, "DEVSPACE_TEST_REMOTE_NODE_TOKEN"), false, "a gateway with only remote machines registers its node bearer names");
+  } finally {
+    gateway?.close?.();
+    delete process.env.DEVSPACE_TEST_REMOTE_NODE_TOKEN;
+    await rm(gatewayStateDir, { recursive: true, force: true });
+  }
 }
 
 // A repository hook run by `git worktree add` records the variable names it can see.
