@@ -171,7 +171,7 @@ say so in your report.
 
 ## Git workflow
 
-- Branch: `advisor/019-workspace-card-multi-read`
+- Branch: `advisor/019-workspace-card-multi-read`, created from the integration branch `advisor/audit-2026-11-11`.
 - Message style: `fix(ui): recognize multi_read in the workspace card`
 - Do NOT push or open a PR unless the operator instructed it.
 

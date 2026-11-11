@@ -179,7 +179,7 @@ Never run: `bun run release:activate`, `launchctl`, `bun run build`,
 
 ## Git workflow
 
-- Branch: `advisor/018-svartal-release-directories`
+- Branch: `advisor/018-svartal-release-directories`, created from the integration branch `advisor/audit-2026-11-11`.
 - Step 1 is its own commit (`docs(agents): say that build:check rewrites dist and that the Svartal checkout serves production`), so it can be merged alone.
 - Later steps: `feat(scripts): add local release directories with health-checked activation`, then a docs commit.
 - Do NOT push or open a PR unless the operator instructed it.

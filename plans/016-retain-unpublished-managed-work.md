@@ -170,7 +170,7 @@ a separate git worktree or clone: on the host Svartal the checkout
 
 ## Git workflow
 
-- Branch: `advisor/016-retain-unpublished-managed-work`
+- Branch: `advisor/016-retain-unpublished-managed-work`, created from the integration branch `advisor/audit-2026-11-11`.
 - One commit per step or one for the whole plan; message style
   `fix(workspaces): keep managed checkouts that hold unpublished commits`.
 - Do NOT push or open a PR unless the operator instructed it.

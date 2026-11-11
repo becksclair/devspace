@@ -194,7 +194,7 @@ worktree or clone: on the host Svartal the checkout
 
 ## Git workflow
 
-- Branch: `advisor/017-git-child-environment`
+- Branch: `advisor/017-git-child-environment`, created from the integration branch `advisor/audit-2026-11-11`.
 - Message style: `fix(git): filter control-plane secrets from git child environments`
 - Do NOT push or open a PR unless the operator instructed it.
 

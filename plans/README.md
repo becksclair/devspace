@@ -1,6 +1,6 @@
 # Implementation Plans
 
-Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcdd`). Plans 006-014 come from a second deep audit on 2026-11-04 (at `97e507c`). The user selected F01-F08 plus F15 from that audit's findings table. Plans 016-020 come from a standard audit on 2026-11-11 (at `63d6d81`); the run did not wait for a selection, so they are the advisor's default top five from that audit's findings table (see "2026-11-11 audit"). Execute in the recommended order given under the dependency notes; the table is numeric, not an execution order. Each executor: read the plan fully before starting, honor its STOP conditions, and update your row when done.
+Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcdd`). Plans 006-014 come from a second deep audit on 2026-11-04 (at `97e507c`). The user selected F01-F08 plus F15 from that audit's findings table. Plans 016-023 come from a standard audit on 2026-11-11 (at `63d6d81`): 016-020 are the advisor's default top five from that audit's findings table (the run did not wait for a selection), and the user then approved 021-023 (findings G06, G07 + G08 with backlog F12, and G12). All work from this audit lands on the integration branch `advisor/audit-2026-11-11`. Execute in the recommended order given under the dependency notes; the table is numeric, not an execution order. Each executor: read the plan fully before starting, honor its STOP conditions, and update your row when done.
 
 ## Execution order & status
 
@@ -26,11 +26,19 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | TODO |
 | 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | TODO |
 | 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |
+| 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | TODO |
+| 022  | Align gateway and node payload limits, and keep `show_changes` deliverable | P1 | M | 021 | TODO |
+| 023  | Clear the high-severity dependency advisories with an in-range refresh | P2 | S | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
 
-## Dependency notes (016-020)
+## Dependency notes (016-023)
 
+- **Integration branch.** All work from the 2026-11-11 audit lands on `advisor/audit-2026-11-11`. Each plan's branch (`advisor/NNN-<slug>`) is created from it and merged back into it; nothing goes to `main` until the user decides.
+- **022 after 021.** Both edit `reviewChanges` in `src/review-checkpoints.ts` and its test; 022's excerpts assume 021's parser is in place.
+- **023 must run outside the serving checkout.** It installs dependencies; see the next note. Its only source changes are `package.json` and `bun.lock`, which 016, 017 and 018 also touch (the `"test"` script line), so merge it carefully.
+- 021, 022 and 023 are independent of 016-020 apart from those shared lines.
+- Recommended order for the second batch: 021 → 022, with 023 in parallel.
 - **Every executor works in a separate git worktree or clone.** On Svartal, `/Users/rclair/projects/devspace` serves the production gateway from its `dist/` (finding G03, plan 018). `bun run build:check` and `bun install` in that directory are deploy steps.
 - **017 after 016.** Both edit git call sites in `src/workspaces.ts`. 016 adds new git calls; 017's done criteria require every git call in that file to pass the filtered environment, so running 017 second covers them.
 - **018 Step 1 can merge alone.** It is a documentation commit that makes `AGENTS.md` truthful today. The rest of 018 adds tooling; the production cutover is an operator step that no executor performs.
@@ -55,13 +63,13 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | G03 | The production gateway runs from the working checkout's `dist`; `AGENTS.md` calls the command that deletes `dist` "non-mutating"; `/healthz` reports the checkout's HEAD, not the build's commit | dx | S + M | MED | `AGENTS.md:43,75`; `package.json` `clean`/`build:check`; `src/build-metadata.ts:7-10`; launcher outside the repo | 018 |
 | G04 | The widget's tool-name list lacks `multi_read`; one such activity event makes the workspace card fail and re-poll every 2 s | bug | S | LOW | `src/ui/card-types.ts:3-27,92-119`; `src/ui/workspace-app.tsx:378-381,423-431`; `src/gateway-router.ts:119-122` | 019 |
 | G05 | T3 bridge liveness: no catalog load until the first session (schema-less tools after every restart); CLI timeout waits for pipes to close and can wedge minting; blank optional arguments are rejected | bug | S | LOW | `src/t3-bridge.ts:717-728,395-423,1686-1688,1280-1284`; `src/server.ts:1798-1801` | 020 |
-| G06 | `show_changes` misreports files: a rename corrupts the list and drops the next file's stats; an append-only edit is typed `new`, a shrink-only edit `deleted` | bug | S | LOW | `src/review-checkpoints.ts:271-303` | — |
-| G07 | `show_changes` advances its baseline before the result is deliverable; through a node, a diff over 1 MiB returns an error and the next call says "No changes" | bug | S–M | LOW | `src/review-checkpoints.ts:124-135`; `src/node-server.ts:222-229` | — |
-| G08 | Node request limit is 1 MiB while `/mcp` and the client allow 4 MiB; an oversized write gets an HTML 413 that the gateway reports as "target unavailable" | bug | S | LOW | `src/node-server.ts:57,67`; `src/remote-node-client.ts:8`; `src/server.ts:1832` | — |
+| G06 | `show_changes` misreports files: a rename corrupts the list and drops the next file's stats; an append-only edit is typed `new`, a shrink-only edit `deleted` | bug | S | LOW | `src/review-checkpoints.ts:271-303` | 021 |
+| G07 | `show_changes` advances its baseline before the result is deliverable; through a node, a diff over 1 MiB returns an error and the next call says "No changes" | bug | S–M | LOW | `src/review-checkpoints.ts:124-135`; `src/node-server.ts:222-229` | 022 |
+| G08 | Node request limit is 1 MiB while `/mcp` and the client allow 4 MiB; an oversized write gets an HTML 413 that the gateway reports as "target unavailable" | bug | S | LOW | `src/node-server.ts:57,67`; `src/remote-node-client.ts:8`; `src/server.ts:1832` | 022 |
 | G09 | A failed `listen` (for example a busy port) prints "listening" and exits 0; standalone `serve` has no forced-exit timer on SIGTERM | bug | S | LOW | `src/cli.ts:105,314-328`; `src/server.ts:2335-2346`; `node_modules/express/lib/application.js:598-606` | — |
 | G10 | `show_changes` and `workspace_status` ignore `.gitignore` files above a workspace that is a repository subdirectory; ignored trees are snapshotted and reported | bug | S–M | MED | `src/review-checkpoints.ts:245-259` | — |
 | G11 | Every non-shell tool gets a 30 s remote deadline; a slow `open_workspace` is reported as "target unavailable" while the node finishes and leaves an unbound managed checkout | bug | S–M | LOW | `src/remote-node-client.ts:7,178,194-196,329-334` | — |
-| G12 | All 10 high advisories clear with an in-range lockfile refresh plus an `undici` override; the `proxy-addr` override is redundant and the exact `ws`/`protobufjs` pins block patches | deps | S | LOW | `package.json` `overrides`; `bun outdated` (vite 8.2.2 → 8.3.8); `bun pm why undici` | — |
+| G12 | All 10 high advisories clear with an in-range lockfile refresh plus an `undici` override; the `proxy-addr` override is redundant and the exact `ws`/`protobufjs` pins block patches | deps | S | LOW | `package.json` `overrides`; `bun outdated` (vite 8.2.2 → 8.3.8); `bun pm why undici` | 023 |
 | G13 | The phone guidance injected into every `open_workspace` still routes phone work to `machine:saga`, which the Svartal gateway does not have | docs | S | LOW | `src/server.ts:398-400,1113-1134`; `docs/svartal-gateway.md:5` | — |
 | G14 | File tools use the workspace's access for any target inside it and ignore a more specific nested root policy; the correct helper exists but is unused | bug | S | LOW–MED | `src/workspaces.ts:519-525`; `src/roots.ts:153-171` | — |
 | G15 | `t3_inbox` re-lists every unsettled thread and reads each active thread on every check (26-36 T3 calls in a probe against the fake); T3's list already accepts status and snooze filters | perf | S–M | LOW–MED | `src/t3-bridge.ts:1379-1407,1418` | — |
@@ -74,7 +82,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | G22 | Hardening and hygiene: OAuth redirect URIs are checked by host, not scheme; `auth mint --owner-token` takes the password on the command line; the publish workflow can deploy a non-main ref; config errors name the wrong field; three reference docs contradict the code (`docs/configuration.md:173` "twelve T3 tools") | mixed | S each | LOW | `src/oauth-provider.ts:227-237`; `src/cli.ts:615,628`; `.gitea/workflows/publish-runtime-artifact.yml:2-5,93-108`; `src/role-config.ts:237` | — |
 | G23 | Per-session and per-spawn blocking work: synchronous skill-tree walk on every MCP initialize; synchronous `busctl` on Linux spawns; wall-clock upper bounds in the T3 catalog tests | perf/tests | S each | LOW | `src/server.ts:968-970`; `src/skills.ts:47-50`; `src/shell-environment.ts:131-139`; `src/t3-bridge.test.ts:455,490,505` | — |
 
-Suggested bundles for later planning: G06 alone (pure parsing, clean tests); G07 + G08 with backlog F12 (one node payload-limit plan); G09 alone; G12 alone (needs a non-production checkout for `bun install`).
+Planned after the user approved them: G06 (021), G07 + G08 with backlog F12 (022), G12 (023; a dry run on copies of `package.json` and `bun.lock` took `bun audit` from 37 advisories to 1 moderate). Still unplanned and self-contained: G09.
 
 ## 2026-11-11 considered and rejected
 
