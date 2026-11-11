@@ -129,11 +129,11 @@ export function createReviewCheckpointManager(stateDir: string): ReviewCheckpoin
           env,
           maxBuffer: 50 * 1024 * 1024,
         })).stdout;
-        const nameStatus = (await git(root, ["diff", "--name-status", "-z", baseline, current], {
+        const rawDiff = (await git(root, ["diff", "--raw", "--no-abbrev", "-z", baseline, current], {
           env,
           maxBuffer: 50 * 1024 * 1024,
         })).stdout;
-        const files = parseChangedFiles(numstat, nameStatus);
+        const files = parseChangedFiles(numstat, rawDiff);
         const summary = summarizeFiles(files);
 
         if (markReviewed) await git(root, ["update-ref", state.baselineRef, current], { env });
@@ -272,29 +272,32 @@ function checkpointIdentity(): NodeJS.ProcessEnv {
   };
 }
 
-/**
- * Git's status per path from `git diff --name-status -z`, such as `M` or `R085` (renames and
- * copies carry a similarity score and two paths).
- */
-function parseNameStatus(output: string): Map<string, string> {
+interface FileChange {
+  status: string;
+  sameBlob: boolean;
+}
+
+/** Full blob IDs from `git diff --raw --no-abbrev -z` distinguish identity from similarity. */
+function parseRawDiff(output: string): Map<string, FileChange> {
   const fields = output.split("\0");
-  const statuses = new Map<string, string>();
+  const changes = new Map<string, FileChange>();
   for (let index = 0; index < fields.length;) {
-    const status = fields[index++] ?? "";
-    if (!status) continue;
+    const header = fields[index++] ?? "";
+    if (!header) continue;
+    const [, , oldBlob, newBlob, status = ""] = header.split(" ");
     if (status.startsWith("R") || status.startsWith("C")) index += 1;
     const path = fields[index++];
-    if (path) statuses.set(path, status);
+    if (path) changes.set(path, { status, sameBlob: Boolean(oldBlob && oldBlob === newBlob) });
   }
-  return statuses;
+  return changes;
 }
 
 /**
  * One entry per changed file. Counts come from `git diff --numstat -z`, where a rename is a
- * header with an empty path followed by the old and the new path; types come from git's status.
+ * header with an empty path followed by the old and the new path; types and blob identities come from git's raw diff.
  */
-function parseChangedFiles(numstat: string, nameStatus: string): ReviewFile[] {
-  const statuses = parseNameStatus(nameStatus);
+function parseChangedFiles(numstat: string, rawDiff: string): ReviewFile[] {
+  const changes = parseRawDiff(rawDiff);
   const fields = numstat.split("\0");
   const files: ReviewFile[] = [];
   for (let index = 0; index < fields.length;) {
@@ -305,15 +308,15 @@ function parseChangedFiles(numstat: string, nameStatus: string): ReviewFile[] {
     const removals = parseStatNumber(parts[1]);
     const inlinePath = parts.slice(2).join("\t");
     if (inlinePath) {
-      files.push({ path: inlinePath, type: fileType(statuses.get(inlinePath), additions, removals), additions, removals });
+      files.push({ path: inlinePath, type: fileType(changes.get(inlinePath)), additions, removals });
       continue;
     }
     const previousPath = fields[index++];
     const path = fields[index++];
     if (!path) continue;
-    const status = statuses.get(path);
-    const type = fileType(status, additions, removals);
-    files.push(status?.startsWith("R") && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
+    const change = changes.get(path);
+    const type = fileType(change);
+    files.push(change?.status.startsWith("R") && previousPath ? { path, previousPath, type, additions, removals } : { path, type, additions, removals });
   }
   return files;
 }
@@ -324,12 +327,11 @@ function parseStatNumber(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function fileType(status: string | undefined, additions: number, removals: number): ReviewFile["type"] {
-  const kind = status?.[0];
+function fileType(change: FileChange | undefined): ReviewFile["type"] {
+  const kind = change?.status[0];
   if (kind === "A" || kind === "C") return "new";
   if (kind === "D") return "deleted";
-  // A changed binary has no line counts and reordered lines still score 100, so a pure rename needs both.
-  if (kind === "R") return status === "R100" && additions === 0 && removals === 0 ? "rename-pure" : "rename-changed";
+  if (kind === "R") return change?.sameBlob ? "rename-pure" : "rename-changed";
   return "change";
 }
 
