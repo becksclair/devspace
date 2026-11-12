@@ -49,7 +49,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - **023 must run outside the serving checkout.** It installs dependencies; see the next note. Its only source changes are `package.json` and `bun.lock`, which 016, 017 and 018 also touch (the `"test"` script line), so merge it carefully.
 - 021, 022 and 023 are independent of 016-020 apart from those shared lines.
 - Recommended order for the second batch: 021 → 022, with 023 in parallel.
-- **Every executor works in a separate git worktree or clone.** On Svartal, `/Users/rclair/projects/devspace` serves the production gateway from its `dist/` (finding G03, plan 018). `bun run build:check` and `bun install` in that directory are deploy steps.
+- **Every executor works in a separate git worktree or clone.** Until the plan 018 cutover on 2026-11-13, `/Users/rclair/projects/devspace` on Svartal served the production gateway from its `dist/` (finding G03), and `bun run build:check` and `bun install` there were deploy steps. Since the cutover the gateway runs a release under `~/.local/opt/devspace`, and builds in that checkout no longer affect it.
 - **016 after 017.** Both edit git call sites in `src/workspaces.ts`. The order was reversed on 2026-11-11: the repository is public and 017's weakness is described in it, so 017 runs first. 016 adds one git helper and its Step 2 makes that helper use 017's filtered environment; 016's done criteria check it.
 - **018 Step 1 can merge alone.** It is a documentation commit that makes `AGENTS.md` truthful today. The rest of 018 adds tooling; the production cutover is an operator step that no executor performs.
 - 019 and 020 are independent of the others. 020 touches `src/server.ts` in `createServer` only.
