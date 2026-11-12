@@ -263,6 +263,16 @@ try {
   assert.deepEqual(tokenCrash.body, { error: "server_error", error_description: "Internal Server Error" });
   exchangeFailure = undefined;
 
+  // /token: an endpoint answers 400 for any OAuth error other than server_error, including the
+  // resource-server codes that carry 401 and 403 on the bearer path.
+  for (const code of [OAuthErrorCode.InvalidToken, OAuthErrorCode.InsufficientScope] as const) {
+    exchangeFailure = new OAuthHttpError(code, "raised by the provider");
+    const tokenRejected = await form("/token", { ...codeGrant, client_id: "one-uri" });
+    assert.equal(tokenRejected.status, 400, code);
+    assert.deepEqual(tokenRejected.body, { error: code, error_description: "raised by the provider" });
+  }
+  exchangeFailure = undefined;
+
   // /register: store policy errors keep their code; other failures are opaque 500s.
   const registration = { redirect_uris: [loopback], token_endpoint_auth_method: "none" };
   const postRegistration = () => request("/register", {

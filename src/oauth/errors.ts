@@ -4,12 +4,11 @@ import { OAuthError, OAuthErrorCode } from "@modelcontextprotocol/server";
 export { OAuthErrorCode };
 
 /**
- * The HTTP status DevSpace answers for each OAuth error code.
+ * The HTTP status that goes with each OAuth error code: `server_error` is 500, `invalid_token`
+ * is 401 and `insufficient_scope` is 403 (both raised on the resource-server side),
+ * `method_not_allowed` is 405, `too_many_requests` is 429, and every other code is 400.
  *
- * This is the mapping the endpoint handlers and the bearer middleware have always applied:
- * `server_error` is 500, `invalid_token` is 401 and `insufficient_scope` is 403 (both only ever
- * raised on the resource-server side), `method_not_allowed` is 405 and `too_many_requests` is
- * 429 (both answered directly by middleware, never thrown), and every other code is 400.
+ * The authorization-server endpoints do not use this table; see `sendOAuthError`.
  */
 export function oauthErrorStatus(code: string): number {
   switch (code) {
@@ -51,8 +50,12 @@ export function asOAuthError(error: unknown): OAuthError {
   return error instanceof OAuthError ? error : new OAuthHttpError(OAuthErrorCode.ServerError, "Internal Server Error");
 }
 
-/** Sends an OAuth error body with its status. */
+/**
+ * Sends an OAuth error body from an authorization-server endpoint. Those endpoints answer 500 for
+ * `server_error` and 400 for every other code, whatever a provider throws.
+ */
 export function sendOAuthError(res: Response, error: unknown): void {
   const oauthError = asOAuthError(error);
-  res.status(oauthErrorStatus(oauthError.code)).json(oauthError.toResponseObject());
+  const status = oauthError.code === OAuthErrorCode.ServerError ? 500 : 400;
+  res.status(status).json(oauthError.toResponseObject());
 }
