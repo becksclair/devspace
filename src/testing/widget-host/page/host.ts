@@ -466,9 +466,11 @@ async function runScenario(scenario: Scenario, info: HarnessInfo, catalog: ToolC
   await connected.sendToolResult(result as never);
   ui.resend.disabled = false;
   const failure = checkDisplayResult(scenario, catalog, result);
-  if (failure) throw new ScenarioError(`scenario ${scenario.id}: ${failure}`);
 
+  // afterResult also releases what the scenario opened (the terminal), so it runs before a
+  // mismatched result fails the scenario.
   const after = await prepared.afterResult?.(result);
+  if (failure) throw new ScenarioError(`scenario ${scenario.id}: ${failure}`);
   if (after && typeof after.activityOperations === "number") await waitForActivity(after.activityOperations);
   await waitForSettle();
 }
