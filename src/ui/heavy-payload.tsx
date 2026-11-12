@@ -1,5 +1,7 @@
+// Code and diff renderer for read, write and edit cards. Loaded lazily (React.lazy) so that
+// @pierre/diffs and Shiki stay out of the initial bundle.
+
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import { FileStream, getFiletypeFromFileName } from "@pierre/diffs";
 import type { FileStreamOptions } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -9,63 +11,19 @@ import {
   isWriteTool,
   payloadText,
   summaryNumber,
-  type HostContext,
   type ToolResultCard,
 } from "./card-types.js";
 import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
-import { PayloadErrorBoundary, PlainFallback } from "./payload-fallback.js";
-import { PREFERRED_HIGHLIGHTER, plainRenderText, renderFailureMessage } from "./render-fallback.js";
+import { PlainFallback, StatusLine, type ThemeType } from "./payload-fallback.js";
+import { PREFERRED_HIGHLIGHTER, renderFailureMessage } from "./render-fallback.js";
 
-type ThemeType = "light" | "dark";
-
-interface PayloadRendererOptions {
-  card: ToolResultCard;
-  hostContext?: HostContext;
-  errorMessage?: string | null;
-}
-
-interface MountedPayload {
-  update(options: PayloadRendererOptions): void;
-  unmount(): void;
-}
-
-export function mountHeavyPayload(
-  container: HTMLElement,
-  options: PayloadRendererOptions,
-): MountedPayload {
-  const root = createRoot(container);
-  const render = (next: PayloadRendererOptions) => {
-    root.render(
-      <PayloadErrorBoundary fallbackText={plainRenderText(next.card)} tool={next.card.tool}>
-        <HeavyPayload {...next} />
-      </PayloadErrorBoundary>,
-    );
-  };
-  render(options);
-
-  return {
-    update(nextOptions) {
-      render(nextOptions);
-    },
-    unmount() {
-      root.unmount();
-    },
-  };
-}
-
-export type { MountedPayload, PayloadRendererOptions };
-
-function HeavyPayload({
+export default function HeavyPayload({
   card,
-  hostContext,
-  errorMessage = null,
-}: PayloadRendererOptions) {
-  const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
-
-  if (errorMessage) {
-    return <StatusLine message={errorMessage} tone="error" />;
-  }
-
+  themeType,
+}: {
+  card: ToolResultCard;
+  themeType: ThemeType;
+}) {
   if (isEditTool(card.tool) || isWriteTool(card.tool)) {
     const patch = card.payload?.patch || card.payload?.diff;
     if (!patch) return <StatusLine message="Diff payload is not available." />;
@@ -190,14 +148,4 @@ function DiffPayload({
       className="pierre-diff"
     />
   );
-}
-
-function StatusLine({
-  message,
-  tone = "muted",
-}: {
-  message: string;
-  tone?: "muted" | "error";
-}) {
-  return <div className={`status ${tone}`}>{message}</div>;
 }

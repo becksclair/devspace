@@ -1,5 +1,7 @@
+// Diff renderer for the review card (show_changes). Loaded lazily (React.lazy) so that
+// @pierre/diffs and Shiki stay out of the initial bundle.
+
 import { useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
 import {
   getFiletypeFromFileName,
   parsePatchFiles,
@@ -7,62 +9,26 @@ import {
   type FileDiffOptions,
 } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
-import type { HostContext, ToolResultCard } from "./card-types.js";
+import type { ToolResultCard } from "./card-types.js";
 import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
-import { PayloadErrorBoundary, PlainFallback } from "./payload-fallback.js";
+import { PlainFallback, StatusLine, type ThemeType } from "./payload-fallback.js";
 import {
   PREFERRED_HIGHLIGHTER,
-  plainRenderText,
   renderFailureMessage,
   splitPatchByFile,
 } from "./render-fallback.js";
 
-type ThemeType = "light" | "dark";
-
-interface PayloadRendererOptions {
-  card: ToolResultCard;
-  hostContext?: HostContext;
-  errorMessage?: string | null;
-  visibleFileCount?: number;
-}
-
-interface MountedPayload {
-  update(options: PayloadRendererOptions): void;
-  unmount(): void;
-}
-
-export function mountReviewPayload(
-  container: HTMLElement,
-  options: PayloadRendererOptions,
-): MountedPayload {
-  const root = createRoot(container);
-  const render = (next: PayloadRendererOptions) => {
-    root.render(
-      <PayloadErrorBoundary fallbackText={plainRenderText(next.card)} tool={next.card.tool}>
-        <ReviewPayload {...next} />
-      </PayloadErrorBoundary>,
-    );
-  };
-  render(options);
-
-  return {
-    update(nextOptions) {
-      render(nextOptions);
-    },
-    unmount() {
-      root.unmount();
-    },
-  };
-}
-
-function ReviewPayload({
+export default function ReviewPayload({
   card,
-  hostContext,
-  errorMessage = null,
+  themeType,
   visibleFileCount,
-}: PayloadRendererOptions) {
+}: {
+  card: ToolResultCard;
+  themeType: ThemeType;
+  /** Files to list; undefined lists all. */
+  visibleFileCount?: number;
+}) {
   const patch = card.payload?.patch;
-  const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
   const parsed = useMemo(() => parseFiles(patch), [patch]);
   const files = parsed.files;
   const sections = useMemo(() => (patch ? splitPatchByFile(patch) : []), [patch]);
@@ -71,7 +37,6 @@ function ReviewPayload({
     : files;
   const [openFiles, setOpenFiles] = useState(() => new Set<string>());
 
-  if (errorMessage) return <StatusLine message={errorMessage} tone="error" />;
   if (!patch) return <StatusLine message="Diff payload is not available." />;
   if (parsed.error) return <PlainFallback message={parsed.error} text={patch} tool={card.tool} />;
   if (files.length === 0) return <StatusLine message="No diff hunks to review." />;
@@ -174,14 +139,4 @@ function diffOptions(themeType: ThemeType): FileDiffOptions<undefined, undefined
     stickyHeader: false,
     disableFileHeader: true,
   };
-}
-
-function StatusLine({
-  message,
-  tone = "muted",
-}: {
-  message: string;
-  tone?: "muted" | "error";
-}) {
-  return <div className={`status ${tone}`}>{message}</div>;
 }

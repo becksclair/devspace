@@ -108,12 +108,13 @@ function isShikiRuntimeModule(id: string): boolean {
   );
 }
 
+function isReactModule(id: string): boolean {
+  return /\/node_modules\/(?:react|react-dom|scheduler)\//.test(id);
+}
+
 function workspaceAppVendorChunk(id: string): string | undefined {
   if (!id.includes("/node_modules/")) return undefined;
 
-  if (/\/node_modules\/(?:react|react-dom|scheduler)\//.test(id)) {
-    return "react-vendor";
-  }
   if (id.includes("/node_modules/@modelcontextprotocol/ext-apps/")) {
     return "mcp-app-vendor";
   }
@@ -162,6 +163,9 @@ export default defineConfig({
               priority: 2,
             },
             { name: "shiki-vendor", test: isShikiRuntimeModule, priority: 1 },
+            // The widget shell renders with React, so React (including
+            // react/jsx-runtime) must not be captured by a lazy vendor group.
+            { name: "react-vendor", test: isReactModule, priority: 1 },
             { name: workspaceAppVendorChunk },
           ],
         },

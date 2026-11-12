@@ -1,6 +1,18 @@
 import { Component, type ReactNode } from "react";
 import { renderFailureMessage } from "./render-fallback.js";
 
+export type ThemeType = "light" | "dark";
+
+export function StatusLine({
+  message,
+  tone = "muted",
+}: {
+  message: string;
+  tone?: "muted" | "error";
+}) {
+  return <div className={`status ${tone}`}>{message}</div>;
+}
+
 /** A visible error line followed by the content as plain text. */
 export function PlainFallback({
   message,
