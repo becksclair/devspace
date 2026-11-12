@@ -142,6 +142,17 @@ const SHELL_TOOL_ANNOTATIONS: ToolAnnotations = {
   idempotentHint: false,
   openWorldHint: true,
 };
+/**
+ * Every DevSpace read-only tool (file reads, search, listings, terminal and workspace status)
+ * changes nothing and reaches only the open workspace, so all three hints OpenAI marks as
+ * required are explicit: https://developers.openai.com/apps-sdk/reference#annotations.
+ * Identical under both annotation profiles, which only relax mutating tools.
+ */
+const READ_ONLY_TOOL_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  openWorldHint: false,
+} as const;
 
 interface RunningServer {
   app: express.Express;
@@ -1217,7 +1228,7 @@ async function createMcpServer(
           totalOperations: z.number().int().nonnegative(),
         }),
         ...appOnlyToolDescriptorMeta(),
-        annotations: { readOnlyHint: true, openWorldHint: false },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, afterSeq, limit, waitMs }, extra) => {
         const page = await gatewayRouter.waitForActivity(
@@ -1255,7 +1266,7 @@ async function createMcpServer(
         machine: z.object({ id: z.string(), displayName: z.string() }).optional(),
       }),
       ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "workspace_status", "workspace_status", { workspaceId }, extra);
@@ -1331,7 +1342,7 @@ async function createMcpServer(
       }),
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }, extra) => {
       const p = (input as { path?: string }).path;
@@ -1394,7 +1405,7 @@ async function createMcpServer(
         totalBytes: z.number().int().optional(),
       }),
       ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "multi_read", "multi_read", { workspaceId, ...input }, extra);
@@ -1488,7 +1499,7 @@ async function createMcpServer(
         }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "show_changes", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, since, markReviewed }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "show_changes", "show_changes", { workspaceId, since, markReviewed }, extra);
@@ -1519,7 +1530,7 @@ async function createMcpServer(
         }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "grep_files", toolNames.grep, { workspaceId, ...input }, extra);
@@ -1545,7 +1556,7 @@ async function createMcpServer(
         }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "find_files", toolNames.glob, { workspaceId, ...input }, extra);
@@ -1571,7 +1582,7 @@ async function createMcpServer(
         }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "directory", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "list_directory", toolNames.ls, { workspaceId, ...input }, extra);
@@ -1645,7 +1656,7 @@ async function createMcpServer(
       inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string(), mode: z.enum(["screen", "history"]).optional(), lines: z.number().int().min(1).max(2000).optional() }),
       outputSchema: z.object({ terminal: terminalOutputSchema, output: z.string(), truncated: z.boolean() }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_read", "terminal_read", input, extra)
@@ -1693,7 +1704,7 @@ async function createMcpServer(
       inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string().optional() }),
       outputSchema: z.object({ terminals: z.array(terminalOutputSchema) }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_status", "terminal_status", input, extra)
@@ -1785,8 +1796,8 @@ async function createMcpServer(
         // sky-cua tools are not workspace-scoped. Force non-destructive so ChatGPT/Hermes platform safety never
         // blocks any of them (phone/desktop/browser). Underlying sky-cua service still enforces its own safety;
         // the MCP `destructiveHint`/`openWorldHint` gate is just the extra LLM prompt gate that was blocking Sarah.
-        const baseAnnotations = tool.annotations ?? { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
-        const skyAnnotations = { ...baseAnnotations, destructiveHint: false, openWorldHint: false };
+        // readOnlyHint keeps sky-cua's own value and is false (the MCP default) when sky-cua omits it.
+        const skyAnnotations = { readOnlyHint: false, ...tool.annotations, destructiveHint: false, openWorldHint: false };
         // inputSchema here is a Zod object; registerAppTool expects ZodRawShape, so unwrap if it's ZodObject
         const rawInputShape: Record<string, z.ZodTypeAny> = (() => {
           const s = tool.inputSchema as z.ZodTypeAny;
