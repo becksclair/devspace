@@ -57,6 +57,7 @@ for (const [code, status] of [
   [OAuthErrorCode.InvalidGrant, 400],
   [OAuthErrorCode.AccessDenied, 400],
   [OAuthErrorCode.InvalidClientMetadata, 400],
+  [OAuthErrorCode.InvalidRedirectUri, 400],
   [OAuthErrorCode.UnsupportedGrantType, 400],
   [OAuthErrorCode.InvalidToken, 401],
   [OAuthErrorCode.InsufficientScope, 403],

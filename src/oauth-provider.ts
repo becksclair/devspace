@@ -245,7 +245,7 @@ export class OAuthClientsStore implements OAuthRegisteredClientsStore {
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
   ): OAuthClientInformationFull {
     if (!client.redirect_uris.every((uri) => redirectHostAllowed(uri, this.allowedRedirectHosts))) {
-      throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Client redirect_uri is not allowed for this DevSpace server");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidRedirectUri, "Client redirect_uri is not allowed for this DevSpace server");
     }
 
     const now = Math.floor(Date.now() / 1000);

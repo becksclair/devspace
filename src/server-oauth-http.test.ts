@@ -598,9 +598,9 @@ try {
     (confidentialBody.client_id_issued_at as number) + 30 * 24 * 60 * 60,
   );
 
-  // KNOWN DEFECT: RFC 7591 section 3.2.2 says invalid_redirect_uri; DevSpace answers invalid_request.
+  // A redirect host outside the allowlist is invalid_redirect_uri (RFC 7591 section 3.2.2).
   const disallowedHost = await postJson("/register", { redirect_uris: ["https://evil.example/cb"], token_endpoint_auth_method: "none" });
-  assertOAuthError(disallowedHost, 400, "invalid_request", "Client redirect_uri is not allowed for this DevSpace server", "register disallowed host");
+  assertOAuthError(disallowedHost, 400, "invalid_redirect_uri", "Client redirect_uri is not allowed for this DevSpace server", "register disallowed host");
   assert.equal(disallowedHost.headers.get("cache-control"), "no-store");
   assert.equal(disallowedHost.headers.get("access-control-allow-origin"), "*");
 
@@ -608,7 +608,7 @@ try {
   // among allowed ones rejects the whole registration.
   assertOAuthError(
     await postJson("/register", { redirect_uris: [loopbackRedirect, "http://chatgpt.example/cb"], token_endpoint_auth_method: "none" }),
-    400, "invalid_request", "Client redirect_uri is not allowed for this DevSpace server", "register mixed redirects",
+    400, "invalid_redirect_uri", "Client redirect_uri is not allowed for this DevSpace server", "register mixed redirects",
   );
   assertOAuthError(
     await postJson("/register", { redirect_uris: ["javascript:alert(1)"] }),
