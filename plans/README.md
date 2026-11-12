@@ -23,7 +23,7 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (two phases) | P1 | M + S | — | IN PROGRESS (Phase 2 deployed; voice pass pending) |
 | 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | 017 (merge order) | TODO |
 | 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | — | DONE (approved at `696411e`; PR #9 merged into `advisor/audit-2026-11-11` as `07aeb2e`) |
-| 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | IN PROGRESS (tooling and docs on `advisor/018-svartal-release-directories`, unmerged; `prepare` pins Node 24; operator cutover pending) |
+| 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | DONE (PR #12 merged as `f6a8a19`; the operator cutover was performed on 2026-11-13 and the gateway runs release `f6a8a19` from `~/.local/opt/devspace`) |
 | 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | DONE (approved at `ccc775b`; PR #7 merged into `advisor/audit-2026-11-11` as `177c02f`) |
 | 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |
 | 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | DONE (approved at `9f3f7b7`; PR #8 merged into `advisor/audit-2026-11-11` as `44ea200`) |

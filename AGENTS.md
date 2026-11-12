@@ -51,7 +51,6 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - `bun run rebuild:local`: does everything `build` does, then restarts `devspace.service` and probes `/healthz`.
 - `bun run test:t3-live` and `bun run test:t3-deployed`: start real T3 Code threads that run agent turns and use provider credits, then settle and archive them; `test:t3-deployed` also authenticates against the production gateway (see `docs/t3-code.md`).
 - `bun run release:activate`: switches the live Svartal gateway to a prepared release and restarts it.
-- On Svartal, `/Users/rclair/projects/devspace` is the checkout the production gateway runs from (`~/.local/bin/devspace-gateway` executes its `dist/cli.js`). In that checkout, `bun run build:check`, `bun run build`, `bun install`, and `bun update` replace files the live gateway loads, so they are deploy steps. Build and test in a separate git worktree or clone.
 
 ## Tests
 
@@ -80,7 +79,7 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 ## Environment notes
 
 - No script loads `.env`. Export variables in the shell or the systemd unit; names are listed in `.env.example`.
-- When `DEVSPACE_WIDGETS` is not `off`, the server reads `dist/ui/.vite/manifest.json`; run `bun run build:check` once on a fresh clone or worktree (never in the serving checkout described above) before `bun run dev` or `bun run start`.
+- When `DEVSPACE_WIDGETS` is not `off`, the server reads `dist/ui/.vite/manifest.json`; run `bun run build:check` once on a fresh clone or worktree before `bun run dev` or `bun run start`.
 
 ## Delivery and plans
 
