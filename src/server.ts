@@ -9,7 +9,7 @@ import {
   localhostHostValidation,
   requireBearerAuth,
 } from "@modelcontextprotocol/express";
-import { McpServer, isInitializeRequest, checkResourceAllowed, resourceUrlFromServerUrl, DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/server";
+import { McpServer, ResourceNotFoundError, ResourceTemplate, isInitializeRequest, checkResourceAllowed, resourceUrlFromServerUrl, DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/server";
 import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
 import {
   registerAppResource,
@@ -194,6 +194,13 @@ export function workspaceAppResourceUri(
     .digest("hex")
     .slice(0, 12);
   return `${WORKSPACE_APP_URI_PREFIX}-${fingerprint}.html`;
+}
+
+const WORKSPACE_APP_URI_PATTERN = /^ui:\/\/devspace\/workspace-app-[0-9a-f]{12}\.html$/;
+
+/** True for an address of the workspace card, whichever widget build it names. */
+export function isWorkspaceAppResourceUri(uri: string): boolean {
+  return WORKSPACE_APP_URI_PATTERN.test(uri);
 }
 
 type ToolWidgetKind =
@@ -1074,41 +1081,57 @@ async function createMcpServer(
   declareToolSecuritySchemes(server, config.oauth.scopes[0] ?? "devspace");
 
   if (workspaceAppManifestEntry && workspaceAppUri) {
+    const cardMeta = {
+      ui: {
+        csp: appCsp(config),
+      },
+      // Documented legacy ChatGPT compatibility key, superseded by `_meta.ui.csp` except for
+      // `redirect_domains`, which the card does not use
+      // (https://developers.openai.com/apps-sdk/reference). Kept, on the resource and on its read
+      // contents, until a ChatGPT render check without it has been done.
+      "openai/widgetCSP": openAiWidgetCsp(config),
+    };
+    // The current bundle, answered under the address the caller asked for.
+    const readWorkspaceApp = async (uri: string) => {
+      await assertWorkspaceAppAssets(workspaceAppManifestEntry);
+      return {
+        contents: [
+          {
+            uri,
+            mimeType: RESOURCE_MIME_TYPE,
+            text: workspaceAppHtml(config, workspaceAppManifestEntry),
+            _meta: cardMeta,
+          },
+        ],
+      };
+    };
     registerAppResource(
       server,
       "DevSpace Workspace Card",
       workspaceAppUri,
       {
         description: "Interactive card for DevSpace workspace activity and file diffs.",
-        _meta: {
-          ui: {
-            csp: appCsp(config),
-          },
-          // Documented legacy ChatGPT compatibility key, superseded by `_meta.ui.csp` except for
-          // `redirect_domains`, which the card does not use
-          // (https://developers.openai.com/apps-sdk/reference). Kept, here and on the read
-          // contents below, until a ChatGPT render check without it has been done.
-          "openai/widgetCSP": openAiWidgetCsp(config),
-        },
+        _meta: cardMeta,
       },
-      async () => {
-        await assertWorkspaceAppAssets(workspaceAppManifestEntry);
-        return {
-          contents: [
-            {
-              uri: workspaceAppUri,
-              mimeType: RESOURCE_MIME_TYPE,
-              text: workspaceAppHtml(config, workspaceAppManifestEntry),
-              _meta: {
-                ui: {
-                  csp: appCsp(config),
-                },
-                // Legacy ChatGPT compatibility key; see the resource metadata above.
-                "openai/widgetCSP": openAiWidgetCsp(config),
-              },
-            },
-          ],
-        };
+      async () => readWorkspaceApp(workspaceAppUri),
+    );
+    // The card's address changes with every widget build, and a host keeps the tool descriptors of
+    // its last scan. After a deploy it asks for the previous build's address until someone
+    // refreshes the connector. Answer any address of the card with the current bundle, so the card
+    // keeps opening; `tools/list` and `resources/list` still name only the current address, and
+    // everything outside the card's own address family is not found, as before.
+    server.registerResource(
+      "DevSpace Workspace Card (earlier builds)",
+      new ResourceTemplate(`${WORKSPACE_APP_URI_PREFIX}-{build}.html`, { list: undefined }),
+      {
+        description: "The workspace card under the address of an earlier widget build.",
+        mimeType: RESOURCE_MIME_TYPE,
+        _meta: cardMeta,
+      },
+      async (uri) => {
+        const requested = uri.toString();
+        if (!isWorkspaceAppResourceUri(requested)) throw new ResourceNotFoundError(requested);
+        return readWorkspaceApp(requested);
       },
     );
   }
