@@ -55,6 +55,8 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - Tests under `src/` are standalone `tsx` scripts using `node:assert/strict`; `scripts/release-utils.test.mjs` runs under `node --test`.
 - Append every new `src/*.test.ts` to the `"test"` script in `package.json` by hand, or it never runs.
 - `src/testing/` holds the fake T3 Code server and CLI, the captured T3 contract fixtures, and the T3 orchestrator scenarios and behavior checks shared by the T3 suites; `tsconfig.build.json` excludes it from the build.
+  `src/testing/widget-host/` is the developer MCP Apps host for the workspace card (`bun run widget:host`, see `docs/widget-host.md`).
+- The widget (`src/ui/`) has no DOM test framework: test its logic as pure functions and its markup with `react-dom/server`. Its layout, and why it must not compile WebAssembly, are in `docs/widget-host.md`.
 - Any tool with an `outputSchema` in `src/server.ts` needs at least one MCP-level success-path test, because the MCP SDK validates `structuredContent` only on non-error results (pattern: `src/server-mcp-routing.test.ts`).
 
 ## Tool contract
@@ -68,6 +70,9 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - File-tool path canonicalization lives in `src/roots.ts` (`canonicalTarget`).
 - Child-process environments must come from `src/shell-environment.ts`: `createShellRuntime` for shell and terminal children (strips `config.secretNames`), `bridgeChildEnvironment` for MCP bridge children such as sky-cua and node_repl (additionally strips `GH_TOKEN`, `GITHUB_TOKEN`, and `*_NODE_TOKEN`), `gitChildEnvironment` for git children (strips the names that `WorkspaceRegistry` and `createGatewayServer` register from `config.secretNames`, and the names listed in `DEVSPACE_INFRA_SECRET_NAMES`). Never copy `process.env` directly.
 - Never log tokens or secret values.
+- DevSpace owns its OAuth authorization-server endpoint code in `src/oauth/` (`/authorize`, `/token`, `/register`, `/revoke`, client authentication, CORS, the `OAuthHttpError` type). No upstream package maintains or patches it, so treat changes there as security review, not dependency bumps. The discovery documents and `/mcp` bearer authentication come from the maintained `@modelcontextprotocol/express` (`mcpAuthMetadataRouter`, `requireBearerAuth`).
+- Token verifiers must throw `OAuthHttpError` with `invalid_token`; anything else makes `/mcp` answer 500 instead of a 401 challenge.
+- `src/server-oauth-http.test.ts` pins the OAuth wire output, including its `KNOWN DEFECT` cases; RFC 9207 `iss` is deliberately not sent (see the comment in `src/oauth/authorize.ts`).
 
 ## Environment notes
 

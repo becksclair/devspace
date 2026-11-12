@@ -15,9 +15,8 @@ import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { CallToolResultSchema, type CallToolResult, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/client";
 import { parseT3BridgeConfig, type ServerConfig, type T3BridgeConfig } from "./config.js";
 import { mintHeadlessOAuth, writeOAuthBundle, type HeadlessOAuthBundle } from "./headless-auth.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
@@ -303,11 +302,11 @@ async function connectMcp(url: string, token: string, headers: Record<string, st
 /** Calls a T3 tool directly, without the SDK's output-schema validation (as the bridge does). */
 function directCaller(client: Client): T3Call {
   return (name, args) =>
-    client.request({ method: "tools/call", params: { name, arguments: args ?? {} } }, CallToolResultSchema, { timeout: REQUEST_TIMEOUT_MS });
+    client.request({ method: "tools/call", params: { name, arguments: args ?? {} } }, { timeout: REQUEST_TIMEOUT_MS });
 }
 
 function devspaceCaller(client: Client): T3Call {
-  return async (name, args) => (await client.callTool({ name, arguments: args ?? {} }, undefined, { timeout: REQUEST_TIMEOUT_MS })) as CallToolResult;
+  return async (name, args) => (await client.callTool({ name, arguments: args ?? {} }, { timeout: REQUEST_TIMEOUT_MS })) as CallToolResult;
 }
 
 function recordResults(client: Client, outputs: string[]): void {

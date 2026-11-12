@@ -1,15 +1,9 @@
 import { timingSafeEqual, randomBytes, randomUUID, createHash } from "node:crypto";
 import type { Request, Response } from "express";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
-import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { AccessDeniedError, InvalidClientMetadataError, InvalidGrantError, InvalidRequestError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type {
-  OAuthClientInformationFull,
-  OAuthTokenRevocationRequest,
-  OAuthTokens,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
-import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/server";
+import type { AuthInfo, OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/server";
+import { OAuthErrorCode, OAuthHttpError } from "./oauth/errors.js";
+import type { AuthorizationParams, OAuthRegisteredClientsStore, OAuthServerProvider } from "./oauth/provider.js";
 import {
   InMemoryOAuthStateStore,
   type OAuthStateStore,
@@ -251,7 +245,7 @@ export class OAuthClientsStore implements OAuthRegisteredClientsStore {
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">,
   ): OAuthClientInformationFull {
     if (!client.redirect_uris.every((uri) => redirectHostAllowed(uri, this.allowedRedirectHosts))) {
-      throw new InvalidRequestError("Client redirect_uri is not allowed for this DevSpace server");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Client redirect_uri is not allowed for this DevSpace server");
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -264,7 +258,7 @@ export class OAuthClientsStore implements OAuthRegisteredClientsStore {
       response_types: client.response_types ?? ["code"],
     };
     if (!this.stateStore.saveClientIfBelowLimit(registered, this.maxRetainedClients)) {
-      throw new InvalidClientMetadataError("Client registration capacity reached");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidClientMetadata, "Client registration capacity reached");
     }
     return registered;
   }
@@ -302,10 +296,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     res: Response,
   ): Promise<void> {
     if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {
-      throw new InvalidRequestError("Invalid or missing OAuth resource");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Invalid or missing OAuth resource");
     }
     if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
-      throw new InvalidRequestError("Requested scope is not supported");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Requested scope is not supported");
     }
 
     const secure = isSecureRequest(this.resourceServerUrl);
@@ -391,10 +385,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   ): Promise<OAuthTokens> {
     const record = this.validCodeRecord(client, authorizationCode);
     if (redirectUri && redirectUri !== record.params.redirectUri) {
-      throw new InvalidGrantError("redirect_uri does not match the authorization request");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidGrant, "redirect_uri does not match the authorization request");
     }
     if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
-      throw new InvalidGrantError("Invalid resource");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidGrant, "Invalid resource");
     }
 
     this.codes.delete(authorizationCode);
@@ -410,15 +404,15 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     const hashedRefreshToken = hashToken(refreshToken);
     const record = this.stateStore.getToken(hashedRefreshToken, "refresh");
     if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
-      throw new InvalidGrantError("Invalid refresh token");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidGrant, "Invalid refresh token");
     }
     if (resource && !checkResourceAllowed({ requestedResource: resource, configuredResource: this.resourceServerUrl })) {
-      throw new InvalidGrantError("Invalid resource");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidGrant, "Invalid resource");
     }
 
     const requestedScopes = scopes ?? record.scopes;
     if (!requestedScopes.every((scope) => record.scopes.includes(scope))) {
-      throw new AccessDeniedError("Refresh token cannot grant requested scopes");
+      throw new OAuthHttpError(OAuthErrorCode.AccessDenied, "Refresh token cannot grant requested scopes");
     }
 
     this.stateStore.deleteToken(hashedRefreshToken, "refresh");
@@ -428,7 +422,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const record = this.stateStore.getToken(hashToken(token), "access");
     if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
-      throw new InvalidTokenError("Invalid or expired access token");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidToken, "Invalid or expired access token");
     }
 
     return {
@@ -451,7 +445,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   ): AuthorizationCodeRecord {
     const record = this.codes.get(authorizationCode);
     if (!record || record.clientId !== client.client_id || record.expiresAtMs < Date.now()) {
-      throw new InvalidGrantError("Invalid authorization code");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidGrant, "Invalid authorization code");
     }
     return record;
   }

@@ -11,17 +11,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  CallToolResultSchema,
-  ErrorCode,
-  ListToolsResultSchema,
-  McpError,
-  type CallToolResult,
-} from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError, SdkHttpError } from "@modelcontextprotocol/client";
+import type { McpServer, CallToolResult } from "@modelcontextprotocol/server";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import * as z from "zod/v4";
 import type { AnnotationProfile, ServerConfig, T3BridgeConfig } from "./config.js";
 import { logEvent, type LoggingConfig } from "./logger.js";
@@ -331,6 +323,8 @@ export interface T3BridgeOptions {
   resolveOrigin?: () => Promise<string>;
   now?: () => number;
   catalogTimeoutMs?: number;
+  /** Per-request timeout for forwarded tool calls. Default 120 s. */
+  callTimeoutMs?: number;
   /** Optional DevSpace logging; the bridge never logs credentials. */
   logging?: LoggingConfig;
 }
@@ -679,6 +673,7 @@ export class T3Bridge {
   private readonly resolveOrigin: () => Promise<string>;
   private readonly now: () => number;
   private readonly catalogTimeoutMs: number;
+  private readonly callTimeoutMs: number;
   private readonly logging?: LoggingConfig;
   private slot?: ConnectionSlot;
   private liveTools?: Map<string, LiveTool>;
@@ -706,6 +701,7 @@ export class T3Bridge {
         now: this.now,
       });
     this.catalogTimeoutMs = options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS;
+    this.callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
     this.logging = options.logging;
   }
 
@@ -791,7 +787,6 @@ export class T3Bridge {
       for (let page = 0; page < 20; page++) {
         const result = await client.request(
           { method: "tools/list", params: cursor ? { cursor } : {} },
-          ListToolsResultSchema,
           { timeout: CONNECT_TIMEOUT_MS },
         );
         for (const tool of result.tools) {
@@ -958,7 +953,9 @@ export class T3Bridge {
         return await operation(connection.client);
       } catch (error) {
         if (signal?.aborted) throw new T3CallError(sentFailureMessage(label));
-        if (error instanceof McpError && error.code !== ErrorCode.ConnectionClosed && error.code !== ErrorCode.RequestTimeout) {
+        // v2: ConnectionClosed and RequestTimeout are raised as SdkError, never ProtocolError, so a
+        // ProtocolError is always a JSON-RPC error answered by T3.
+        if (error instanceof ProtocolError) {
           // T3 answered with a JSON-RPC error: the session is healthy and the call did not run.
           throw new T3CallError(`T3 Code could not run ${label}: ${error.message}`);
         }
@@ -1061,8 +1058,7 @@ export class T3Bridge {
       try {
         return await client.request(
           { method: "tools/call", params: { name: tool, arguments: args } },
-          CallToolResultSchema,
-          { signal: scoped.signal, timeout: CALL_TIMEOUT_MS },
+          { signal: scoped.signal, timeout: this.callTimeoutMs },
         );
       } finally {
         signal?.removeEventListener("abort", forward);
@@ -1504,9 +1500,8 @@ export async function closeSharedT3Bridges(): Promise<void> {
 export async function registerT3Tools(server: McpServer, bridge: T3Bridge, annotationProfile: AnnotationProfile): Promise<void> {
   const definitions = await bridge.toolDefinitions();
   for (const definition of definitions) {
-    registerAppTool(
-      server as never,
-      definition.name as never,
+    server.registerTool(
+      definition.name,
       {
         title: definition.title,
         description: definition.description,
@@ -1519,13 +1514,13 @@ export async function registerT3Tools(server: McpServer, bridge: T3Bridge, annot
           openWorldHint: !definition.readOnly,
         }),
         _meta: {},
-      } as never,
-      (async (input: unknown, extra: { signal?: AbortSignal } | undefined) => {
-        const result = await bridge.call(definition.name, isRecord(input) ? input : {}, extra?.signal);
+      },
+      async (input, ctx) => {
+        const result = await bridge.call(definition.name, isRecord(input) ? input : {}, ctx.mcpReq.signal);
         if (result.content.length > 0) return result;
         const text = result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : "";
         return { ...result, content: [{ type: "text", text }] };
-      }) as never,
+      },
     );
   }
 }
@@ -1919,7 +1914,7 @@ function positiveInteger(value: unknown): number | undefined {
 }
 
 function httpStatus(error: unknown): number | undefined {
-  if (error instanceof StreamableHTTPError && typeof error.code === "number" && error.code > 0) return error.code;
+  if (error instanceof SdkHttpError && typeof error.status === "number" && error.status > 0) return error.status;
   return undefined;
 }
 

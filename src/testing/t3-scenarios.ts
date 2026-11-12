@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 
 export type ScenarioTargetKind = "fake" | "live" | "deployed";
 
@@ -164,7 +164,7 @@ function firstText(content: unknown): string | undefined {
 }
 
 async function callTool<T>(ctx: ScenarioContext, name: T3ToolName, args: Record<string, unknown>): Promise<T> {
-  const result: Record<string, unknown> = await ctx.client.callTool({ name, arguments: args }, undefined, { timeout: REQUEST_TIMEOUT_MS });
+  const result: Record<string, unknown> = await ctx.client.callTool({ name, arguments: args }, { timeout: REQUEST_TIMEOUT_MS });
   const text = firstText(result.content);
   if (result.isError === true) throw new Error(`${name} failed: ${text ?? "(no error text)"}`);
   if (isRecord(result.structuredContent)) return result.structuredContent as T;

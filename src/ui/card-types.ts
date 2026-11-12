@@ -31,6 +31,8 @@ export type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
 
 export interface ToolResultCard {
   tool: ToolName;
+  /** The tool result's `isError`; set by the widget from the result, not sent in the card. */
+  isError?: boolean;
   machine?: {
     id?: string;
     displayName?: string;
@@ -173,6 +175,9 @@ export function summaryNumber(
 }
 
 export function isExpandableCard(card: ToolResultCard): boolean {
+  // A failed call expands to its error message, whatever the tool.
+  if (card.isError) return true;
+
   if (card.tool === "open_workspace") {
     return (
       Number(card.summary?.agentsFiles ?? 0) > 0 ||

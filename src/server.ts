@@ -2,14 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { hostHeaderValidation, localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
-import { DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/sdk/server/requestBody.js";
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
-import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  hostHeaderValidation,
+  localhostHostValidation,
+  requireBearerAuth,
+} from "@modelcontextprotocol/express";
+import { McpServer, isInitializeRequest, checkResourceAllowed, resourceUrlFromServerUrl, DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/server";
+import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
 import {
   registerAppResource,
   registerAppTool,
@@ -42,8 +43,9 @@ import { toolAnnotationsForProfile } from "./mcp-bridge-utils.js";
 import { loadAutoloadSkillDocuments, type AutoloadedSkillDocument } from "./skills.js";
 import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 import { registerGitChildSecretNames } from "./shell-environment.js";
+import { oauthRoutes } from "./oauth/routes.js";
 
-type Transport = StreamableHTTPServerTransport;
+type Transport = NodeStreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
 
 // sky-cua bridge singleton: lazily created stdio MCP client that proxies sky-cua's tools/list live.
@@ -54,7 +56,7 @@ const skyBridgeCache = new Map<string, Promise<import("./sky-cua/bridge.js").Sky
 // node_repl per-session bridges: one process per MCP session for isolation (UR-REV-004).
 // Keyed by sessionId, sweep alongside transports. Cap via config.nodeRepl.maxPerHost.
 const sessionNodeReplBridges = new Map<string, import("./node-repl-bridge.js").NodeReplBridge>();
-const serverNodeReplBridge = new WeakMap<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, import("./node-repl-bridge.js").NodeReplBridge>();
+const serverNodeReplBridge = new WeakMap<McpServer, import("./node-repl-bridge.js").NodeReplBridge>();
 let pendingNodeReplCreates = 0;
 const serverTransportMap = new WeakMap<object, unknown>();
 async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bridge.js").SkyBridge | null> {
@@ -144,6 +146,17 @@ const SHELL_TOOL_ANNOTATIONS: ToolAnnotations = {
   idempotentHint: false,
   openWorldHint: true,
 };
+/**
+ * Every DevSpace read-only tool (file reads, search, listings, terminal and workspace status)
+ * changes nothing and reaches only the open workspace, so all three hints OpenAI marks as
+ * required are explicit: https://developers.openai.com/apps-sdk/reference#annotations.
+ * Identical under both annotation profiles, which only relax mutating tools.
+ */
+const READ_ONLY_TOOL_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  openWorldHint: false,
+} as const;
 
 interface RunningServer {
   app: express.Express;
@@ -196,7 +209,6 @@ type ToolWidgetKind =
 
 interface ToolDefinitionMeta extends Record<string, unknown> {
   "openai/outputTemplate"?: string;
-  "ui/resourceUri"?: string;
   ui?: {
     resourceUri?: string;
     visibility: Array<"model" | "app">;
@@ -230,6 +242,9 @@ export function toolWidgetDescriptorMeta(
 
   return {
     _meta: {
+      // Documented ChatGPT compatibility alias for `_meta.ui.resourceUri`
+      // (https://developers.openai.com/apps-sdk/reference). Kept until a ChatGPT render check
+      // without it has been done.
       "openai/outputTemplate": resourceUri,
       ui: {
         resourceUri,
@@ -237,6 +252,23 @@ export function toolWidgetDescriptorMeta(
       },
     },
   };
+}
+
+/**
+ * Declares on every tool registered on `server` (DevSpace's own, ext-apps app tools, and the
+ * bridged node_repl, sky-cua, and T3 tools) that it needs an OAuth access token with the scope
+ * the /mcp door requires. OpenAI recommends per-tool `securitySchemes` "even if the entire
+ * server uses the same policy" (https://developers.openai.com/apps-sdk/build/auth). The MCP
+ * SDK's tools/list serializer emits only the fields it knows, so the declaration travels as the
+ * documented `_meta["securitySchemes"]` mirror "for clients that only read `_meta`"
+ * (https://developers.openai.com/apps-sdk/reference). Metadata only: authentication stays at
+ * the /mcp door.
+ */
+function declareToolSecuritySchemes(server: McpServer, requiredScope: string): void {
+  const securitySchemes = [{ type: "oauth2", scopes: [requiredScope] }];
+  const registerTool = server.registerTool.bind(server);
+  server.registerTool = ((name: string, config: { _meta?: Record<string, unknown> }, handler: unknown) =>
+    registerTool(name, { ...config, _meta: { ...config._meta, securitySchemes } } as never, handler as never)) as typeof server.registerTool;
 }
 
 function appOnlyToolDescriptorMeta(): ToolWidgetDescriptorMeta {
@@ -335,14 +367,24 @@ function rpcMessageTraceFields(body: JsonRpcMessage): Record<string, unknown> {
   };
 }
 
+/**
+ * Per-request RPC trace fields. `protocolVersionHeader` is the raw `Mcp-Protocol-Version`
+ * request header; it is added as `protocolVersionHeader` only when the client sent one.
+ */
 export function mcpRequestTraceFields(
   body: unknown,
   httpMethod = "POST",
+  protocolVersionHeader?: string,
 ): Record<string, unknown> {
+  const headerFields = protocolVersionHeader === undefined
+    ? {}
+    : { protocolVersionHeader: boundedLogString(protocolVersionHeader, 64) };
+
   if (httpMethod.toUpperCase() !== "POST") {
     return {
       rpcType: "transport",
       transportMethod: httpMethod.toUpperCase(),
+      ...headerFields,
     };
   }
 
@@ -352,12 +394,45 @@ export function mcpRequestTraceFields(
       rpcType: "batch",
       rpcBatchSize: body.length,
       rpcMessages: messages.map(compactLogFields),
+      ...headerFields,
     };
   }
 
   return isRecord(body)
-    ? rpcMessageTraceFields(body)
-    : { rpcType: "invalid", rpcBodyType: body === null ? "null" : typeof body };
+    ? { ...rpcMessageTraceFields(body), ...headerFields }
+    : { rpcType: "invalid", rpcBodyType: body === null ? "null" : typeof body, ...headerFields };
+}
+
+function initializeMessage(body: unknown): Record<string, unknown> | undefined {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.find((message): message is Record<string, unknown> =>
+    isRecord(message) && message.method === "initialize");
+}
+
+/**
+ * Client-declared fields of an initialize request, bounded for logging: the protocol
+ * version the client asked for and its `clientInfo` name and version. Absent or
+ * non-string values are omitted.
+ */
+export function mcpInitializeLogFields(body: unknown): Record<string, unknown> {
+  const rawParams = initializeMessage(body)?.params;
+  const params = isRecord(rawParams) ? rawParams : undefined;
+  const clientInfo = isRecord(params?.clientInfo) ? params.clientInfo : undefined;
+  return compactLogFields({
+    requestedProtocolVersion: boundedLogString(params?.protocolVersion, 64),
+    clientName: boundedLogString(clientInfo?.name, 128),
+    clientVersion: boundedLogString(clientInfo?.version, 64),
+  });
+}
+
+/**
+ * The protocol version in an initialize result, when `message` is the JSON-RPC
+ * success response to the initialize request with id `initializeRpcId`.
+ */
+export function answeredProtocolVersion(message: unknown, initializeRpcId: unknown): string | undefined {
+  if (!isRecord(message) || initializeRpcId === undefined || message.id !== initializeRpcId) return undefined;
+  if (!isRecord(message.result)) return undefined;
+  return boundedLogString(message.result.protocolVersion, 64);
 }
 
 function containsInitializeRequest(body: unknown): boolean {
@@ -597,15 +672,15 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
 
   return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode="isolated" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}${autoloadedSkillsInstructions(autoloadedSkills, toolNames.openWorkspace)}`;
 }
-function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
-  return {
+function resultOutputSchema<Extra extends z.ZodRawShape = Record<never, never>>(extra?: Extra) {
+  return z.object({
     result: z
       .string()
       .describe(
         "Model-readable result text for follow-up reasoning and plain MCP hosts.",
       ),
-    ...extra,
-  };
+    ...(extra ?? {}) as Extra,
+  });
 }
 
 const workspaceSkillOutputSchema = z.object({
@@ -854,13 +929,22 @@ async function routeGatewayTool(
   canonicalTool: CanonicalToolName,
   publicTool: string,
   args: Record<string, unknown>,
-  extra: { requestId: string | number; signal: AbortSignal },
+  extra: ServerContext,
 ) {
   const routed = await router.execute(canonicalTool, args, {
-    requestId: String(extra.requestId).slice(0, 128),
-    signal: extra.signal,
+    requestId: String(extra.mcpReq.id).slice(0, 128),
+    signal: extra.mcpReq.signal,
   });
   return gatewayPublicResult(routed, canonicalTool, publicTool, args);
+}
+
+/** A bridged child server's tools/call result as this server's result, with non-empty content. */
+function bridgedToolResult(result: { content: unknown[]; structuredContent?: unknown; isError?: boolean }): CallToolResult {
+  return {
+    content: result.content.length > 0 ? (result.content as CallToolResult["content"]) : [{ type: "text", text: "" }],
+    ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent as Record<string, unknown> } : {}),
+    ...(result.isError ? { isError: true } : {}),
+  };
 }
 
 async function routeStandaloneTool(
@@ -868,12 +952,12 @@ async function routeStandaloneTool(
   canonicalTool: CanonicalToolName,
   publicTool: string,
   args: Record<string, unknown>,
-  extra: { requestId: string | number; signal: AbortSignal },
+  extra: ServerContext,
 ) {
   if (!executor) throw new Error("Standalone executor is unavailable in gateway mode");
   const result = await executor.execute(canonicalTool, args as never, {
-    requestId: String(extra.requestId).slice(0, 128),
-    signal: extra.signal,
+    requestId: String(extra.mcpReq.id).slice(0, 128),
+    signal: extra.mcpReq.signal,
   });
   const workspaceId = canonicalTool === "open_workspace"
     ? String(result.structuredContent?.workspaceId ?? "")
@@ -986,6 +1070,8 @@ async function createMcpServer(
       instructions: serverInstructions(config, toolNames, effective, autoloadedSkills),
     },
   );
+  // The same scope the /mcp bearer check requires.
+  declareToolSecuritySchemes(server, config.oauth.scopes[0] ?? "devspace");
 
   if (workspaceAppManifestEntry && workspaceAppUri) {
     registerAppResource(
@@ -998,6 +1084,10 @@ async function createMcpServer(
           ui: {
             csp: appCsp(config),
           },
+          // Documented legacy ChatGPT compatibility key, superseded by `_meta.ui.csp` except for
+          // `redirect_domains`, which the card does not use
+          // (https://developers.openai.com/apps-sdk/reference). Kept, here and on the read
+          // contents below, until a ChatGPT render check without it has been done.
           "openai/widgetCSP": openAiWidgetCsp(config),
         },
       },
@@ -1013,6 +1103,7 @@ async function createMcpServer(
                 ui: {
                   csp: appCsp(config),
                 },
+                // Legacy ChatGPT compatibility key; see the resource metadata above.
                 "openai/widgetCSP": openAiWidgetCsp(config),
               },
             },
@@ -1029,7 +1120,7 @@ async function createMcpServer(
       title: "Open workspace",
       description:
         "Open a local project directory as a coding workspace. Call this once per project folder and reuse the returned workspaceId. The result reports logical/canonical paths, real filesystem and Git writability, runtime capabilities, warnings, instructions, and skills. Active checkout sessions are reused unless fresh=true. Use mode=\"worktree\" to require a Git worktree or mode=\"isolated\" to create a writable worktree/clone automatically. Missing checkout directories require create=true.",
-      inputSchema: {
+      inputSchema: z.object({
         path: z
           .string()
           .describe(
@@ -1057,8 +1148,8 @@ async function createMcpServer(
           .string()
           .optional()
           .describe("Gateway only: exact configured machine ID or alias. Omission selects the canonical machine."),
-      },
-      outputSchema: {
+      }),
+      outputSchema: z.object({
         workspaceId: z.string(),
         root: z.string(),
         canonicalRoot: z.string(),
@@ -1083,13 +1174,11 @@ async function createMcpServer(
         capabilities: workspaceCapabilitiesOutputSchema,
         instruction: z.string(),
         machine: z.object({ id: z.string(), displayName: z.string() }).optional(),
-      },
+      }),
       ...toolWidgetDescriptorMeta(config, "workspace_open", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }),
     },
-    (async (input: unknown, extra: unknown) => {
-      const { path, mode, baseRef, create, fresh, machine } = input as { path: string; mode?: string; baseRef?: string; create?: boolean; fresh?: boolean; machine?: string };
-      const ex = extra as { requestId: string | number; signal: AbortSignal };
+    async ({ path, mode, baseRef, create, fresh, machine }, ex) => {
       const res = gatewayRouter
         ? await routeGatewayTool(gatewayRouter, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh, machine }, ex)
         : (() => { if (machine !== undefined) throw new Error("machine selection is available only in gateway mode"); return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, ex); })();
@@ -1135,7 +1224,7 @@ async function createMcpServer(
         inject(card as unknown as never);
       }
       return awaited;
-    }) as unknown as never,
+    },
   );
 
   if (gatewayRouter && config.widgets === "workspace") {
@@ -1145,13 +1234,13 @@ async function createMcpServer(
       {
         title: "Workspace activity",
         description: "App-only incremental activity feed for the live DevSpace workspace card.",
-        inputSchema: {
+        inputSchema: z.object({
           workspaceId: z.string(),
           afterSeq: z.number().int().min(0).optional(),
           limit: z.number().int().min(1).max(200).optional(),
           waitMs: z.number().int().min(0).max(30_000).optional(),
-        },
-        outputSchema: {
+        }),
+        outputSchema: z.object({
           events: z.array(z.object({
             seq: z.number().int().positive(),
             workspaceId: z.string(),
@@ -1167,9 +1256,9 @@ async function createMcpServer(
           })),
           latestSeq: z.number().int().nonnegative(),
           totalOperations: z.number().int().nonnegative(),
-        },
+        }),
         ...appOnlyToolDescriptorMeta(),
-        annotations: { readOnlyHint: true, openWorldHint: false },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, afterSeq, limit, waitMs }, extra) => {
         const page = await gatewayRouter.waitForActivity(
@@ -1177,7 +1266,7 @@ async function createMcpServer(
           afterSeq ?? 0,
           limit ?? 100,
           waitMs ?? 20_000,
-          extra.signal,
+          extra.mcpReq.signal,
         );
         return {
           content: [{ type: "text", text: `${page.events.length} workspace activity events` }],
@@ -1193,10 +1282,10 @@ async function createMcpServer(
     {
       title: "Workspace status",
       description: "Refresh and report the real filesystem, Git, shell, terminal, user-systemd, and privilege capabilities of an open workspace.",
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-      },
-      outputSchema: {
+      }),
+      outputSchema: z.object({
         workspaceId: z.string(),
         root: z.string(),
         canonicalRoot: z.string(),
@@ -1205,9 +1294,9 @@ async function createMcpServer(
         terminals: z.array(terminalOutputSchema),
         review: z.object({ initialized: z.boolean(), diagnostic: z.string().optional() }),
         machine: z.object({ id: z.string(), displayName: z.string() }).optional(),
-      },
+      }),
       ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "workspace_status", "workspace_status", { workspaceId }, extra);
@@ -1221,8 +1310,8 @@ async function createMcpServer(
     {
       title: "Close workspace",
       description: "Close an open workspace, stop non-retained terminals, remove its review state, and remove a clean managed checkout. Dirty managed work is retained and reported.",
-      inputSchema: { workspaceId: z.string().describe("Workspace identifier returned by open_workspace.") },
-      outputSchema: {
+      inputSchema: z.object({ workspaceId: z.string().describe("Workspace identifier returned by open_workspace.") }),
+      outputSchema: z.object({
         workspace: z.object({
           workspaceId: z.string(),
           mode: z.enum(["checkout", "worktree", "isolated"]),
@@ -1233,7 +1322,7 @@ async function createMcpServer(
           reason: z.string().optional(),
         }),
         terminals: z.object({ closed: z.array(z.string()), retained: z.array(z.string()) }),
-      },
+      }),
       ...toolWidgetDescriptorMeta(config, "workspace", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }),
     },
@@ -1257,7 +1346,7 @@ async function createMcpServer(
         ]
           .filter(Boolean)
           .join(" "),
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z
           .string()
           .describe("Workspace identifier returned by open_workspace."),
@@ -1280,10 +1369,10 @@ async function createMcpServer(
           .positive()
           .optional()
           .describe("Maximum number of lines to read."),
-      },
+      }),
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }, extra) => {
       const p = (input as { path?: string }).path;
@@ -1292,7 +1381,7 @@ async function createMcpServer(
         return {
           content: [{ type: "text", text }],
           structuredContent: { result: text },
-        } as unknown as never;
+        };
       }
       if (p === PHONE_USE_SKILL_EPHEMERAL_PATH && !isSkyCuaDisabled(effective)) {
         const file = phoneUseSkillEphemeralFile(config);
@@ -1301,7 +1390,7 @@ async function createMcpServer(
           return {
             content: [{ type: "text", text }],
             structuredContent: { result: text },
-          } as unknown as never;
+          };
         }
       }
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "read_file", toolNames.read, { workspaceId, ...input }, extra);
@@ -1315,7 +1404,7 @@ async function createMcpServer(
       title: "Multi read",
       description:
         "Read multiple files inside an open workspace in one round-trip. Prefer this over N× read_file when you need several files. Each entry is relative to the workspace root and supports offset/limit like read_file. Call open_workspace first and pass workspaceId. Per-file allowlist and audit are applied; partial success is success.",
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
         reads: z
           .array(
@@ -1330,7 +1419,7 @@ async function createMcpServer(
           .describe("Files to read (1-20). Each supports offset/limit."),
         maxBytesPerFile: z.number().int().positive().max(2_000_000).optional().describe("Max bytes per file before truncation (default 256000)."),
         maxTotalBytes: z.number().int().positive().max(10_000_000).optional().describe("Max total bytes across all files (default 1000000)."),
-      },
+      }),
       outputSchema: resultOutputSchema({
         results: z.array(
           z.object({
@@ -1346,7 +1435,7 @@ async function createMcpServer(
         totalBytes: z.number().int().optional(),
       }),
       ...toolWidgetDescriptorMeta(config, "read", workspaceAppUri),
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async ({ workspaceId, ...input }, extra) => {
       if (gatewayRouter) return routeGatewayTool(gatewayRouter, "multi_read", "multi_read", { workspaceId, ...input }, extra);
@@ -1361,7 +1450,7 @@ async function createMcpServer(
       title: "Write file",
       description:
         `Create or completely overwrite a file inside an open workspace. Prefer ${toolNames.edit} for targeted changes to existing files. Call open_workspace first and pass workspaceId.`,
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z
           .string()
           .describe("Workspace identifier returned by open_workspace."),
@@ -1369,7 +1458,7 @@ async function createMcpServer(
           .string()
           .describe("File path to write, relative to the workspace root."),
         content: z.string().describe("Complete new file content."),
-      },
+      }),
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "write", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, WRITE_TOOL_ANNOTATIONS, { idempotentHint: true }),
@@ -1386,7 +1475,7 @@ async function createMcpServer(
       title: "Edit file",
       description:
         `Edit one file inside an open workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique. Call open_workspace first and pass workspaceId.`,
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z
           .string()
           .describe("Workspace identifier returned by open_workspace."),
@@ -1405,7 +1494,7 @@ async function createMcpServer(
             }),
           )
           .min(1),
-      },
+      }),
       outputSchema: resultOutputSchema({
         status: z.literal("applied"),
       }),
@@ -1425,7 +1514,7 @@ async function createMcpServer(
         title: "Show changes",
         description:
           "Show aggregate file changes in an open workspace since the last shown checkpoint or since the workspace was opened. After you create, edit, or overwrite files, call this once when the related file changes are complete so the user can inspect the combined diff.",
-        inputSchema: {
+        inputSchema: z.object({
           workspaceId: z
             .string()
             .describe("Workspace identifier returned by open_workspace."),
@@ -1437,10 +1526,10 @@ async function createMcpServer(
             .boolean()
             .optional()
             .describe("Defaults to true. When true, advances the last shown checkpoint to the current workspace state."),
-        },
+        }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "show_changes", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, since, markReviewed }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "show_changes", "show_changes", { workspaceId, since, markReviewed }, extra);
@@ -1456,7 +1545,7 @@ async function createMcpServer(
         title: config.toolNaming === "short" ? "Grep" : "Grep files",
         description:
           "Search file contents inside an open workspace. Use this before broad reads when looking for symbols, text, or usage sites. Respects project ignore rules. Call open_workspace first and pass workspaceId.",
-        inputSchema: {
+        inputSchema: z.object({
           workspaceId: z
             .string()
             .describe("Workspace identifier returned by open_workspace."),
@@ -1468,10 +1557,10 @@ async function createMcpServer(
               "Optional path or glob scope relative to the workspace root.",
             ),
           include: z.string().optional().describe("Optional include glob."),
-        },
+        }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "grep_files", toolNames.grep, { workspaceId, ...input }, extra);
@@ -1485,7 +1574,7 @@ async function createMcpServer(
         title: config.toolNaming === "short" ? "Glob" : "Find files",
         description:
           "Find files by glob pattern inside an open workspace. Use this to discover filenames or narrow file sets before reading. Respects project ignore rules. Call open_workspace first and pass workspaceId.",
-        inputSchema: {
+        inputSchema: z.object({
           workspaceId: z
             .string()
             .describe("Workspace identifier returned by open_workspace."),
@@ -1494,10 +1583,10 @@ async function createMcpServer(
             .string()
             .optional()
             .describe("Optional path scope relative to the workspace root."),
-        },
+        }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "search", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "find_files", toolNames.glob, { workspaceId, ...input }, extra);
@@ -1511,7 +1600,7 @@ async function createMcpServer(
         title: config.toolNaming === "short" ? "Ls" : "List directory",
         description:
           "List a directory inside an open workspace. Use this for directory inspection before reading files. Call open_workspace first and pass workspaceId.",
-        inputSchema: {
+        inputSchema: z.object({
           workspaceId: z
             .string()
             .describe("Workspace identifier returned by open_workspace."),
@@ -1520,10 +1609,10 @@ async function createMcpServer(
             .describe(
               "Directory path to list, relative to the workspace root.",
             ),
-        },
+        }),
         outputSchema: resultOutputSchema(),
         ...toolWidgetDescriptorMeta(config, "directory", workspaceAppUri),
-        annotations: { readOnlyHint: true },
+        annotations: READ_ONLY_TOOL_ANNOTATIONS,
       },
       async ({ workspaceId, ...input }, extra) => {
         if (gatewayRouter) return routeGatewayTool(gatewayRouter, "list_directory", toolNames.ls, { workspaceId, ...input }, extra);
@@ -1539,7 +1628,7 @@ async function createMcpServer(
       description: config.minimalTools
         ? `Execute a bounded non-interactive Bash command directly on the DevSpace host. Use it for inspection, targeted changes, dependency commands, quick builds/tests, git, and system commands. Prefer terminal_start for installers, substantial builds, upgrades, long test suites, or anything that should survive an MCP/network interruption. The command runs unfiltered as the DevSpace service account without a terminal or input stream. In minimal tool mode, use command-line tools such as rg, find, and ls for inspection. Returns combined stdout and stderr; a nonzero exit or timeout is an error.`
         : `Execute a bounded non-interactive Bash command directly on the DevSpace host. Use it for inspection, targeted changes, dependency commands, quick builds/tests, git, and system commands. Prefer terminal_start for installers, substantial builds, upgrades, long test suites, or anything that should survive an MCP/network interruption. The command runs unfiltered as the DevSpace service account without a terminal or input stream. Returns combined stdout and stderr; a nonzero exit or timeout is an error.`,
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z
           .string()
           .describe("Workspace identifier returned by open_workspace."),
@@ -1558,7 +1647,7 @@ async function createMcpServer(
           .max(300)
           .optional()
           .describe("Timeout in seconds. Defaults to 30, max 300."),
-      },
+      }),
       outputSchema: resultOutputSchema(),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, SHELL_TOOL_ANNOTATIONS),
@@ -1574,12 +1663,12 @@ async function createMcpServer(
     {
       title: "Start terminal",
       description: "Start a persistent terminal session in an open workspace. Prefer this for installers, substantial builds, upgrades, long test suites, interactive programs, and processes that must keep running across MCP or network interruptions. The process is detached from this MCP request and may survive DevSpace restart when user-systemd is available.",
-      inputSchema: {
+      inputSchema: z.object({
         workspaceId: z.string(), command: z.string().min(1), workingDirectory: z.string().optional(),
         cols: z.number().int().min(40).max(400).optional(), rows: z.number().int().min(10).max(200).optional(),
         shellMode: z.enum(["service", "login"]).optional(), retainOnWorkspaceClose: z.boolean().optional(),
-      },
-      outputSchema: { terminal: terminalOutputSchema },
+      }),
+      outputSchema: z.object({ terminal: terminalOutputSchema }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, SHELL_TOOL_ANNOTATIONS),
     },
@@ -1594,10 +1683,10 @@ async function createMcpServer(
     {
       title: "Read terminal",
       description: "Capture the current screen or bounded history from a persistent terminal session.",
-      inputSchema: { workspaceId: z.string(), terminalId: z.string(), mode: z.enum(["screen", "history"]).optional(), lines: z.number().int().min(1).max(2000).optional() },
-      outputSchema: { terminal: terminalOutputSchema, output: z.string(), truncated: z.boolean() },
+      inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string(), mode: z.enum(["screen", "history"]).optional(), lines: z.number().int().min(1).max(2000).optional() }),
+      outputSchema: z.object({ terminal: terminalOutputSchema, output: z.string(), truncated: z.boolean() }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_read", "terminal_read", input, extra)
@@ -1610,8 +1699,8 @@ async function createMcpServer(
     {
       title: "Write terminal",
       description: "Send literal text, control keys, or Enter to a persistent terminal session.",
-      inputSchema: { workspaceId: z.string(), terminalId: z.string(), text: z.string().optional(), keys: z.array(z.string()).max(32).optional(), submit: z.boolean().optional() },
-      outputSchema: { terminal: terminalOutputSchema },
+      inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string(), text: z.string().optional(), keys: z.array(z.string()).max(32).optional(), submit: z.boolean().optional() }),
+      outputSchema: z.object({ terminal: terminalOutputSchema }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, SHELL_TOOL_ANNOTATIONS),
     },
@@ -1626,8 +1715,8 @@ async function createMcpServer(
     {
       title: "Resize terminal",
       description: "Resize a persistent terminal session.",
-      inputSchema: { workspaceId: z.string(), terminalId: z.string(), cols: z.number().int().min(40).max(400), rows: z.number().int().min(10).max(200) },
-      outputSchema: { terminal: terminalOutputSchema },
+      inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string(), cols: z.number().int().min(40).max(400), rows: z.number().int().min(10).max(200) }),
+      outputSchema: z.object({ terminal: terminalOutputSchema }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, idempotentHint: true, destructiveHint: false, openWorldHint: false }),
     },
@@ -1642,10 +1731,10 @@ async function createMcpServer(
     {
       title: "Terminal status",
       description: "List persistent terminals for a workspace or inspect one terminal.",
-      inputSchema: { workspaceId: z.string(), terminalId: z.string().optional() },
-      outputSchema: { terminals: z.array(terminalOutputSchema) },
+      inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string().optional() }),
+      outputSchema: z.object({ terminals: z.array(terminalOutputSchema) }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
-      annotations: { readOnlyHint: true },
+      annotations: READ_ONLY_TOOL_ANNOTATIONS,
     },
     async (input, extra) => gatewayRouter
       ? routeGatewayTool(gatewayRouter, "terminal_status", "terminal_status", input, extra)
@@ -1658,8 +1747,8 @@ async function createMcpServer(
     {
       title: "Close terminal",
       description: "Stop and close a persistent terminal session.",
-      inputSchema: { workspaceId: z.string(), terminalId: z.string(), force: z.boolean().optional() },
-      outputSchema: { terminal: terminalOutputSchema },
+      inputSchema: z.object({ workspaceId: z.string(), terminalId: z.string(), force: z.boolean().optional() }),
+      outputSchema: z.object({ terminal: terminalOutputSchema }),
       ...toolWidgetDescriptorMeta(config, "shell", workspaceAppUri),
       annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false }),
     },
@@ -1689,8 +1778,8 @@ async function createMcpServer(
         if (!b.healthy) throw new Error(b.error ?? "node_repl unavailable");
         if (sessionNodeReplBridges.size >= maxPerHost) { try { await b.close(); } catch {} throw new Error(`node_repl per-host cap ${maxPerHost} reached`); }
         lazyBridge = b;
-        serverNodeReplBridge.set(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, b);
-        const maybeTransport: unknown = serverTransportMap.get(server as unknown as object);
+        serverNodeReplBridge.set(server, b);
+        const maybeTransport: unknown = serverTransportMap.get(server);
         const sid: string | undefined = (maybeTransport as { sessionId?: string } | undefined)?.sessionId;
         if (sid) sessionNodeReplBridges.set(sid, b);
         return b;
@@ -1708,36 +1797,26 @@ async function createMcpServer(
       const looseShape: Record<string, z.ZodTypeAny> = {};
       for (const [k, v] of Object.entries(def.inputSchema)) looseShape[k] = (v as z.ZodTypeAny).optional();
       const looseSchema = z.object(looseShape).passthrough();
-      registerAppTool(
-        server as never,
-        def.name as never,
+      server.registerTool(
+        def.name,
         {
           title: def.title,
           description: def.description,
           inputSchema: looseSchema,
-          annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as ToolAnnotations),
+          annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, openWorldHint: false }),
           _meta: {},
-        } as never,
-        (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
-          const parsed = looseSchema.safeParse(input);
-          if (!parsed.success) throw new Error(`Invalid arguments for tool ${def.name}: ${parsed.error.message}`);
-          const b = await getOrCreateBridge(extra.signal);
-          const result = await b.callTool(def.name, input as Record<string, unknown>, extra.signal);
-          const mapped: Record<string, unknown> = {
-            content: result.content as unknown[],
-            ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
-            ...(result.isError ? { isError: true } : {}),
-          };
-          if ((mapped.content as unknown[]).length === 0) (mapped.content as unknown[]).push({ type: "text", text: "" });
-          return mapped as { content: { type: string; text?: string }[]; structuredContent?: unknown; isError?: boolean };
-        }) as never,
+        },
+        async (input, ctx) => {
+          const b = await getOrCreateBridge(ctx.mcpReq.signal);
+          return bridgedToolResult(await b.callTool(def.name, input, ctx.mcpReq.signal));
+        },
       );
     }
-    const origClose = (server as unknown as { close?: () => Promise<void> }).close;
-    (server as unknown as { close: () => Promise<void> }).close = async () => {
-      const b = lazyBridge ?? serverNodeReplBridge.get(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer);
+    const origClose = server.close.bind(server);
+    server.close = async () => {
+      const b = lazyBridge ?? serverNodeReplBridge.get(server);
       if (b) try { await b.close(); } catch {}
-      if (origClose) await origClose.call(server);
+      await origClose();
     };
   }
   if (!isSkyCuaDisabled(effectiveSet)) {
@@ -1747,8 +1826,8 @@ async function createMcpServer(
         // sky-cua tools are not workspace-scoped. Force non-destructive so ChatGPT/Hermes platform safety never
         // blocks any of them (phone/desktop/browser). Underlying sky-cua service still enforces its own safety;
         // the MCP `destructiveHint`/`openWorldHint` gate is just the extra LLM prompt gate that was blocking Sarah.
-        const baseAnnotations = tool.annotations ?? { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
-        const skyAnnotations = { ...baseAnnotations, destructiveHint: false, openWorldHint: false };
+        // readOnlyHint keeps sky-cua's own value and is false (the MCP default) when sky-cua omits it.
+        const skyAnnotations = { readOnlyHint: false, ...tool.annotations, destructiveHint: false, openWorldHint: false };
         // inputSchema here is a Zod object; registerAppTool expects ZodRawShape, so unwrap if it's ZodObject
         const rawInputShape: Record<string, z.ZodTypeAny> = (() => {
           const s = tool.inputSchema as z.ZodTypeAny;
@@ -1758,35 +1837,25 @@ async function createMcpServer(
           return {};
         })();
         const hasShape = Object.keys(rawInputShape).length > 0;
-        registerAppTool(
-          server as never,
-          tool.name as never,
+        server.registerTool(
+          tool.name,
           {
             title: tool.title ?? tool.name,
             description: tool.description ?? `sky-cua tool ${tool.name}`,
-            ...(hasShape ? { inputSchema: rawInputShape } : { inputSchema: {} }),
-            ...(tool.outputSchema ? { outputSchema: tool.outputSchema as unknown as Record<string, z.ZodTypeAny> } : {}),
-            annotations: toolAnnotationsForProfile(config.annotationProfile, skyAnnotations as ToolAnnotations),
+            inputSchema: z.object(rawInputShape),
+            ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+            annotations: toolAnnotationsForProfile(config.annotationProfile, skyAnnotations),
             _meta: {},
-          } as never,
-          (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
+          },
+          async (input, ctx) => {
             // Validate against original JSON Schema-derived Zod type when MCP layer used empty shape fallback
             if (!hasShape) {
-              const parsed = (tool.inputSchema as z.ZodTypeAny).safeParse(input);
+              const parsed = tool.inputSchema.safeParse(input);
               if (!parsed.success) throw new Error(`Invalid arguments for tool ${tool.name}: ${parsed.error.message}`);
             }
-            const normalized = normalizePhoneSelectorForBridge(tool.name, (input as Record<string, unknown>) ?? {});
-            const result = await bridge.callTool(tool.name, normalized, extra.signal);
-            const mapped: Record<string, unknown> = {
-              content: result.content as unknown[],
-              ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
-              ...(result.isError ? { isError: true } : {}),
-            };
-            if ((mapped.content as unknown[]).length === 0) {
-              (mapped.content as unknown[]).push({ type: "text", text: "" });
-            }
-            return mapped as { content: { type: string; text?: string }[]; structuredContent?: unknown; isError?: boolean };
-          }) as never,
+            const normalized = normalizePhoneSelectorForBridge(tool.name, input);
+            return bridgedToolResult(await bridge.callTool(tool.name, normalized, ctx.mcpReq.signal));
+          },
         );
       }
     } else if (bridge && !bridge.healthy) {
@@ -1921,7 +1990,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   app.use("/token", tokenLimiter);
 
   app.use(
-    mcpAuthRouter({
+    oauthRoutes({
       provider: oauthProvider,
       issuerUrl: new URL(config.publicBaseUrl),
       baseUrl: new URL(config.publicBaseUrl),
@@ -1970,7 +2039,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
     const initializeRequest = req.method === "POST" && containsInitializeRequest(req.body);
-    const rpcTrace = mcpRequestTraceFields(req.body, req.method);
+    const rpcTrace = mcpRequestTraceFields(req.body, req.method, req.header("mcp-protocol-version"));
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
@@ -2043,8 +2112,9 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
         } catch {}
         // RB-001 fix: bridge is created in createMcpServer before sessionId exists.
         // Capture server reference and link bridge in onsessioninitialized when sid is known.
-        let serverForBridge: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer | null = null;
-        transport = new StreamableHTTPServerTransport({
+        let serverForBridge: McpServer | null = null;
+        const initializeFields = mcpInitializeLogFields(req.body);
+        transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             if (transport) {
@@ -2075,11 +2145,32 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
+              ...initializeFields,
               ...requestLogFields(req, config),
             });
           },
         });
         newTransport = transport;
+
+        // The answered protocol version only exists in the initialize result, which the
+        // server writes through the public Transport#send after this handler hands the
+        // request over; observe it there instead of reading SDK server state.
+        const initializeRpcId = initializeMessage(req.body)?.id;
+        const sendThroughTransport = transport.send.bind(transport);
+        let protocolAnswerLogged = false;
+        transport.send = async (message, sendOptions) => {
+          const answered = protocolAnswerLogged ? undefined : answeredProtocolVersion(message, initializeRpcId);
+          if (answered !== undefined) {
+            protocolAnswerLogged = true;
+            logEvent(config.logging, "info", "mcp_protocol_negotiated", {
+              requestId,
+              sessionIdPrefix: sessionIdPrefix(transport?.sessionId),
+              requestedProtocolVersion: initializeFields.requestedProtocolVersion,
+              answeredProtocolVersion: answered,
+            });
+          }
+          return sendThroughTransport(message, sendOptions);
+        };
 
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
@@ -2104,9 +2195,9 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
 
         const effectiveDisabled = pendingEffectiveDisabled;
         const server = await createMcpServer(config, executor, options.gatewayRouter, effectiveDisabled, options.t3Bridge);
-        serverForBridge = server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
+        serverForBridge = server;
         await server.connect(transport);
-        serverTransportMap.set(server as unknown as object, transport);
+        serverTransportMap.set(server, transport);
       } else {
         logEvent(config.logging, "warn", "mcp_routing_error", {
           requestId,

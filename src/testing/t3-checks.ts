@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/client";
 import { createT3CliRunner, T3_TOOL_NAMES, T3_UNREACHABLE_MESSAGE } from "../t3-bridge.js";
 import type { FakeT3 } from "./fake-t3.js";
 

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef } from "react";
-import { createRoot } from "react-dom/client";
+// Code and diff renderer for read, write and edit cards. Loaded lazily (React.lazy) so that
+// @pierre/diffs and Shiki stay out of the initial bundle.
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FileStream, getFiletypeFromFileName } from "@pierre/diffs";
 import type { FileStreamOptions } from "@pierre/diffs";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -9,58 +11,30 @@ import {
   isWriteTool,
   payloadText,
   summaryNumber,
-  type HostContext,
   type ToolResultCard,
 } from "./card-types.js";
+import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
+import { PlainFallback, StatusLine, type ThemeType } from "./payload-fallback.js";
+import { PREFERRED_HIGHLIGHTER, renderFailureMessage } from "./render-fallback.js";
 
-type ThemeType = "light" | "dark";
-
-interface PayloadRendererOptions {
-  card: ToolResultCard;
-  hostContext?: HostContext;
-  errorMessage?: string | null;
-}
-
-interface MountedPayload {
-  update(options: PayloadRendererOptions): void;
-  unmount(): void;
-}
-
-export function mountHeavyPayload(
-  container: HTMLElement,
-  options: PayloadRendererOptions,
-): MountedPayload {
-  const root = createRoot(container);
-  root.render(<HeavyPayload {...options} />);
-
-  return {
-    update(nextOptions) {
-      root.render(<HeavyPayload {...nextOptions} />);
-    },
-    unmount() {
-      root.unmount();
-    },
-  };
-}
-
-export type { MountedPayload, PayloadRendererOptions };
-
-function HeavyPayload({
+export default function HeavyPayload({
   card,
-  hostContext,
-  errorMessage = null,
-}: PayloadRendererOptions) {
-  const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
-
-  if (errorMessage) {
-    return <StatusLine message={errorMessage} tone="error" />;
-  }
-
+  themeType,
+}: {
+  card: ToolResultCard;
+  themeType: ThemeType;
+}) {
   if (isEditTool(card.tool) || isWriteTool(card.tool)) {
     const patch = card.payload?.patch || card.payload?.diff;
-    if (!patch) return <StatusLine message="Diff payload is not available." />;
+    if (!patch) {
+      // write_file results carry no diff; show the result message instead.
+      const message = payloadText(card.payload);
+      return message
+        ? <pre className={`text-payload ${card.tool}`}>{message}</pre>
+        : <StatusLine message="Diff payload is not available." />;
+    }
 
-    return <DiffPayload patch={patch} themeType={themeType} />;
+    return <DiffPayload patch={patch} path={card.path} tool={card.tool} themeType={themeType} />;
   }
 
   const text = payloadText(card.payload);
@@ -92,14 +66,13 @@ function FilePayload({
   themeType: ThemeType;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const fileOptions: FileStreamOptions = useMemo(
     () => ({
-      theme: {
-        light: "pierre-light",
-        dark: "pierre-dark",
-      },
+      theme: CODE_THEMES,
       themeType,
       overflow: "scroll",
+      preferredHighlighter: PREFERRED_HIGHLIGHTER,
     }),
     [themeType],
   );
@@ -107,6 +80,7 @@ function FilePayload({
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
+    setFailure(null);
 
     const fileStream = new FileStream({
       ...fileOptions,
@@ -120,39 +94,54 @@ function FilePayload({
       },
     });
     let disposed = false;
+    // Each run renders into its own element, so a run that settles after a newer one started
+    // (the theme changed while the highlighter loaded) removes only its own output.
+    const target = wrapper.appendChild(document.createElement("div"));
 
-    void fileStream.setup(source, wrapper).then(() => {
-      if (!disposed) return;
-      fileStream.cleanUp();
-      wrapper.replaceChildren();
-    });
+    fileStream.setup(source, target).then(
+      () => {
+        if (disposed) fileStream.cleanUp();
+      },
+      (error: unknown) => {
+        if (disposed) return;
+        fileStream.cleanUp();
+        target.remove();
+        setFailure(renderFailureMessage(error));
+      },
+    );
 
     return () => {
       disposed = true;
       fileStream.cleanUp();
-      wrapper.replaceChildren();
+      target.remove();
     };
   }, [fileOptions, path, startLine, text]);
 
+  if (failure) return <PlainFallback message={failure} text={text} tool="read_file" />;
   return <div ref={wrapperRef} className="pierre-file" />;
 }
 
 function DiffPayload({
   patch,
+  path,
+  tool,
   themeType,
 }: {
   patch: string;
+  path: string | undefined;
+  tool: string;
   themeType: ThemeType;
 }) {
+  const failure = useHighlighterFailure(path ? getFiletypeFromFileName(path) : undefined);
+  if (failure) return <PlainFallback message={failure} text={patch} tool={tool} />;
+
   return (
     <PatchDiff
       patch={patch}
       options={{
-        theme: {
-          light: "pierre-light",
-          dark: "pierre-dark",
-        },
+        theme: CODE_THEMES,
         themeType,
+        preferredHighlighter: PREFERRED_HIGHLIGHTER,
         diffStyle: "unified",
         diffIndicators: "bars",
         hunkSeparators: "line-info",
@@ -166,14 +155,4 @@ function DiffPayload({
       className="pierre-diff"
     />
   );
-}
-
-function StatusLine({
-  message,
-  tone = "muted",
-}: {
-  message: string;
-  tone?: "muted" | "error";
-}) {
-  return <div className={`status ${tone}`}>{message}</div>;
 }

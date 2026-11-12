@@ -16,16 +16,9 @@ import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  isInitializeRequest,
-  type CallToolResult,
-  type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { Server, isInitializeRequest, ProtocolErrorCode } from "@modelcontextprotocol/server";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/server";
 
 export interface FakeT3Options {
   /** Milliseconds per second of a scripted `time.sleep(n)` turn. Default 20. */
@@ -228,7 +221,7 @@ interface AuthSession {
 }
 
 interface McpSessionEntry {
-  transport: StreamableHTTPServerTransport;
+  transport: NodeStreamableHTTPServerTransport;
   server: Server;
   authSessionId: string;
 }
@@ -477,7 +470,7 @@ function validateArguments(tool: SnapshotTool, args: JsonObject): string | undef
 }
 
 function invalidParams(tool: string, problem: string): Error {
-  return rpcError(ErrorCode.InvalidParams, `Invalid parameters for tool '${tool}': ${problem}`);
+  return rpcError(ProtocolErrorCode.InvalidParams, `Invalid parameters for tool '${tool}': ${problem}`);
 }
 
 /**
@@ -652,6 +645,8 @@ export class FakeT3 {
    */
   readonly home: string;
   readonly calls: Array<{ tool: string; args: Record<string, unknown>; label: string }> = [];
+  /** Tools whose in-flight call was cancelled by the client (its request signal aborted while running). */
+  readonly cancelledCalls: string[] = [];
   readonly cliInvocations: Array<{ args: string[]; envNames: string[] }> = [];
 
   private readonly port: number;
@@ -1187,7 +1182,7 @@ export class FakeT3 {
     }
 
     if (req.method === "POST" && (Array.isArray(body) ? body.some(isInitializeRequest) : isInitializeRequest(body))) {
-      const transport = new StreamableHTTPServerTransport({
+      const transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         enableJsonResponse: true,
         onsessioninitialized: (newSessionId) => {
@@ -1331,29 +1326,35 @@ export class FakeT3 {
 
   private createMcpServer(): Server {
     const server = new Server(SERVER_INFO, { capabilities: { tools: {} } });
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.toolsList as unknown as Tool[] }));
-    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    server.setRequestHandler('tools/list', async () => ({ tools: this.toolsList as unknown as Tool[] }));
+    server.setRequestHandler('tools/call', async (request, ctx) => {
       const name = request.params.name;
       const args: JsonObject = isRecord(request.params.arguments) ? request.params.arguments : {};
-      const entry = extra.sessionId ? this.mcpSessions.get(extra.sessionId) : undefined;
+      const entry = ctx.sessionId ? this.mcpSessions.get(ctx.sessionId) : undefined;
       const session = entry ? this.sessions.get(entry.authSessionId) : undefined;
       this.calls.push({ tool: name, args: structuredClone(args), label: session?.label ?? "" });
 
       const tool = this.toolsByName.get(name);
-      if (!tool) throw rpcError(ErrorCode.InvalidParams, `Tool ${name} not found`);
+      if (!tool) throw rpcError(ProtocolErrorCode.InvalidParams, `Tool ${name} not found`);
       const problem = validateArguments(tool, args);
-      if (problem) throw rpcError(ErrorCode.InvalidParams, `Invalid parameters for tool '${name}': ${problem}`);
+      if (problem) throw rpcError(ProtocolErrorCode.InvalidParams, `Invalid parameters for tool '${name}': ${problem}`);
 
       let result: CallToolResult;
+      const onCancelled = (): void => {
+        this.cancelledCalls.push(name);
+      };
+      ctx.mcpReq.signal.addEventListener("abort", onCancelled, { once: true });
       try {
-        result = ok(await this.callTool(name, args, { clientId: session?.clientId ?? "unknown", signal: extra.signal }));
+        result = ok(await this.callTool(name, args, { clientId: session?.clientId ?? "unknown", signal: ctx.mcpReq.signal }));
       } catch (error) {
         if (!(error instanceof ToolFailure)) throw error;
         result = failure(error.code, error.message);
+      } finally {
+        ctx.mcpReq.signal.removeEventListener("abort", onCancelled);
       }
 
       const pendingDrops = this.drops.get(name) ?? 0;
-      const socket = this.requestSockets.get(`${extra.sessionId}:${String(extra.requestId)}`);
+      const socket = this.requestSockets.get(`${ctx.sessionId}:${String(ctx.mcpReq.id)}`);
       if (pendingDrops > 0 && socket) {
         this.drops.set(name, pendingDrops - 1);
         socket.destroy();

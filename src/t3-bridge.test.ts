@@ -9,10 +9,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { InMemoryTransport, McpServer } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/server";
+import { Client } from "@modelcontextprotocol/client";
 import type { AnnotationProfile, ServerConfig, T3BridgeConfig } from "./config.js";
 import type { LoggingConfig } from "./logger.js";
 import { normalizeRootPolicies } from "./roots.js";
@@ -769,6 +768,44 @@ try {
   originDead = false;
   await ok(classifyCall, "t3_thread_read", { threadId: classified.threadId });
   progress("ok - failure classification after a sent request uses a cheap reachability probe");
+
+  // A JSON-RPC error answered by T3 (a ProtocolError in SDK v2) means the session is healthy and
+  // the call did not run: it is reported as such, never retried (even for a read), and mints nothing.
+  tokenCalls = tokenCounter.getToken;
+  const rpcMark = extraFake.calls.length;
+  assert.match(
+    await fails(classifyCall, "t3_project_list", { limit: "five" }),
+    /^T3 Code could not run t3_project_list: .*Invalid parameters for tool 't3_project_list'/,
+  );
+  assert.equal(forwarded(extraFake, "t3_project_list", rpcMark).length, 1, "a JSON-RPC error is not retried");
+  assert.equal(tokenCounter.getToken - tokenCalls, 1, "a JSON-RPC error keeps the connection and mints nothing");
+  progress("ok - failure classification: a JSON-RPC error from T3 is reported, not retried");
+
+  // A stale MCP session answers HTTP 404 (an SdkHttpError with status 404 in SDK v2): the bridge
+  // reconnects and sends the call once, even a write that is not otherwise retried after sending.
+  await ok(classifyCall, "t3_project_list");
+  await extraFake.restart();
+  const staleRetries = (): number =>
+    consoleCapture.lines.filter((line) => line.includes('"event":"t3_bridge_retry"') && line.includes('"reason":"stale_session"')).length;
+  const staleBefore = staleRetries();
+  const writeMark = extraFake.calls.length;
+  await ok(classifyCall, "t3_thread_organize", { threadId: classified.threadId, action: "pin" });
+  assert.equal(forwarded(extraFake, "t3_thread_organize", writeMark).length, 1, "the write ran exactly once after the restart");
+  assert.equal(staleRetries() - staleBefore, 1, "the 404 was classified as a stale session");
+  progress("ok - failure classification: HTTP 404 reconnects a stale session once");
+
+  // A request timeout (an SdkError, not a ProtocolError, in SDK v2) is a sent request that may have
+  // run: a read is retried once, then reported as a connection failure.
+  const waiting = extraFake.addThread({ title: "Timed out wait", status: "running" });
+  const timeoutCall = callerFor(newBridge(extraFake, "devspace-t3-bridge:unit-timeout", { callTimeoutMs: 300 }));
+  await ok(timeoutCall, "t3_project_list");
+  const timeoutMark = extraFake.calls.length;
+  assert.equal(
+    await fails(timeoutCall, "t3_thread_wait", { threadId: waiting.threadId, timeoutMs: 5_000 }),
+    "T3 Code connection failed during t3_thread_wait; it may or may not have run.",
+  );
+  assert.equal(forwarded(extraFake, "t3_thread_wait", timeoutMark).length, 2, "a timed-out read is retried once");
+  progress("ok - failure classification: a request timeout is a sent failure, retried once for a read");
 
   // -----------------------------------------------------------------------------------------
   // B23 and B24 across everything above

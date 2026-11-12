@@ -103,6 +103,10 @@ MCP clients discover metadata from:
 /.well-known/oauth-authorization-server
 ```
 
+The authorization server does not implement RFC 9207: its metadata has no `authorization_response_iss_parameter_supported` field, and authorization redirects carry no `iss` parameter.
+
+The authorization-server endpoints are DevSpace's own code in `src/oauth/`; the discovery documents and `/mcp` bearer authentication use the maintained `@modelcontextprotocol/express` package. See [Security](security.md#oauth-and-network-exposure).
+
 ## Tool Modes
 
 `DEVSPACE_TOOL_NAMING` controls tool names.
@@ -129,6 +133,24 @@ MCP clients discover metadata from:
 | `trusted-owner` | Intended for a private owner-operated engineering endpoint. Keeps `readOnlyHint` truthful, advertises mutating tools as non-destructive and closed-world, and marks deterministic file write/edit operations idempotent. |
 
 The trusted-owner profile is an operator UX choice for MCP hosts that apply extra confirmation or classification to risky annotations. Do not use it as a security boundary.
+
+Under both profiles every tool, including the bridged `node_repl`, sky-cua, and T3 tools, states `readOnlyHint`, `destructiveHint`, and `openWorldHint` explicitly. Read-only workspace tools are read-only, non-destructive, and closed-world. Independently of the profile, `node_repl` tools advertise non-destructive and closed-world, and sky-cua tools keep sky-cua's `readOnlyHint` (false when sky-cua omits it) but always advertise `destructiveHint: false` and `openWorldHint: false`.
+
+## Tool and resource metadata
+
+What `tools/list` and the card resource carry for ChatGPT, Claude, and other MCP Apps hosts:
+
+| Where | Key | Value |
+| --- | --- | --- |
+| Every tool | `_meta.securitySchemes` | `[{ "type": "oauth2", "scopes": ["<first DEVSPACE_OAUTH_SCOPES entry>"] }]`, the scope the `/mcp` bearer check requires. A declaration only; the `/mcp` bearer check is the enforcement. The MCP SDK lists no top-level `securitySchemes`, so only OpenAI's documented `_meta` mirror is emitted. |
+| Tools with a card (see Widgets) | `_meta.ui.resourceUri` | The content-hashed `ui://devspace/workspace-app-<hash>.html` card. MCP Apps standard key. |
+| | `_meta.ui.visibility` | `["model"]`; the app-only `workspace_activity` tool has `["app"]` and no card. |
+| | `_meta["openai/outputTemplate"]` | Same URI. ChatGPT compatibility alias. |
+| | `_meta["ui/resourceUri"]` | Same URI. Deprecated flat key that ext-apps' `registerAppTool` adds for older hosts. |
+| Card resource and its `resources/read` contents | `_meta.ui.csp` | `resourceDomains` and `connectDomains` set to `DEVSPACE_PUBLIC_BASE_URL`. |
+| | `_meta["openai/widgetCSP"]` | The same domains as `resource_domains` and `connect_domains`. Legacy ChatGPT compatibility key. |
+
+The two `openai/*` keys are documented by OpenAI as optional compatibility aliases. They stay until a ChatGPT session has been checked to render the card without them.
 
 ## Widgets
 
