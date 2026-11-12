@@ -114,6 +114,8 @@ After a deploy that adds, removes or renames tools, or changes their description
 
 A deploy that only changes the widget needs no refresh. The cached tool list still names the previous build's card address (the address carries a content hash), and the server answers any address of the card with the current bundle. Before that was added, the card showed "Couldn't open Open workspace" after a deploy until the connector was refreshed.
 
+One limit remains. A release serves only its own widget assets. A card that was already open in a browser tab when the deploy happened keeps the scripts it had loaded, but anything it loads afterwards (the code and diff renderers, which load when a card is expanded) is requested under the previous build's file names and is not found. The card then shows the content as plain text with an error line; reopening the conversation loads the current build.
+
 A failed health check rolls back automatically. To return to the previous release by hand, activate it:
 
 ```bash
