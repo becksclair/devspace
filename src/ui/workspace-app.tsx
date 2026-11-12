@@ -4,7 +4,7 @@ import {
   applyHostFonts,
   applyHostStyleVariables,
 } from "@modelcontextprotocol/ext-apps";
-import type { CallToolResult } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/client";
 import {
   isEditTool,
   isExpandableCard,
