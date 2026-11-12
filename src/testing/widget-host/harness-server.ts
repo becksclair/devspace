@@ -92,12 +92,15 @@ async function closeHttp(server: HttpServer): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-/** Rejects requests whose Host header is not this loopback origin (DNS rebinding guard). */
+/**
+ * Rejects requests whose Host header is not this loopback origin (DNS rebinding guard). Only the
+ * 127.0.0.1 origin is accepted, matching the `/api` Origin check; a page opened as `localhost`
+ * would load and then have every API call refused.
+ */
 function hostGuard(origin: string): express.RequestHandler {
   const expected = new URL(origin).host;
-  const alternate = `localhost:${new URL(origin).port}`;
   return (req, res, next) => {
-    if (req.headers.host === expected || req.headers.host === alternate) return next();
+    if (req.headers.host === expected) return next();
     res.status(403).json({ error: "unexpected Host header" });
   };
 }

@@ -1,8 +1,9 @@
 // Launcher for the developer widget host: `bun run widget:host [flags]`.
 //
 // Starts a real DevSpace server with a throwaway seeded workspace, the host page, and the sandbox
-// origin, all on 127.0.0.1, then prints one line with the host page URL. Ctrl-C stops everything
-// and removes the temporary directories. See docs/widget-host.md.
+// origin, all on 127.0.0.1, then prints one line with the host page URL. Ctrl-C (or SIGTERM,
+// SIGHUP, or an uncaught error) stops everything and removes the temporary directories. See
+// docs/widget-host.md.
 
 import { parseArgs } from "node:util";
 import type { ToolNamingMode } from "../../config.js";
@@ -75,12 +76,26 @@ try {
 
 console.log(`widget-host ready (widgets ${harness.widgets}, ${harness.role}): ${harness.hostUrl}?scenario=index`);
 
-let stopping = false;
-async function stop(): Promise<void> {
-  if (stopping) return;
-  stopping = true;
-  await harness.close();
-  process.exit(0);
+// Every exit path runs the same close. Handlers stay installed (`on`, not `once`), so a second
+// signal during a slow close waits for that close instead of killing the process mid-cleanup.
+let exitCode = 0;
+let closing: Promise<void> | undefined;
+function stop(code: number): void {
+  exitCode = Math.max(exitCode, code);
+  closing ??= harness
+    .close()
+    .catch((error: unknown) => {
+      console.error(`widget-host: cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      exitCode = Math.max(exitCode, 1);
+    })
+    .finally(() => process.exit(exitCode));
 }
-process.once("SIGINT", () => void stop());
-process.once("SIGTERM", () => void stop());
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => stop(0));
+process.on("uncaughtException", (error) => {
+  console.error("widget-host: uncaught exception:", error);
+  stop(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("widget-host: unhandled rejection:", reason);
+  stop(1);
+});

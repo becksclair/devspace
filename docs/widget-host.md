@@ -48,8 +48,10 @@ bun run widget:host --widgets workspace
 ```
 
 The launcher prints one line with the host page URL, for example
-`http://127.0.0.1:53817/?scenario=index`. Ctrl-C stops the servers and removes the temporary
-directories. Everything binds `127.0.0.1` on ephemeral ports unless `--port`, `--devspace-port`,
+`http://127.0.0.1:53817/?scenario=index`; open it as `127.0.0.1`, since requests with a
+`localhost` Host header are refused. Ctrl-C, SIGTERM, or SIGHUP stops the servers and removes the
+temporary directories; a second signal during that cleanup does not interrupt it, and an uncaught
+exception or unhandled rejection runs the same cleanup and exits non-zero. Everything binds `127.0.0.1` on ephemeral ports unless `--port`, `--devspace-port`,
 or `--sandbox-port` is given; ports 3000 and 7676-7680 are refused. `--tool-naming legacy` switches
 DevSpace to the long tool names; scenarios discover names from `tools/list`.
 
