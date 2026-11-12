@@ -1,0 +1,149 @@
+:root {
+  color-scheme: light;
+  --page-bg: #f4f4f2;
+  --page-fg: #1d1d1b;
+  --page-muted: #66665f;
+  --page-border: #d6d6d0;
+  --page-panel: #ffffff;
+  --page-error: #b42318;
+  --chat-bubble: #ffffff;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page-bg: #181816;
+  --page-fg: #ececea;
+  --page-muted: #a3a39c;
+  --page-border: #3a3a36;
+  --page-panel: #22221f;
+  --page-error: #f97066;
+  --chat-bubble: #1f1f1d;
+}
+
+body {
+  margin: 0;
+  background: var(--page-bg);
+  color: var(--page-fg);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--page-border);
+  background: var(--page-panel);
+}
+
+.toolbar label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--page-muted);
+}
+
+.status-bar {
+  display: flex;
+  gap: 16px;
+  padding: 6px 16px;
+  color: var(--page-muted);
+  font-size: 12px;
+}
+
+#harness-status::before {
+  content: "state: ";
+}
+
+.error {
+  margin: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--page-error);
+  border-radius: 6px;
+  color: var(--page-error);
+  white-space: pre-wrap;
+}
+
+.stage {
+  padding: 16px;
+}
+
+.stage .frame-host {
+  background: var(--chat-bubble);
+  border: 1px dashed var(--page-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.stage iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.stage .placeholder {
+  padding: 16px;
+  color: var(--page-muted);
+}
+
+.index {
+  padding: 0 16px 16px;
+}
+
+.index table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 1100px;
+}
+
+.index th,
+.index td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--page-border);
+}
+
+.index .unavailable {
+  color: var(--page-muted);
+}
+
+.panel {
+  margin: 0 16px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--page-border);
+  border-radius: 6px;
+  background: var(--page-panel);
+}
+
+.panel pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+}
+
+#log {
+  margin: 8px 0 0;
+  padding-left: 24px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+#log li {
+  margin: 2px 0;
+}
+
+#log .direction {
+  display: inline-block;
+  min-width: 7.5em;
+  color: var(--page-muted);
+}
+
+#log pre {
+  margin: 4px 0 8px;
+  max-height: 320px;
+  overflow: auto;
+}
