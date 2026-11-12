@@ -98,7 +98,8 @@ function ReviewPayload({
 
 function parseFiles(patch: string | undefined): FileDiffMetadata[] {
   if (!patch) return [];
-  return parsePatchFiles(patch, "review", true).flatMap((parsedPatch) => parsedPatch.files);
+  return parsePatchFiles(patch, { cacheKeyPrefix: "review", throwOnError: true })
+    .flatMap((parsedPatch) => parsedPatch.files);
 }
 
 function diffStats(fileDiff: FileDiffMetadata): { additions: number; removals: number } {
@@ -111,7 +112,7 @@ function diffStats(fileDiff: FileDiffMetadata): { additions: number; removals: n
   );
 }
 
-function diffOptions(themeType: ThemeType): FileDiffOptions<undefined> {
+function diffOptions(themeType: ThemeType): FileDiffOptions<undefined, undefined> {
   return {
     theme: {
       light: "pierre-light",
