@@ -420,10 +420,17 @@ export const SCENARIOS: Scenario[] = [
       const terminal = started.structuredContent?.terminal as { terminalId?: unknown } | undefined;
       const terminalId = terminal?.terminalId ?? started.structuredContent?.terminalId;
       if (typeof terminalId !== "string") throw new ScenarioError("terminal_start returned no terminalId");
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const screen = await ctx.step("terminal_read", { workspaceId, terminalId, mode: "screen" });
-        if (JSON.stringify(screen).includes("harness terminal ready")) break;
-        await delay(150);
+      try {
+        let ready = false;
+        for (let attempt = 0; attempt < 20 && !ready; attempt += 1) {
+          const screen = await ctx.step("terminal_read", { workspaceId, terminalId, mode: "screen" });
+          ready = JSON.stringify(screen).includes("harness terminal ready");
+          if (!ready) await delay(150);
+        }
+        if (!ready) throw new ScenarioError("the terminal never printed its ready line");
+      } catch (error) {
+        await ctx.call("terminal_close", { workspaceId, terminalId, force: true }).catch(() => undefined);
+        throw error;
       }
       return {
         workspaceId,
@@ -558,6 +565,7 @@ export function checkDisplayResult(scenario: Scenario, catalog: ToolCatalog, res
     case "error-card":
       if (result.isError !== true) return "expected isError: true";
       if (classified.kind !== "card") return `expected an error card: ${classified.reason}`;
+      if (classified.tool !== expectedName) return `card names tool ${classified.tool}, expected ${expectedName}`;
       return undefined;
     case "tool-error":
       if (result.isError !== true) return "expected isError: true";

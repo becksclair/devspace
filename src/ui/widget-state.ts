@@ -43,7 +43,7 @@ export function widgetReducer(state: WidgetState, action: WidgetAction): WidgetS
         ...initialWidgetState,
         card,
         cardVersion: state.cardVersion + 1,
-        errorMessage: card ? null : NO_CARD_MESSAGE,
+        errorMessage: card ? null : (failureText(action.result) ?? NO_CARD_MESSAGE),
       };
     }
     case "toggleExpanded":
@@ -55,6 +55,16 @@ export function widgetReducer(state: WidgetState, action: WidgetAction): WidgetS
     case "teardown":
       return { ...state, tornDown: true };
   }
+}
+
+/** The text of a failed result, for a failure that was raised before a card could be built. */
+function failureText(result: CallToolResult): string | null {
+  if (result.isError !== true) return null;
+  const text = (result.content ?? [])
+    .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+    .join("\n")
+    .trim();
+  return text || null;
 }
 
 /**

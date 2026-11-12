@@ -33,6 +33,8 @@ const review: ToolResultCard = { tool: "show_changes", summary: { files: 7, addi
 assert.equal(getToolDisplay(review).label, "7 changed files");
 assert.equal(getToolDisplay({ tool: "show_changes", summary: { files: 1 } }).label, "1 changed file");
 assert.equal(getToolDisplay({ tool: "show_changes" }).label, "No changes since last review");
+// A failed review established nothing about changes.
+assert.equal(getToolDisplay({ tool: "show_changes", isError: true }).label, "Review failed");
 assert.deepEqual(summaryBadge(review), { kind: "stats", label: "Review diff statistics", additions: 19, removals: 9 });
 assert.deepEqual(reviewFileCounts(review, false), { visible: 3, hidden: 4 });
 assert.deepEqual(reviewFileCounts(review, true), { visible: 7, hidden: 0 });
@@ -58,9 +60,12 @@ assert.equal(
 // workspace_status carries no AGENTS.md list, so the body does not claim none was loaded.
 assert.equal(
   workspacePayloadText({ tool: "workspace_status", workspaceId: "ws1", root: "/repo", capabilities: { fileAccess: "read-write" } }),
-  "Workspace: ws1\nRoot: /repo\nAccess: read-write\nSkills: none",
+  "Workspace: ws1\nRoot: /repo\nAccess: read-write",
 );
 assert.match(workspacePayloadText({ tool: "open_workspace", agentsFiles: [], skills: [] }), /^Skills: none\n\nAGENTS\.md: none loaded$/);
+// workspace_status carries neither list, so it claims nothing about skills or AGENTS.md.
+assert.equal(workspacePayloadText({ tool: "workspace_status", workspaceId: "ws1" }), "Workspace: ws1");
+assert.equal(workspacePayloadText({ tool: "workspace_status", workspaceId: "ws1", skills: [] }), "Workspace: ws1\nSkills: none");
 
 assert.equal(
   terminalPayloadText({ tool: "terminal_read", terminal: { terminalId: "t1", status: "running", cols: 80, rows: 24, commandSummary: "bash" }, terminalOutput: "hi", truncated: true }),

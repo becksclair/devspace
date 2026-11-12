@@ -134,6 +134,7 @@ function getToolLabel(card: ToolResultCard): string {
     return String(card.summary?.command ?? card.path ?? card.tool);
   }
   if (isReviewTool(card.tool)) {
+    if (card.isError) return "Review failed";
     const count = Number(card.summary?.files ?? card.files?.length ?? 0);
     return count === 0 ? "No changes since last review" : `${count} changed ${count === 1 ? "file" : "files"}`;
   }
@@ -272,14 +273,16 @@ export function workspacePayloadText(card: ToolResultCard): string {
     capabilities?.git ? `Git: ${capabilities.git.branch ?? "detached"} ${capabilities.git.head ?? ""}${capabilities.git.dirty ? " dirty" : " clean"}` : undefined,
     worktree?.strategy ? `Managed strategy: ${worktree.strategy}; source=${worktree.sourceCanonicalRoot ?? "unknown"}; base=${worktree.baseSha ?? "unknown"}${worktree.dirtySource ? "; source dirty" : ""}` : undefined,
     capabilities?.runtime ? `Runtime: ${capabilities.runtime.shellPath ?? "shell"} (${capabilities.runtime.shellMode ?? "service"}), tmux ${capabilities.runtime.tmux ? "available" : "unavailable"}, user-systemd ${capabilities.runtime.userSystemd ? "available" : "unavailable"}, privilege ${capabilities.runtime.privilegeEscalation ?? "unknown"}` : undefined,
-    skills.length > 0
-      ? `Skills: ${skills.map((skill) => skill.name ?? skill.path ?? "unnamed").join(", ")}`
-      : "Skills: none",
+    // workspace_status results carry neither list: for that tool, say "none" only when the
+    // result has the list and it is empty.
+    card.tool === "workspace_status" && card.skills === undefined
+      ? undefined
+      : skills.length > 0
+        ? `Skills: ${skills.map((skill) => skill.name ?? skill.path ?? "unnamed").join(", ")}`
+        : "Skills: none",
     availableAgentsFiles.length > 0
       ? `Nested instructions: ${availableAgentsFiles.map((file) => file.path ?? "unknown").join(", ")}`
       : undefined,
-    // workspace_status results carry no AGENTS.md list: say "none loaded" only when the result
-    // has the list and it is empty.
     card.agentsFiles === undefined
       ? undefined
       : agentsFiles.length > 0

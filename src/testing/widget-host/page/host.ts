@@ -11,6 +11,7 @@ import {
   SCENARIOS,
   ScenarioError,
   ToolCatalog,
+  checkDisplayResult,
   createScenarioContext,
   findScenario,
   scenarioUnavailableReason,
@@ -464,6 +465,8 @@ async function runScenario(scenario: Scenario, info: HarnessInfo, catalog: ToolC
   lastResult = result;
   await connected.sendToolResult(result as never);
   ui.resend.disabled = false;
+  const failure = checkDisplayResult(scenario, catalog, result);
+  if (failure) throw new ScenarioError(`scenario ${scenario.id}: ${failure}`);
 
   const after = await prepared.afterResult?.(result);
   if (after && typeof after.activityOperations === "number") await waitForActivity(after.activityOperations);

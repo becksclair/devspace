@@ -93,6 +93,8 @@ export class McpHttpClient {
 
   private ensureInitialized(): Promise<void> {
     this.initializing ??= this.initialize().catch((error: unknown) => {
+      // A session the server dropped before `notifications/initialized` must not be sent again.
+      this.sessionId = undefined;
       this.initializing = undefined;
       throw error;
     });

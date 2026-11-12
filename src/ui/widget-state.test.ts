@@ -47,6 +47,11 @@ state = widgetReducer(state, { type: "toolResult", result: result({ content: [{ 
 assert.equal(state.card, null);
 assert.equal(state.errorMessage, NO_CARD_MESSAGE);
 assert.equal(state.cardVersion, 2);
+// A failure raised before a card could be built keeps its own text.
+const failedWithoutCard = widgetReducer(state, { type: "toolResult", result: result({ isError: true, content: [{ type: "text", text: "Unknown workspace" }] }) });
+assert.equal(failedWithoutCard.card, null);
+assert.equal(failedWithoutCard.errorMessage, "Unknown workspace");
+assert.equal(widgetReducer(state, { type: "toolResult", result: result({ isError: true, content: [] }) }).errorMessage, NO_CARD_MESSAGE);
 assert.equal(state.tornDown, false);
 assert.equal(state.reviewFilesExpanded, false);
 
