@@ -7,7 +7,7 @@ The public endpoint remains `https://devspace-saga.heliasar.com/mcp`. Svartal no
 | Component | Location |
 | --- | --- |
 | Gateway | Svartal LaunchAgent `com.rclair.devspace-gateway`, loopback `127.0.0.1:7679` |
-| Runtime | Node 24 at `~/.local/share/mise/installs/node/24/bin/node`, version 2.0.2 built from source `c75139e6cbe46933c394c42b6c25390970793a39` in `~/projects/devspace` (`065844c6a4a7ad5c83de4d2ee4ad334dcc2ef2ed` before the 2026-11-09 history rewrite; builds made before then still report that ID) |
+| Runtime | Node 24 at `~/.local/share/mise/installs/node/24/bin/node`, running the release that `~/.local/opt/devspace/current` points to (`releases/<commit>`, see [Release directories](#release-directories)). `/healthz` reports that release's commit as `sourceCommit`. |
 | Launcher | `~/.local/bin/devspace-gateway`, loads protected `~/.config/devspace-svartal/node.env` |
 | Gateway configuration | `~/.config/devspace-svartal/gateway.json` |
 | OAuth and workspace bindings | `~/.local/state/devspace-gateway/devspace.sqlite`, copied using SQLite backup from Asgard |
@@ -52,7 +52,7 @@ After the cutover, the gateway's working directory is the release directory. Set
 
 ### One-time cutover (operator)
 
-Not yet done. Until it is, the gateway runs from `~/projects/devspace`, and the `AGENTS.md` rule about that checkout applies.
+Done on 2026-11-13 with release `f6a8a1908c59bc5c70c9f3c472a2fa4814607993`. The steps are kept as a record of what was changed on the host. The launcher from before the cutover is `~/.local/bin/devspace-gateway.pre-release-root`; the old `dist` in `~/projects/devspace` is no longer what the gateway runs.
 
 1. In a checkout of merged `main`, prepare the release:
 
@@ -109,6 +109,8 @@ bun run release:prepare --node "$HOME/.local/share/mise/installs/node/24/bin/nod
 bun run release:activate <rev> --label com.rclair.devspace-gateway --health-url http://127.0.0.1:7679/healthz
 curl -fsS https://devspace-saga.heliasar.com/healthz
 ```
+
+After a deploy that changes the tool list or the widget, refresh the connector in ChatGPT: Settings, Plugins, DevSpace Gateway, **Refresh tools**. ChatGPT caches the tool list, including the widget's resource URI, which changes with every widget build. Until the refresh, tools keep working, but the workspace card shows "Couldn't open Open workspace" because ChatGPT asks for the previous build's URI.
 
 A failed health check rolls back automatically. To return to the previous release by hand, activate it:
 

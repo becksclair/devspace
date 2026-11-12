@@ -23,7 +23,7 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (two phases) | P1 | M + S | — | IN PROGRESS (Phase 2 deployed; voice pass pending) |
 | 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | 017 (merge order) | TODO |
 | 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | — | DONE (approved at `696411e`; PR #9 merged into `advisor/audit-2026-11-11` as `07aeb2e`) |
-| 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | IN PROGRESS (tooling and docs on `advisor/018-svartal-release-directories`, unmerged; `prepare` pins Node 24; operator cutover pending) |
+| 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | DONE (PR #12 merged as `f6a8a19`; the operator cutover was performed on 2026-11-13 and the gateway runs release `f6a8a19` from `~/.local/opt/devspace`) |
 | 019  | Stop `multi_read` from breaking the workspace activity card | P1 | S | — | DONE (approved at `ccc775b`; PR #7 merged into `advisor/audit-2026-11-11` as `177c02f`) |
 | 020  | Close three small liveness gaps in the T3 bridge | P2 | S | — | TODO |
 | 021  | Make `show_changes` report renames and file types truthfully | P1 | S | — | DONE (approved at `9f3f7b7`; PR #8 merged into `advisor/audit-2026-11-11` as `44ea200`) |
@@ -49,7 +49,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - **023 must run outside the serving checkout.** It installs dependencies; see the next note. Its only source changes are `package.json` and `bun.lock`, which 016, 017 and 018 also touch (the `"test"` script line), so merge it carefully.
 - 021, 022 and 023 are independent of 016-020 apart from those shared lines.
 - Recommended order for the second batch: 021 → 022, with 023 in parallel.
-- **Every executor works in a separate git worktree or clone.** On Svartal, `/Users/rclair/projects/devspace` serves the production gateway from its `dist/` (finding G03, plan 018). `bun run build:check` and `bun install` in that directory are deploy steps.
+- **Every executor works in a separate git worktree or clone.** Until the plan 018 cutover on 2026-11-13, `/Users/rclair/projects/devspace` on Svartal served the production gateway from its `dist/` (finding G03), and `bun run build:check` and `bun install` there were deploy steps. Since the cutover the gateway runs a release under `~/.local/opt/devspace`, and builds in that checkout no longer affect it.
 - **016 after 017.** Both edit git call sites in `src/workspaces.ts`. The order was reversed on 2026-11-11: the repository is public and 017's weakness is described in it, so 017 runs first. 016 adds one git helper and its Step 2 makes that helper use 017's filtered environment; 016's done criteria check it.
 - **018 Step 1 can merge alone.** It is a documentation commit that makes `AGENTS.md` truthful today. The rest of 018 adds tooling; the production cutover is an operator step that no executor performs.
 - 019 and 020 are independent of the others. 020 touches `src/server.ts` in `createServer` only.
