@@ -71,7 +71,6 @@ export function buildMetadataSource({ commit, packageVersion, toolContractHash }
   return `export const PROTOCOL_MAJOR = 1;\nexport function toolContractHash() { return ${JSON.stringify(toolContractHash)}; }\nexport function getBuildMetadata(role) { return { protocolMajor: 1, packageVersion: ${JSON.stringify(packageVersion)}, sourceCommit: ${JSON.stringify(commit)}, toolContractHash: ${JSON.stringify(toolContractHash)}, ...(role ? { role } : {}) }; }\n`;
 }
 
-/** An environment whose PATH resolves `node` (and anything else in binDir) first. */
 /**
  * The caller's environment minus DevSpace's control-plane secrets, for every child this script
  * starts: git, installs with their lifecycle scripts, the build, and the smoke test all run
@@ -284,10 +283,18 @@ export function pruneReleases(appRoot, keep) {
 
 /** The release `<appRoot>/<name>` points to, when the link targets a prepared release directory. */
 export function linkedRelease(appRoot, name) {
-  const release = currentRelease(appRoot, name);
-  if (!release) return undefined;
-  const pointsIntoReleases = readlinkSync(join(appRoot, name)) === join("releases", release);
-  return pointsIntoReleases && existsSync(join(appRoot, "releases", release, "dist", "cli.js")) ? release : undefined;
+  let target;
+  try {
+    target = readlinkSync(join(appRoot, name));
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  // Compare resolved paths, so an absolute target or a trailing slash still counts.
+  const directory = resolve(appRoot, target);
+  const release = basename(directory);
+  const pointsIntoReleases = release !== "" && directory === resolve(appRoot, "releases", release);
+  return pointsIntoReleases && existsSync(join(directory, "dist", "cli.js")) ? release : undefined;
 }
 
 function errorMessage(error) {
@@ -323,11 +330,12 @@ function acquireActivationLock(appRoot) {
 }
 
 export async function activateRelease({ appRoot, commit, restart, probe }) {
-  if (!existsSync(join(appRoot, "releases", commit, "dist", "cli.js"))) {
-    throw new Error(`release ${commit} is not prepared under ${appRoot}`);
-  }
+  const prepared = () => existsSync(join(appRoot, "releases", commit, "dist", "cli.js"));
+  if (!prepared()) throw new Error(`release ${commit} is not prepared under ${appRoot}`);
   const releaseLock = acquireActivationLock(appRoot);
   try {
+    // An activation that held the lock until now may have pruned this release.
+    if (!prepared()) throw new Error(`release ${commit} is no longer prepared under ${appRoot}`);
     return await switchRelease({ appRoot, commit, restart, probe });
   } finally {
     releaseLock();
@@ -379,7 +387,12 @@ async function switchRelease({ appRoot, commit, restart, probe }) {
   }
 
   if (replaced && replaced !== commit) pointLink(appRoot, "previous", replaced);
-  pruneReleases(appRoot, new Set([commit, linkedRelease(appRoot, "previous")].filter(Boolean)));
+  // The switch is complete and healthy. A prune failure must not read as a failed activation.
+  try {
+    pruneReleases(appRoot, new Set([commit, linkedRelease(appRoot, "previous")].filter(Boolean)));
+  } catch (error) {
+    return { commit, previous: replaced, pruneFailure: errorMessage(error) };
+  }
   return { commit, previous: replaced };
 }
 
@@ -409,11 +422,18 @@ async function probeHealth(url, commit, { timeoutMs = 30_000, intervalMs = 500 }
   return false;
 }
 
+/** The app root a command works on. An empty `--app-root` is an error, not the default root. */
+function appRootOption(value) {
+  if (value === undefined) return defaultAppRoot();
+  if (value === "") throw new UsageError("--app-root must not be empty");
+  return resolve(value);
+}
+
 function parseCommandArgs(args, options) {
   try {
     return parseArgs({ args, options, allowPositionals: true, strict: true });
   } catch (error) {
-    throw new UsageError(error instanceof Error ? error.message : String(error));
+    throw new UsageError(errorMessage(error));
   }
 }
 
@@ -421,14 +441,11 @@ async function runPrepare(args) {
   const { values, positionals } = parseCommandArgs(args, { "app-root": { type: "string" }, node: { type: "string" } });
   if (positionals.length > 1) throw new UsageError("prepare takes at most one revision");
   if (values.node !== undefined && !isAbsolute(values.node)) throw new UsageError("--node must be an absolute path");
+  const appRoot = appRootOption(values["app-root"]);
   // prepareRelease runs synchronously. With a handler installed, an interrupt ends the running
   // child and lets the cleanup in `finally` run, instead of killing this process before it can.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
-  prepareRelease({
-    rev: positionals[0] ?? "HEAD",
-    appRoot: values["app-root"] ? resolve(values["app-root"]) : defaultAppRoot(),
-    nodePath: values.node ?? process.execPath,
-  });
+  prepareRelease({ rev: positionals[0] ?? "HEAD", appRoot, nodePath: values.node ?? process.execPath });
 }
 
 async function runActivate(args) {
@@ -450,7 +467,7 @@ async function runActivate(args) {
   if (healthUrl.protocol !== "http:" && healthUrl.protocol !== "https:") throw new UsageError("--health-url must use http or https");
   if (process.platform !== "darwin") throw new UsageError("activate restarts a launchd LaunchAgent and runs only on macOS");
 
-  const appRoot = values["app-root"] ? resolve(values["app-root"]) : defaultAppRoot();
+  const appRoot = appRootOption(values["app-root"]);
   const commit = resolveActivationCommit(appRoot, positionals[0]);
   const target = `gui/${process.getuid()}/${values.label}`;
   const result = await activateRelease({
@@ -462,6 +479,7 @@ async function runActivate(args) {
   console.log(
     `${LOG_PREFIX} ${values.label} now runs ${result.commit}${result.previous && result.previous !== result.commit ? ` (previous ${result.previous})` : ""}`,
   );
+  if (result.pruneFailure) console.error(`${LOG_PREFIX} warning: old releases were not pruned (${result.pruneFailure})`);
 }
 
 export async function main(argv) {
@@ -471,8 +489,7 @@ export async function main(argv) {
     else if (command === "activate") await runActivate(rest);
     else throw new UsageError(command ? `unknown command ${command}` : "missing command");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`${LOG_PREFIX} ${message}`);
+    console.error(`${LOG_PREFIX} ${errorMessage(error)}`);
     if (error instanceof UsageError) console.error(USAGE);
     process.exitCode = 1;
   }

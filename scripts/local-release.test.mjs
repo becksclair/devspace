@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -172,6 +172,39 @@ test("a current link that leaves the releases directory is not a rollback target
     /no previous release to restore; current still points at c$/,
   );
   assert.equal(readlinkSync(join(appRoot, "current")), join("releases", "c"));
+  assert.equal(fake.calls.restart, 1);
+});
+
+test("an absolute current link into the releases directory is a rollback target", async (t) => {
+  const appRoot = appRootWith("a", "b");
+  t.after(() => rmSync(appRoot, { recursive: true, force: true }));
+  symlinkSync(`${join(appRoot, "releases", "a")}/`, join(appRoot, "current"));
+  assert.equal(linkedRelease(appRoot, "current"), "a");
+  const fake = recorder((commit) => commit === "a");
+  await assert.rejects(
+    activateRelease({ appRoot, commit: "b", restart: fake.restart, probe: fake.probe }),
+    /release b did not become healthy; restored a$/,
+  );
+  assert.equal(readlinkSync(join(appRoot, "current")), join("releases", "a"));
+});
+
+test("a prune failure after a healthy switch is reported without failing the activation", { skip: process.getuid?.() === 0 }, async (t) => {
+  const appRoot = appRootWith("a", "b", "c");
+  const stuck = join(appRoot, "releases", "a", "dist");
+  t.after(() => {
+    chmodSync(stuck, 0o755);
+    rmSync(appRoot, { recursive: true, force: true });
+  });
+  pointLink(appRoot, "current", "b");
+  // Entries of a read-only directory cannot be unlinked, so pruning `a` fails.
+  chmodSync(stuck, 0o555);
+  const fake = recorder();
+  const result = await activateRelease({ appRoot, commit: "c", restart: fake.restart, probe: fake.probe });
+  assert.equal(result.commit, "c");
+  assert.equal(result.previous, "b");
+  assert.ok(result.pruneFailure, "expected the prune failure to be reported");
+  assert.equal(currentRelease(appRoot), "c");
+  assert.equal(currentRelease(appRoot, "previous"), "b");
   assert.equal(fake.calls.restart, 1);
 });
 
@@ -369,6 +402,18 @@ test("baked build metadata exports everything src imports from build-metadata", 
   }
   assert.ok(imported.size > 0, "expected src to import from build-metadata.js");
   for (const name of imported) assert.ok(name in baked, `baked build-metadata.js does not export ${name}`);
+});
+
+test("an empty --app-root is a usage error rather than the default root", () => {
+  // The missing Node binary stops `prepare` before it builds anything if the check ever regresses.
+  for (const command of [["prepare", "--node", "/nonexistent/node"], ["activate", "HEAD", "--label", "test.label", "--health-url", "http://127.0.0.1:9/healthz"]]) {
+    const result = spawnSync(process.execPath, [join(repoRoot, "scripts/local-release.mjs"), ...command, "--app-root", ""], {
+      encoding: "utf8",
+      env: { ...process.env, DEVSPACE_APP_ROOT: join(tmpdir(), "devspace-local-release-unused") },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /\[devspace:release\] --app-root must not be empty/);
+  }
 });
 
 test("activate without a label or health URL exits with usage and does nothing", () => {
