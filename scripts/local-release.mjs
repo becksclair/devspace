@@ -465,9 +465,10 @@ async function runActivate(args) {
     throw new UsageError("--health-url must be an absolute URL");
   }
   if (healthUrl.protocol !== "http:" && healthUrl.protocol !== "https:") throw new UsageError("--health-url must use http or https");
+  // Argument errors come before the platform check, so they read the same on every host.
+  const appRoot = appRootOption(values["app-root"]);
   if (process.platform !== "darwin") throw new UsageError("activate restarts a launchd LaunchAgent and runs only on macOS");
 
-  const appRoot = appRootOption(values["app-root"]);
   const commit = resolveActivationCommit(appRoot, positionals[0]);
   const target = `gui/${process.getuid()}/${values.label}`;
   const result = await activateRelease({
