@@ -248,6 +248,23 @@ export function toolWidgetDescriptorMeta(
   };
 }
 
+/**
+ * Declares on every tool registered on `server` (DevSpace's own, ext-apps app tools, and the
+ * bridged node_repl, sky-cua, and T3 tools) that it needs an OAuth access token with the scope
+ * the /mcp door requires. OpenAI recommends per-tool `securitySchemes` "even if the entire
+ * server uses the same policy" (https://developers.openai.com/apps-sdk/build/auth). The MCP
+ * SDK's tools/list serializer emits only the fields it knows, so the declaration travels as the
+ * documented `_meta["securitySchemes"]` mirror "for clients that only read `_meta`"
+ * (https://developers.openai.com/apps-sdk/reference). Metadata only: authentication stays at
+ * the /mcp door.
+ */
+function declareToolSecuritySchemes(server: McpServer, requiredScope: string): void {
+  const securitySchemes = [{ type: "oauth2", scopes: [requiredScope] }];
+  const registerTool = server.registerTool.bind(server);
+  server.registerTool = ((name: string, config: { _meta?: Record<string, unknown> }, handler: unknown) =>
+    registerTool(name, { ...config, _meta: { ...config._meta, securitySchemes } } as never, handler as never)) as typeof server.registerTool;
+}
+
 function appOnlyToolDescriptorMeta(): ToolWidgetDescriptorMeta {
   return {
     _meta: {
@@ -1047,6 +1064,8 @@ async function createMcpServer(
       instructions: serverInstructions(config, toolNames, effective, autoloadedSkills),
     },
   );
+  // The same scope the /mcp bearer check requires.
+  declareToolSecuritySchemes(server, config.oauth.scopes[0] ?? "devspace");
 
   if (workspaceAppManifestEntry && workspaceAppUri) {
     registerAppResource(

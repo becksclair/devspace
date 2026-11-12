@@ -1,7 +1,8 @@
 // Pins the per-tool metadata every MCP host sees in tools/list, over HTTP, for every widgets mode,
 // annotation profile, and tool mode (standalone and gateway), including the bridged node_repl,
 // sky-cua (a fake stdio binary), and T3 (an offline bridge serving its static catalog) tools:
-// every tool states readOnlyHint, destructiveHint, and openWorldHint explicitly.
+// every tool states readOnlyHint, destructiveHint, and openWorldHint explicitly, and declares
+// `_meta.securitySchemes` with the OAuth scope the /mcp door requires.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -22,6 +23,8 @@ import { T3Bridge, T3_TOOL_NAMES } from "./t3-bridge.js";
 const accessToken = "tool-metadata-test-access-token";
 const protocolVersion = "2025-11-25";
 const publicBaseUrl = "http://127.0.0.1:7676";
+// The first configured scope is the one the /mcp door requires; a second one must not leak in.
+const requiredScope = "devspace-metadata";
 const HINTS = ["readOnlyHint", "destructiveHint", "openWorldHint"] as const;
 
 interface WireTool {
@@ -97,7 +100,7 @@ function configFor(stateDir: string, widgets: WidgetMode, annotationProfile: Ann
       ownerToken: "tool-metadata-test-owner-token-long-enough",
       accessTokenTtlSeconds: 3600,
       refreshTokenTtlSeconds: 2592000,
-      scopes: ["devspace"],
+      scopes: [requiredScope, "devspace-extra"],
       allowedRedirectHosts: [],
     },
     allowedRoots: [process.cwd()],
@@ -162,7 +165,7 @@ async function listTools(widgets: WidgetMode, profile: AnnotationProfile, minima
     tokenHash: createHash("sha256").update(accessToken).digest("base64url"),
     tokenType: "access",
     clientId: "tool-metadata-test-client",
-    scopes: ["devspace"],
+    scopes: [requiredScope],
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
     resource: new URL(`${publicBaseUrl}/mcp`),
   });
@@ -236,8 +239,13 @@ try {
           if (tool.annotations?.readOnlyHint === true) {
             assert.equal(tool.annotations.destructiveHint, false, `${label}: read-only ${tool.name} is not destructive`);
           }
+          assert.deepEqual(
+            tool._meta?.securitySchemes,
+            [{ type: "oauth2", scopes: [requiredScope] }],
+            `${label}: ${tool.name} declares the OAuth scope the /mcp door requires`,
+          );
         }
-        process.stdout.write(`ok - ${label}: ${tools.length} tools state all three hints\n`);
+        process.stdout.write(`ok - ${label}: ${tools.length} tools state all three hints and their securitySchemes\n`);
       }
     }
   }
