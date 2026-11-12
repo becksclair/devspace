@@ -412,7 +412,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
 
     const requestedScopes = scopes ?? record.scopes;
     if (!requestedScopes.every((scope) => record.scopes.includes(scope))) {
-      throw new OAuthHttpError(OAuthErrorCode.AccessDenied, "Refresh token cannot grant requested scopes");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidScope, "Refresh token cannot grant requested scopes");
     }
 
     this.stateStore.deleteToken(hashedRefreshToken, "refresh");

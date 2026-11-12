@@ -845,10 +845,10 @@ try {
 
   // Refresh: rotation, scope narrowing, and rejections.
   const refreshGrant = { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id };
-  // KNOWN DEFECT: requesting a broader scope answers access_denied; RFC 6749 section 5.2 says invalid_scope.
+  // Requesting a broader scope is invalid_scope (RFC 6749 sections 5.2 and 6).
   assertOAuthError(
     await tokenRequest({ ...refreshGrant, scope: "devspace audit admin" }),
-    400, "access_denied", "Refresh token cannot grant requested scopes", "refresh broader scope",
+    400, "invalid_scope", "Refresh token cannot grant requested scopes", "refresh broader scope",
   );
   assertOAuthError(await tokenRequest({ ...refreshGrant, resource: "https://evil.example/mcp" }), 400, "invalid_grant", "Invalid resource", "refresh foreign resource");
   assertOAuthError(await tokenRequest({ ...refreshGrant, client_id: otherClient.client_id }), 400, "invalid_grant", "Invalid refresh token", "refresh by another client");
@@ -870,7 +870,12 @@ try {
   // The narrowed refresh token cannot widen back.
   assertOAuthError(
     await tokenRequest({ grant_type: "refresh_token", refresh_token: narrowed.refresh_token, client_id: client.client_id, scope: "devspace" }),
-    400, "access_denied", "Refresh token cannot grant requested scopes", "refresh re-widen narrowed token",
+    400, "invalid_scope", "Refresh token cannot grant requested scopes", "refresh re-widen narrowed token",
+  );
+  // The rejected widening did not consume the narrowed refresh token.
+  assertTokenResponse(
+    await tokenRequest({ grant_type: "refresh_token", refresh_token: narrowed.refresh_token, client_id: client.client_id }),
+    "audit", "refresh after a rejected widening",
   );
 
   // 6 (OAuth half). /mcp with OAuth tokens ----------------------------------------------------
