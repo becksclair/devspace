@@ -62,6 +62,16 @@ function enforceJavaScriptBudgets(): Plugin {
   };
 }
 
+function isShikiRuntimeModule(id: string): boolean {
+  return (
+    (id.includes("/node_modules/shiki/dist/") && !id.endsWith("/wasm.mjs")) ||
+    id.includes("/node_modules/@shikijs/core/") ||
+    id.includes("/node_modules/@shikijs/engine-javascript/") ||
+    id.includes("/node_modules/@shikijs/types/") ||
+    id.includes("/node_modules/@shikijs/vscode-textmate/")
+  );
+}
+
 function workspaceAppVendorChunk(id: string): string | undefined {
   if (!id.includes("/node_modules/")) return undefined;
 
@@ -77,15 +87,7 @@ function workspaceAppVendorChunk(id: string): string | undefined {
   if (id.includes("/node_modules/diff/")) {
     return "diff-vendor";
   }
-  if (
-    id.includes("/node_modules/@pierre/diffs/") ||
-    (id.includes("/node_modules/shiki/dist/") && !id.endsWith("/wasm.mjs")) ||
-    id.includes("/node_modules/@shikijs/core/") ||
-    id.includes("/node_modules/@shikijs/engine-javascript/") ||
-    id.includes("/node_modules/@shikijs/transformers/") ||
-    id.includes("/node_modules/@shikijs/types/") ||
-    id.includes("/node_modules/@shikijs/vscode-textmate/")
-  ) {
+  if (id.includes("/node_modules/@pierre/diffs/")) {
     return "pierre-core-vendor";
   }
 
@@ -110,7 +112,28 @@ export default defineConfig({
         entryFileNames: "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
-        manualChunks: workspaceAppVendorChunk,
+        codeSplitting: {
+          groups: [
+            // Each group captures its modules' static dependencies, so the
+            // @pierre/diffs group would absorb @pierre/highlights' inlined WASM
+            // and the Shiki runtime. Higher-priority groups claim them first so
+            // pierre-core-vendor stays within the chunk budget. The preload
+            // helper is claimed before Shiki so the entry does not statically
+            // import shiki-vendor through it.
+            {
+              name: "vite-preload-helper",
+              test: (id) => id.includes("vite/preload-helper"),
+              priority: 3,
+            },
+            {
+              name: "pierre-highlights-wasm",
+              test: (id) => id.endsWith("/node_modules/@pierre/highlights/dist/highlights.wasm.mjs"),
+              priority: 2,
+            },
+            { name: "shiki-vendor", test: isShikiRuntimeModule, priority: 1 },
+            { name: workspaceAppVendorChunk },
+          ],
+        },
       },
     },
   },

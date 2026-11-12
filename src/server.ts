@@ -332,14 +332,24 @@ function rpcMessageTraceFields(body: JsonRpcMessage): Record<string, unknown> {
   };
 }
 
+/**
+ * Per-request RPC trace fields. `protocolVersionHeader` is the raw `Mcp-Protocol-Version`
+ * request header; it is added as `protocolVersionHeader` only when the client sent one.
+ */
 export function mcpRequestTraceFields(
   body: unknown,
   httpMethod = "POST",
+  protocolVersionHeader?: string,
 ): Record<string, unknown> {
+  const headerFields = protocolVersionHeader === undefined
+    ? {}
+    : { protocolVersionHeader: boundedLogString(protocolVersionHeader, 64) };
+
   if (httpMethod.toUpperCase() !== "POST") {
     return {
       rpcType: "transport",
       transportMethod: httpMethod.toUpperCase(),
+      ...headerFields,
     };
   }
 
@@ -349,12 +359,45 @@ export function mcpRequestTraceFields(
       rpcType: "batch",
       rpcBatchSize: body.length,
       rpcMessages: messages.map(compactLogFields),
+      ...headerFields,
     };
   }
 
   return isRecord(body)
-    ? rpcMessageTraceFields(body)
-    : { rpcType: "invalid", rpcBodyType: body === null ? "null" : typeof body };
+    ? { ...rpcMessageTraceFields(body), ...headerFields }
+    : { rpcType: "invalid", rpcBodyType: body === null ? "null" : typeof body, ...headerFields };
+}
+
+function initializeMessage(body: unknown): Record<string, unknown> | undefined {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.find((message): message is Record<string, unknown> =>
+    isRecord(message) && message.method === "initialize");
+}
+
+/**
+ * Client-declared fields of an initialize request, bounded for logging: the protocol
+ * version the client asked for and its `clientInfo` name and version. Absent or
+ * non-string values are omitted.
+ */
+export function mcpInitializeLogFields(body: unknown): Record<string, unknown> {
+  const rawParams = initializeMessage(body)?.params;
+  const params = isRecord(rawParams) ? rawParams : undefined;
+  const clientInfo = isRecord(params?.clientInfo) ? params.clientInfo : undefined;
+  return compactLogFields({
+    requestedProtocolVersion: boundedLogString(params?.protocolVersion, 64),
+    clientName: boundedLogString(clientInfo?.name, 128),
+    clientVersion: boundedLogString(clientInfo?.version, 64),
+  });
+}
+
+/**
+ * The protocol version in an initialize result, when `message` is the JSON-RPC
+ * success response to the initialize request with id `initializeRpcId`.
+ */
+export function answeredProtocolVersion(message: unknown, initializeRpcId: unknown): string | undefined {
+  if (!isRecord(message) || initializeRpcId === undefined || message.id !== initializeRpcId) return undefined;
+  if (!isRecord(message.result)) return undefined;
+  return boundedLogString(message.result.protocolVersion, 64);
 }
 
 function containsInitializeRequest(body: unknown): boolean {
@@ -1967,7 +2010,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
     const initializeRequest = req.method === "POST" && containsInitializeRequest(req.body);
-    const rpcTrace = mcpRequestTraceFields(req.body, req.method);
+    const rpcTrace = mcpRequestTraceFields(req.body, req.method, req.header("mcp-protocol-version"));
 
     await new Promise<void>((resolve, reject) => {
       bearerAuth(req, res, (error?: unknown) => {
@@ -2041,6 +2084,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
         // RB-001 fix: bridge is created in createMcpServer before sessionId exists.
         // Capture server reference and link bridge in onsessioninitialized when sid is known.
         let serverForBridge: McpServer | null = null;
+        const initializeFields = mcpInitializeLogFields(req.body);
         transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
@@ -2072,11 +2116,32 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
+              ...initializeFields,
               ...requestLogFields(req, config),
             });
           },
         });
         newTransport = transport;
+
+        // The answered protocol version only exists in the initialize result, which the
+        // server writes through the public Transport#send after this handler hands the
+        // request over; observe it there instead of reading SDK server state.
+        const initializeRpcId = initializeMessage(req.body)?.id;
+        const sendThroughTransport = transport.send.bind(transport);
+        let protocolAnswerLogged = false;
+        transport.send = async (message, sendOptions) => {
+          const answered = protocolAnswerLogged ? undefined : answeredProtocolVersion(message, initializeRpcId);
+          if (answered !== undefined) {
+            protocolAnswerLogged = true;
+            logEvent(config.logging, "info", "mcp_protocol_negotiated", {
+              requestId,
+              sessionIdPrefix: sessionIdPrefix(transport?.sessionId),
+              requestedProtocolVersion: initializeFields.requestedProtocolVersion,
+              answeredProtocolVersion: answered,
+            });
+          }
+          return sendThroughTransport(message, sendOptions);
+        };
 
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
