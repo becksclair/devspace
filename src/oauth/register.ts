@@ -12,9 +12,9 @@ const CLIENT_SECRET_TTL_SECONDS = 30 * 24 * 60 * 60;
  * clients store applies DevSpace's registration policy and assigns `client_id` and
  * `client_id_issued_at`.
  *
- * Every client that does not register `token_endpoint_auth_method: "none"` is issued a 32-byte
- * hex secret that expires after 30 days, including one that omits the method entirely (the store
- * then reports it as "none"; see the KNOWN DEFECT in `server-oauth-http.test.ts`).
+ * A client that registers `token_endpoint_auth_method: "none"`, or omits the method (which the
+ * store then records as "none"), is a public client and gets no secret. Any other method is
+ * issued a 32-byte hex secret that expires after 30 days.
  */
 export function registrationEndpoint(clientsStore: OAuthRegisteredClientsStore): RequestHandler {
   const router = express.Router();
@@ -29,7 +29,7 @@ export function registrationEndpoint(clientsStore: OAuthRegisteredClientsStore):
       const metadata = OAuthClientMetadataSchema.safeParse(req.body);
       if (!metadata.success) throw new OAuthHttpError(OAuthErrorCode.InvalidClientMetadata, metadata.error.message);
 
-      const isPublicClient = metadata.data.token_endpoint_auth_method === "none";
+      const isPublicClient = (metadata.data.token_endpoint_auth_method ?? "none") === "none";
       const issuedAt = Math.floor(Date.now() / 1000);
       const registered = await clientsStore.registerClient({
         ...metadata.data,

@@ -570,17 +570,28 @@ try {
   assert.deepEqual(allowedHostBody.grant_types, ["authorization_code", "refresh_token"]);
   assert.deepEqual(allowedHostBody.response_types, ["code"]);
 
-  // KNOWN DEFECT: a registration that omits token_endpoint_auth_method is issued a client_secret
-  // (with an expiry) but the response reports token_endpoint_auth_method "none". The secret is
-  // then required by /token and /revoke (see the revocation cases below).
-  const confidentialByDefault = await postJson("/register", { redirect_uris: ["http://localhost:43124/cb"] });
-  assert.equal(confidentialByDefault.status, 201);
-  const confidentialBody = confidentialByDefault.json() as Record<string, unknown>;
+  // A registration that omits token_endpoint_auth_method is a public client: no secret, reported
+  // as "none". It completes /token and /revoke without a secret (see the revocation cases below).
+  const publicByDefault = await postJson("/register", { redirect_uris: ["http://localhost:43124/cb"] });
+  assert.equal(publicByDefault.status, 201);
+  const publicByDefaultBody = publicByDefault.json() as RegisteredClient;
+  assert.deepEqual(Object.keys(publicByDefaultBody).sort(), [
+    "client_id", "client_id_issued_at", "grant_types", "redirect_uris", "response_types", "token_endpoint_auth_method",
+  ]);
+  assert.equal(publicByDefaultBody.token_endpoint_auth_method, "none");
+
+  // client_secret_post is issued a 32-byte hex secret that expires after 30 days.
+  const confidentialRegistration = await postJson("/register", {
+    redirect_uris: ["http://localhost:43124/cb"],
+    token_endpoint_auth_method: "client_secret_post",
+  });
+  assert.equal(confidentialRegistration.status, 201);
+  const confidentialBody = confidentialRegistration.json() as Record<string, unknown>;
   assert.deepEqual(Object.keys(confidentialBody).sort(), [
     "client_id", "client_id_issued_at", "client_secret", "client_secret_expires_at", "grant_types",
     "redirect_uris", "response_types", "token_endpoint_auth_method",
   ]);
-  assert.equal(confidentialBody.token_endpoint_auth_method, "none");
+  assert.equal(confidentialBody.token_endpoint_auth_method, "client_secret_post");
   assertSecretMatches(String(confidentialBody.client_secret), /^[0-9a-f]{64}$/, "issued client_secret");
   assert.equal(
     confidentialBody.client_secret_expires_at,
@@ -955,7 +966,19 @@ try {
   assert.equal(revokeNoClient.headers.get("cache-control"), null);
   assertOAuthError(await postForm("/revoke", { token: "not-a-token", client_id: "devspace-unknown" }), 400, "invalid_client", "Invalid client_id", "revoke unknown client_id");
   assertOAuthError(await postForm("/revoke", { client_id: client.client_id }), 400, "invalid_request", /token/, "revoke missing token");
-  // The client registered without token_endpoint_auth_method must present its secret.
+  // The client registered without token_endpoint_auth_method uses /token and /revoke with no secret.
+  {
+    const defaultTokens = await issueTokens(publicByDefaultBody);
+    const defaultRefreshed = assertTokenResponse(
+      await tokenRequest({ grant_type: "refresh_token", refresh_token: defaultTokens.refresh_token, client_id: publicByDefaultBody.client_id }),
+      "devspace audit", "refresh by client registered without an auth method",
+    );
+    const defaultRevoke = await postForm("/revoke", { token: defaultRefreshed.access_token, client_id: publicByDefaultBody.client_id });
+    assert.equal(defaultRevoke.status, 200, `revoke by client registered without an auth method (body ${bodyHint(defaultRevoke)})`);
+    assert.deepEqual(defaultRevoke.json(), {});
+    await assertMcpRejected(`Bearer ${defaultRefreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "token revoked by client registered without an auth method");
+  }
+  // The client_secret_post client must present its secret.
   assertOAuthError(
     await postForm("/revoke", { token: "not-a-token", client_id: String(confidentialBody.client_id) }),
     400, "invalid_client", "Client secret is required", "revoke secret-holding client without secret",
