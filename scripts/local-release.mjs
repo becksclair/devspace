@@ -139,6 +139,7 @@ export function prepareRelease({
   }
 
   mkdirSync(releases, { recursive: true });
+  removeStaleStages(appRoot);
   const build = mkdtempSync(join(tmpdir(), "devspace-release-build-"));
   const checkout = join(build, "checkout");
   const binDir = join(build, "bin");
@@ -206,6 +207,21 @@ export function prepareRelease({
   }
 }
 
+/** Removes `.stage-<pid>` directories whose `prepare` run is no longer alive. */
+export function removeStaleStages(appRoot) {
+  const releases = join(appRoot, "releases");
+  if (!existsSync(releases)) return;
+  for (const entry of readdirSync(releases)) {
+    const pid = /^\.stage-(\d+)$/.exec(entry)?.[1];
+    if (pid === undefined) continue;
+    try {
+      process.kill(Number(pid), 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") rmSync(join(releases, entry), { recursive: true, force: true });
+    }
+  }
+}
+
 /** The commit directory name `<appRoot>/<name>` points to, or undefined when the link does not exist. */
 export function currentRelease(appRoot, name = "current") {
   try {
@@ -233,37 +249,77 @@ export function pruneReleases(appRoot, keep) {
   }
 }
 
+/** The release `<appRoot>/<name>` points to, when the link targets a prepared release directory. */
+export function linkedRelease(appRoot, name) {
+  const release = currentRelease(appRoot, name);
+  if (!release) return undefined;
+  const pointsIntoReleases = readlinkSync(join(appRoot, name)) === join("releases", release);
+  return pointsIntoReleases && existsSync(join(appRoot, "releases", release, "dist", "cli.js")) ? release : undefined;
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function activateRelease({ appRoot, commit, restart, probe }) {
   if (!existsSync(join(appRoot, "releases", commit, "dist", "cli.js"))) {
     throw new Error(`release ${commit} is not prepared under ${appRoot}`);
   }
-  const previous = currentRelease(appRoot);
+  // Only a link that targets a prepared release is a rollback target. A dangling or hand-made
+  // link must neither be restored nor replace a good `previous`.
+  const replaced = linkedRelease(appRoot, "current");
+  const recorded = linkedRelease(appRoot, "previous");
+  const fallback = [replaced, recorded].find((release) => release && release !== commit);
+
   pointLink(appRoot, "current", commit);
-  let healthy = false;
-  let failure = "";
+  let failure;
   try {
     await restart();
-    healthy = await probe(commit);
+    if (!(await probe(commit))) failure = "";
   } catch (error) {
-    failure = ` (${error instanceof Error ? error.message : String(error)})`;
+    failure = ` (${errorMessage(error)})`;
   }
-  if (!healthy) {
-    if (previous && previous !== commit) {
-      pointLink(appRoot, "current", previous);
-      let restored = false;
-      try {
-        await restart();
-        restored = await probe(previous);
-      } catch {}
+
+  if (failure !== undefined) {
+    if (!fallback) {
       throw new Error(
-        `release ${commit} did not become healthy${failure}; ${restored ? `restored ${previous}` : `restoring ${previous} also failed`}`,
+        `release ${commit} did not become healthy${failure} and there is no previous release to restore; current still points at ${commit}`,
       );
     }
-    throw new Error(`release ${commit} did not become healthy${failure} and there is no previous release to restore`);
+    pointLink(appRoot, "current", fallback);
+    // Probe even when the restart fails: if no restart went through in either direction (a
+    // mistyped label, for example), the process that was running before is still serving.
+    let restartFailure = "";
+    try {
+      await restart();
+    } catch (error) {
+      restartFailure = `; the rollback restart failed (${errorMessage(error)})`;
+    }
+    let restored = false;
+    try {
+      restored = await probe(fallback);
+    } catch {}
+    throw new Error(
+      `release ${commit} did not become healthy${failure}; ` +
+        (restored
+          ? `restored ${fallback}`
+          : `restoring ${fallback} also failed: current points at ${fallback}, but it does not report healthy`) +
+        restartFailure,
+    );
   }
-  if (previous && previous !== commit) pointLink(appRoot, "previous", previous);
-  pruneReleases(appRoot, new Set([commit, currentRelease(appRoot, "previous")].filter(Boolean)));
-  return { commit, previous };
+
+  if (replaced && replaced !== commit) pointLink(appRoot, "previous", replaced);
+  pruneReleases(appRoot, new Set([commit, linkedRelease(appRoot, "previous")].filter(Boolean)));
+  return { commit, previous: replaced };
+}
+
+/**
+ * The commit `activate <rev>` names. A prepared release named by its full commit (a rollback,
+ * typically) needs no git lookup, so it works from a checkout that no longer has that commit.
+ */
+export function resolveActivationCommit(appRoot, rev, repoRoot = REPO_ROOT) {
+  const prepared = /^[0-9a-f]{40}$/.test(rev) && existsSync(join(appRoot, "releases", rev, "dist", "cli.js"));
+  return prepared ? rev : resolveCommit(repoRoot, rev);
 }
 
 /** True when a /healthz body reports a healthy process built from `commit`. */
@@ -295,6 +351,9 @@ async function runPrepare(args) {
   const { values, positionals } = parseCommandArgs(args, { "app-root": { type: "string" }, node: { type: "string" } });
   if (positionals.length > 1) throw new UsageError("prepare takes at most one revision");
   if (values.node !== undefined && !isAbsolute(values.node)) throw new UsageError("--node must be an absolute path");
+  // prepareRelease runs synchronously. With a handler installed, an interrupt ends the running
+  // child and lets the cleanup in `finally` run, instead of killing this process before it can.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
   prepareRelease({
     rev: positionals[0] ?? "HEAD",
     appRoot: values["app-root"] ? resolve(values["app-root"]) : defaultAppRoot(),
@@ -322,7 +381,7 @@ async function runActivate(args) {
   if (process.platform !== "darwin") throw new UsageError("activate restarts a launchd LaunchAgent and runs only on macOS");
 
   const appRoot = values["app-root"] ? resolve(values["app-root"]) : defaultAppRoot();
-  const commit = resolveCommit(REPO_ROOT, positionals[0]);
+  const commit = resolveActivationCommit(appRoot, positionals[0]);
   const target = `gui/${process.getuid()}/${values.label}`;
   const result = await activateRelease({
     appRoot,
