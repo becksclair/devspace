@@ -304,17 +304,39 @@ function errorMessage(error) {
 /**
  * Takes the per-app-root activation lock and returns its release function. Two overlapping
  * activations would each prune the release the other selected, so the whole switch, health
- * check, rollback and prune runs under one lock. A lock left by a dead process is replaced.
+ * check, rollback and prune runs under one lock.
+ *
+ * A lock left by a dead process is replaced, and that replacement is itself exclusive: without
+ * it, two activations could both judge the lock stale and the second would remove the lock the
+ * first had just taken.
  */
 function acquireActivationLock(appRoot) {
   const lock = join(appRoot, ".activate-lock");
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const take = () => {
+    mkdirSync(lock);
     try {
-      mkdirSync(lock);
       writeFileSync(join(lock, "pid"), `${process.pid}\n`);
-      return () => rmSync(lock, { recursive: true, force: true });
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
+      rmSync(lock, { recursive: true, force: true });
+      throw error;
+    }
+    return () => rmSync(lock, { recursive: true, force: true });
+  };
+  try {
+    return take();
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+
+  const recovery = `${lock}-recovery`;
+  try {
+    mkdirSync(recovery);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    throw new Error(`another activation is replacing a stale lock; remove ${recovery} if no activation is running`);
+  }
+  try {
+    if (existsSync(lock)) {
       let owner;
       try {
         owner = Number(readFileSync(join(lock, "pid"), "utf8"));
@@ -325,8 +347,15 @@ function acquireActivationLock(appRoot) {
       if (processAlive(owner)) throw new Error(`another activation (pid ${owner}) is running for ${appRoot}`);
       rmSync(lock, { recursive: true, force: true });
     }
+    try {
+      return take();
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      throw new Error(`another activation took the lock for ${appRoot} first`);
+    }
+  } finally {
+    rmSync(recovery, { recursive: true, force: true });
   }
-  throw new Error(`could not take the activation lock at ${lock}`);
 }
 
 export async function activateRelease({ appRoot, commit, restart, probe }) {

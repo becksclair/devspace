@@ -342,6 +342,25 @@ test("an activation replaces a lock left by a dead process and releases its own 
   assert.equal(existsSync(join(appRoot, ".activate-lock")), false);
 });
 
+test("replacing a stale lock is exclusive", async (t) => {
+  const appRoot = appRootWith("a");
+  t.after(() => rmSync(appRoot, { recursive: true, force: true }));
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  mkdirSync(join(appRoot, ".activate-lock"));
+  writeFileSync(join(appRoot, ".activate-lock", "pid"), `${dead}\n`);
+  // Another activation is already replacing the stale lock.
+  mkdirSync(join(appRoot, ".activate-lock-recovery"));
+  const fake = recorder();
+  await assert.rejects(
+    activateRelease({ appRoot, commit: "a", restart: fake.restart, probe: fake.probe }),
+    /another activation is replacing a stale lock/,
+  );
+  assert.equal(fake.calls.restart, 0);
+  assert.equal(currentRelease(appRoot), undefined);
+  // The stale lock was left for the activation that is replacing it.
+  assert.equal(existsSync(join(appRoot, ".activate-lock")), true);
+});
+
 test("release Node must be the launcher's major version", () => {
   assert.equal(parseNodeMajor("v24.22.2"), 24);
   assert.equal(parseNodeMajor("26.13.1"), 26);
