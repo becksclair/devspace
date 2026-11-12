@@ -39,6 +39,30 @@ The page sets `document.documentElement.dataset.harnessState` to `loading`, then
 widget is inside `#stage`. Read, write, and edit cards are collapsed until their header is clicked;
 an automated browser reaches it through the two nested frames.
 
+A widget failure turns the state to `error` even after `ready`, so check it again after clicking:
+an uncaught error, an unhandled rejection, or any CSP violation other than the one known benign
+report (zod's `new Function` probe, `script-src` blocking `eval` in the `mcp-app-vendor` chunk).
+A blocked WebAssembly compilation reports `blocked wasm-eval`. The page also sets
+`data-harness-failures` and `data-harness-csp-violations` on `<html>`.
+
+### Sweep procedure
+
+The smoke test cannot click inside the widget, so after a widget or bundler change run this sweep
+with any browser automation at hand (none is a repository dependency):
+
+1. `bun run build:check`, then start `bun run widget:host` once per mode (`full`, `changes`,
+   `workspace`); each prints its URL.
+2. For every scenario listed as available in `?scenario=index`, at `theme=light` and `theme=dark`
+   and `width=480`, under the default CSP (no `csp=wasm`): open the deep link and wait for
+   `data-harness-state` to leave `loading`.
+3. In the inner widget frame (`iframe[srcdoc]` inside the sandbox frame), click `.tool-header` on
+   collapsible cards; on review cards click `Show N more files` and each `.review-diff-file-header`.
+4. After about two seconds, require `data-harness-state="ready"`, `data-harness-failures="0"`,
+   and no `Loading` text left in the widget.
+
+The theme and width selectors, `Re-send result`, and `Teardown` exercise the host-context,
+re-delivery, and teardown paths of the same mounted widget.
+
 The toolbar can switch theme and width live (sent as `ui/notifications/host-context-changed`),
 re-send the last tool result, and send `ui/resource-teardown`. The bridge log panel shows every
 message in both directions; the CSP panel shows the policy applied to the widget document.
@@ -53,8 +77,10 @@ message in both directions; the CSP panel shows the policy applied to the widget
   header, and the proxy inserts a small script before it that reports CSP violations and uncaught
   errors to the host. A real host's policy may be stricter or looser than the spec's.
 - `?csp=wasm` adds `'wasm-unsafe-eval'` to `script-src`. The spec gives a resource no way to
-  request it; the option exists so the syntax-highlighting and diff renderers, which compile
-  WebAssembly, can be inspected at all.
+  request it, and the widget does not need it: the code and diff renderers use Shiki's JavaScript
+  engine (`preferredHighlighter: "shiki-js"`), and `vite.config.ts` stubs the WebAssembly
+  highlighters (`@pierre/highlights`, Shiki's Oniguruma engine) out of the bundle. The option
+  remains a diagnostic switch for comparing behaviour.
 - App-initiated `tools/call` is refused for tools whose `_meta.ui.visibility` lacks `"app"`.
 - The harness talks to DevSpace through a same-origin JSON proxy (`/api`) that holds a static API
   key minted into the temporary state directory. The sky-cua, node_repl, and T3 capabilities are
@@ -68,4 +94,5 @@ and Claude, whose sandboxes, CSP, fonts, sizing, and lifecycle differ from this 
 
 `src/widget-host.test.ts` (part of `bun run test`) runs every scenario's tool calls through the
 same `/api` proxy without a browser and checks the results with the widget's own card validators.
-Without `dist/ui` it runs DevSpace with widgets off and skips the resource checks.
+With `dist/ui` it also fails if any built chunk compiles WebAssembly. Without `dist/ui` it runs
+DevSpace with widgets off and skips the resource checks.

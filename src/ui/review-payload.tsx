@@ -1,8 +1,21 @@
 import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { parsePatchFiles, type FileDiffMetadata, type FileDiffOptions } from "@pierre/diffs";
+import {
+  getFiletypeFromFileName,
+  parsePatchFiles,
+  type FileDiffMetadata,
+  type FileDiffOptions,
+} from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import type { HostContext, ToolResultCard } from "./card-types.js";
+import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
+import { PayloadErrorBoundary, PlainFallback } from "./payload-fallback.js";
+import {
+  PREFERRED_HIGHLIGHTER,
+  plainRenderText,
+  renderFailureMessage,
+  splitPatchByFile,
+} from "./render-fallback.js";
 
 type ThemeType = "light" | "dark";
 
@@ -23,11 +36,18 @@ export function mountReviewPayload(
   options: PayloadRendererOptions,
 ): MountedPayload {
   const root = createRoot(container);
-  root.render(<ReviewPayload {...options} />);
+  const render = (next: PayloadRendererOptions) => {
+    root.render(
+      <PayloadErrorBoundary fallbackText={plainRenderText(next.card)} tool={next.card.tool}>
+        <ReviewPayload {...next} />
+      </PayloadErrorBoundary>,
+    );
+  };
+  render(options);
 
   return {
     update(nextOptions) {
-      root.render(<ReviewPayload {...nextOptions} />);
+      render(nextOptions);
     },
     unmount() {
       root.unmount();
@@ -43,7 +63,9 @@ function ReviewPayload({
 }: PayloadRendererOptions) {
   const patch = card.payload?.patch;
   const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
-  const files = useMemo(() => parseFiles(patch), [patch]);
+  const parsed = useMemo(() => parseFiles(patch), [patch]);
+  const files = parsed.files;
+  const sections = useMemo(() => (patch ? splitPatchByFile(patch) : []), [patch]);
   const visibleFiles = typeof visibleFileCount === "number"
     ? files.slice(0, visibleFileCount)
     : files;
@@ -51,6 +73,7 @@ function ReviewPayload({
 
   if (errorMessage) return <StatusLine message={errorMessage} tone="error" />;
   if (!patch) return <StatusLine message="Diff payload is not available." />;
+  if (parsed.error) return <PlainFallback message={parsed.error} text={patch} tool={card.tool} />;
   if (files.length === 0) return <StatusLine message="No diff hunks to review." />;
 
   const options = diffOptions(themeType);
@@ -86,7 +109,11 @@ function ReviewPayload({
                 </span>
               </button>
               {isOpen ? (
-                <FileDiff fileDiff={fileDiff} options={options} className="pierre-diff" />
+                <ReviewFileDiff
+                  fileDiff={fileDiff}
+                  options={options}
+                  plainText={sections.length === files.length ? sections[index] ?? patch : patch}
+                />
               ) : null}
             </div>
           );
@@ -96,10 +123,30 @@ function ReviewPayload({
   );
 }
 
-function parseFiles(patch: string | undefined): FileDiffMetadata[] {
-  if (!patch) return [];
-  return parsePatchFiles(patch, { cacheKeyPrefix: "review", throwOnError: true })
-    .flatMap((parsedPatch) => parsedPatch.files);
+function ReviewFileDiff({
+  fileDiff,
+  options,
+  plainText,
+}: {
+  fileDiff: FileDiffMetadata;
+  options: FileDiffOptions<undefined, undefined>;
+  plainText: string;
+}) {
+  const failure = useHighlighterFailure(fileDiff.lang ?? getFiletypeFromFileName(fileDiff.name));
+  if (failure) return <PlainFallback message={failure} text={plainText} tool="show_changes" />;
+  return <FileDiff fileDiff={fileDiff} options={options} className="pierre-diff" />;
+}
+
+function parseFiles(patch: string | undefined): { files: FileDiffMetadata[]; error?: string } {
+  if (!patch) return { files: [] };
+  try {
+    return {
+      files: parsePatchFiles(patch, { cacheKeyPrefix: "review", throwOnError: true })
+        .flatMap((parsedPatch) => parsedPatch.files),
+    };
+  } catch (error) {
+    return { files: [], error: renderFailureMessage(error) };
+  }
 }
 
 function diffStats(fileDiff: FileDiffMetadata): { additions: number; removals: number } {
@@ -114,11 +161,9 @@ function diffStats(fileDiff: FileDiffMetadata): { additions: number; removals: n
 
 function diffOptions(themeType: ThemeType): FileDiffOptions<undefined, undefined> {
   return {
-    theme: {
-      light: "pierre-light",
-      dark: "pierre-dark",
-    },
+    theme: CODE_THEMES,
     themeType,
+    preferredHighlighter: PREFERRED_HIGHLIGHTER,
     diffStyle: "unified",
     diffIndicators: "bars",
     hunkSeparators: "line-info",

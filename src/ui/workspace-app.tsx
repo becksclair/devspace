@@ -23,6 +23,7 @@ import {
   type ToolName,
   type ToolResultCard,
 } from "./card-types.js";
+import { plainRenderText, renderFailureMessage } from "./render-fallback.js";
 import "./workspace-app.css";
 
 interface ToolDisplay {
@@ -478,7 +479,13 @@ async function renderPayloadIfNeeded(): Promise<void> {
 
     renderStatus(target, "Loading details...");
 
-    const { mountHeavyPayload } = await import("./heavy-payload.js");
+    let mountHeavyPayload: typeof import("./heavy-payload.js").mountHeavyPayload;
+    try {
+      ({ mountHeavyPayload } = await import("./heavy-payload.js"));
+    } catch (loadError) {
+      if (target === currentPayloadContainer && expanded && card) renderPlainFallback(target, card, loadError);
+      return;
+    }
     if (target !== currentPayloadContainer || !expanded || !card) return;
 
     currentPayload = mountHeavyPayload(target, {
@@ -501,7 +508,13 @@ async function renderPayloadIfNeeded(): Promise<void> {
 
     renderStatus(target, "Loading review...");
 
-    const { mountReviewPayload } = await import("./review-payload.js");
+    let mountReviewPayload: typeof import("./review-payload.js").mountReviewPayload;
+    try {
+      ({ mountReviewPayload } = await import("./review-payload.js"));
+    } catch (loadError) {
+      if (target === currentPayloadContainer && card) renderPlainFallback(target, card, loadError);
+      return;
+    }
     if (target !== currentPayloadContainer || !card) return;
 
     currentPayload = mountReviewPayload(target, {
@@ -544,6 +557,15 @@ function renderStatus(
 ): void {
   unmountCurrentPayload();
   container.replaceChildren(element("div", { className: `status ${tone}`, text: message }));
+}
+
+function renderPlainFallback(container: HTMLElement, card: ToolResultCard, error: unknown): void {
+  unmountCurrentPayload();
+  const status = element("div", { className: "status error", text: renderFailureMessage(error) });
+  status.setAttribute("role", "alert");
+  const text = plainRenderText(card);
+  container.replaceChildren(status);
+  if (text) container.append(element("pre", { className: `text-payload ${card.tool}`, text }));
 }
 
 function renderPrePayload(

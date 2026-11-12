@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { FileStream, getFiletypeFromFileName } from "@pierre/diffs";
 import type { FileStreamOptions } from "@pierre/diffs";
@@ -12,6 +12,9 @@ import {
   type HostContext,
   type ToolResultCard,
 } from "./card-types.js";
+import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
+import { PayloadErrorBoundary, PlainFallback } from "./payload-fallback.js";
+import { PREFERRED_HIGHLIGHTER, plainRenderText, renderFailureMessage } from "./render-fallback.js";
 
 type ThemeType = "light" | "dark";
 
@@ -31,11 +34,18 @@ export function mountHeavyPayload(
   options: PayloadRendererOptions,
 ): MountedPayload {
   const root = createRoot(container);
-  root.render(<HeavyPayload {...options} />);
+  const render = (next: PayloadRendererOptions) => {
+    root.render(
+      <PayloadErrorBoundary fallbackText={plainRenderText(next.card)} tool={next.card.tool}>
+        <HeavyPayload {...next} />
+      </PayloadErrorBoundary>,
+    );
+  };
+  render(options);
 
   return {
     update(nextOptions) {
-      root.render(<HeavyPayload {...nextOptions} />);
+      render(nextOptions);
     },
     unmount() {
       root.unmount();
@@ -60,7 +70,7 @@ function HeavyPayload({
     const patch = card.payload?.patch || card.payload?.diff;
     if (!patch) return <StatusLine message="Diff payload is not available." />;
 
-    return <DiffPayload patch={patch} themeType={themeType} />;
+    return <DiffPayload patch={patch} path={card.path} tool={card.tool} themeType={themeType} />;
   }
 
   const text = payloadText(card.payload);
@@ -92,14 +102,13 @@ function FilePayload({
   themeType: ThemeType;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const fileOptions: FileStreamOptions = useMemo(
     () => ({
-      theme: {
-        light: "pierre-light",
-        dark: "pierre-dark",
-      },
+      theme: CODE_THEMES,
       themeType,
       overflow: "scroll",
+      preferredHighlighter: PREFERRED_HIGHLIGHTER,
     }),
     [themeType],
   );
@@ -107,6 +116,7 @@ function FilePayload({
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
+    setFailure(null);
 
     const fileStream = new FileStream({
       ...fileOptions,
@@ -121,11 +131,19 @@ function FilePayload({
     });
     let disposed = false;
 
-    void fileStream.setup(source, wrapper).then(() => {
-      if (!disposed) return;
-      fileStream.cleanUp();
-      wrapper.replaceChildren();
-    });
+    fileStream.setup(source, wrapper).then(
+      () => {
+        if (!disposed) return;
+        fileStream.cleanUp();
+        wrapper.replaceChildren();
+      },
+      (error: unknown) => {
+        if (disposed) return;
+        fileStream.cleanUp();
+        wrapper.replaceChildren();
+        setFailure(renderFailureMessage(error));
+      },
+    );
 
     return () => {
       disposed = true;
@@ -134,25 +152,31 @@ function FilePayload({
     };
   }, [fileOptions, path, startLine, text]);
 
+  if (failure) return <PlainFallback message={failure} text={text} tool="read_file" />;
   return <div ref={wrapperRef} className="pierre-file" />;
 }
 
 function DiffPayload({
   patch,
+  path,
+  tool,
   themeType,
 }: {
   patch: string;
+  path: string | undefined;
+  tool: string;
   themeType: ThemeType;
 }) {
+  const failure = useHighlighterFailure(path ? getFiletypeFromFileName(path) : undefined);
+  if (failure) return <PlainFallback message={failure} text={patch} tool={tool} />;
+
   return (
     <PatchDiff
       patch={patch}
       options={{
-        theme: {
-          light: "pierre-light",
-          dark: "pierre-dark",
-        },
+        theme: CODE_THEMES,
         themeType,
+        preferredHighlighter: PREFERRED_HIGHLIGHTER,
         diffStyle: "unified",
         diffIndicators: "bars",
         hunkSeparators: "line-info",

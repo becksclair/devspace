@@ -7,6 +7,7 @@
 // build, it runs the servers with widgets off and skips those checks.
 
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import { startHarness, widgetBundleExists, type HarnessOptions, type RunningHarness } from "./testing/widget-host/harness-server.js";
 import {
   SCENARIOS,
@@ -44,6 +45,26 @@ assert.equal(
     "media-src 'self' data: http://a.test; frame-src 'none'; object-src 'none'; base-uri 'self'",
 );
 assert.match(widgetContentSecurityPolicy(undefined, true), /script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';/);
+
+/**
+ * MCP hosts frame the widget under a CSP without 'wasm-unsafe-eval', so a shipped chunk that
+ * compiles WebAssembly either fails at load (blocking every renderer that imports it) or is dead
+ * weight. The widget uses the shiki-js highlighter; vite.config.ts stubs the WebAssembly ones.
+ */
+function wasmCompilingChunks(assetsDir: URL): string[] {
+  const compile = /\bWebAssembly\s*\.\s*(?:Module|Instance|compile|compileStreaming|instantiate|instantiateStreaming)\s*\(/;
+  return readdirSync(assetsDir)
+    .filter((file) => file.endsWith(".js"))
+    .filter((file) => compile.test(readFileSync(new URL(file, assetsDir), "utf8")));
+}
+
+if (bundle) {
+  assert.deepEqual(
+    wasmCompilingChunks(new URL("../dist/ui/assets/", import.meta.url)),
+    [],
+    "no widget chunk compiles WebAssembly (the hosts' CSP blocks it)",
+  );
+}
 
 const covered = new Set<string>();
 
