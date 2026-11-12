@@ -97,8 +97,11 @@ function errorRedirect(redirectUri: string, error: OAuthError, state: string | u
 /**
  * The authorization endpoint (RFC 6749 section 3.1), GET or POST. It has no CORS handling: it is
  * navigated to by the user's browser, never fetched cross-origin.
+ *
+ * An absent or empty `scope` resolves here, once, to `defaultScopes` (RFC 6749 section 3.3), so
+ * the approval page, its hidden `scope` field, the code, and the issued tokens all carry it.
  */
-export function authorizationEndpoint(provider: OAuthServerProvider): RequestHandler {
+export function authorizationEndpoint(provider: OAuthServerProvider, defaultScopes: string[]): RequestHandler {
   const router = express.Router();
   router.use(allowedMethods(["GET", "POST"]));
   router.use(express.urlencoded({ extended: false }));
@@ -136,7 +139,7 @@ export function authorizationEndpoint(provider: OAuthServerProvider): RequestHan
         verified.client,
         {
           state,
-          scopes: scope === undefined ? [] : scope.split(" "),
+          scopes: scope === undefined || scope === "" ? [...defaultScopes] : scope.split(" "),
           redirectUri: verified.redirectUri,
           codeChallenge: code_challenge,
           resource: resource ? new URL(resource) : undefined,

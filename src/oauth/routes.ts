@@ -57,7 +57,8 @@ export function authorizationServerMetadata(options: Pick<OAuthRoutesOptions, "i
  */
 export function oauthRoutes(options: OAuthRoutesOptions): express.Router {
   const router = express.Router();
-  router.use("/authorize", authorizationEndpoint(options.provider));
+  // A request without `scope` is granted the first supported scope, the one `/mcp` requires.
+  router.use("/authorize", authorizationEndpoint(options.provider, options.scopesSupported.slice(0, 1)));
   router.use("/token", tokenEndpoint(options.provider));
   router.use(mcpAuthMetadataRouter({
     oauthMetadata: authorizationServerMetadata(options),

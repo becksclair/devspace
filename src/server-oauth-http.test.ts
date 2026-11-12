@@ -298,6 +298,33 @@ async function approvalPage(params: AuthorizeParams): Promise<{ page: HttpResult
   return { page, csrf: field[1] };
 }
 
+function htmlUnescape(value: string): string {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+/** The approval form's hidden fields in document order: what a browser submits besides the password. */
+function hiddenFields(page: HttpResult): Array<[string, string]> {
+  return [...page.text.matchAll(/<input type="hidden" name="([^"]*)" value="([^"]*)" \/>/g)]
+    .map((match): [string, string] => [htmlUnescape(match[1]), htmlUnescape(match[2])]);
+}
+
+/**
+ * Submits the approval form the way a browser would: the form has no `action`, so it posts to the
+ * page's own URL, with the hidden fields, the owner password, and the CSRF cookie the page set.
+ */
+function approveAsBrowser(pagePath: string, page: HttpResult): Promise<HttpResult> {
+  return http(pagePath, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie: `${CSRF_COOKIE}=${csrfCookieValue(page)}` },
+    body: new URLSearchParams([...hiddenFields(page), ["owner_token", ownerToken]]).toString(),
+  });
+}
+
 function approve(params: AuthorizeParams, fields: { owner_token?: string; csrf_token?: string }, cookie?: string): Promise<HttpResult> {
   return postForm("/authorize", { ...params, ...fields }, cookie === undefined ? {} : { cookie: `${CSRF_COOKIE}=${cookie}` });
 }
@@ -612,6 +639,13 @@ try {
   assert.equal(page.headers.get("access-control-allow-origin"), null);
   assertSecretMatches(page.text, /name="csrf_token" value="[0-9a-f]{64}"/, "approval page csrf_token field");
   assertSecretMatches(page.text, /name="owner_token"/, "approval page owner_token field");
+  // The hidden fields carry the request back unchanged, so the hand-built approvals below submit
+  // what the page itself would.
+  assert.deepEqual(
+    hiddenFields(page).filter(([name]) => name !== "csrf_token"),
+    definedEntries(baseParams),
+    "approval page hidden fields",
+  );
 
   // Pre-redirect failures are direct 400 JSON responses and never redirect.
   const noClient = await authorizeGet({ ...baseParams, client_id: undefined });
@@ -855,12 +889,33 @@ try {
   assert.equal(getWithoutAuth.status, 401);
   assert.equal(getWithoutAuth.headers.get("www-authenticate"), wwwAuthenticate("invalid_token", "Missing Authorization header"));
 
-  // KNOWN DEFECT: authorize without `scope` renders the page (which displays "devspace") but issues
-  // a token with an empty scope, which /mcp then rejects with insufficient_scope.
-  {
-    const unscoped = await issueTokens(client, { scope: undefined });
-    assert.equal(unscoped.scope, "");
-    await assertMcpRejected(`Bearer ${unscoped.access_token}`, 403, "insufficient_scope", "Insufficient scope", "token issued without scope");
+  // An absent or empty `scope` is granted the first supported scope, the one /mcp requires. The page
+  // shows it, its hidden field carries it, and the approval is submitted exactly as the page would.
+  for (const [label, scope] of [["omitted scope", undefined], ["empty scope", ""]] as const) {
+    const unscopedPair = pkcePair();
+    const params = authorizeParams(client, unscopedPair.challenge, { scope });
+    const pagePath = `/authorize?${new URLSearchParams(definedEntries(params)).toString()}`;
+    const unscopedPage = await http(pagePath);
+    assert.equal(unscopedPage.status, 200, `${label}: approval page (body ${bodyHint(unscopedPage)})`);
+    assert.match(unscopedPage.text, /<dt>Scope<\/dt><dd>devspace<\/dd>/, `${label}: displayed scope`);
+    assert.equal(new Map(hiddenFields(unscopedPage)).get("scope"), "devspace", `${label}: hidden scope field`);
+    const unscopedApproval = await approveAsBrowser(pagePath, unscopedPage);
+    assert.equal(unscopedApproval.status, 302, `${label}: approval (body ${bodyHint(unscopedApproval)})`);
+    const unscopedLocation = new URL(unscopedApproval.headers.get("location") ?? "");
+    assert.deepEqual([...unscopedLocation.searchParams.keys()], ["code", "state"], `${label}: redirect parameters`);
+    const unscopedTokens = assertTokenResponse(
+      await tokenRequest({
+        grant_type: "authorization_code",
+        code: unscopedLocation.searchParams.get("code") ?? "",
+        code_verifier: unscopedPair.verifier,
+        redirect_uri: params.redirect_uri,
+        client_id: client.client_id,
+        resource: mcpUrl,
+      }),
+      "devspace",
+      `${label}: token`,
+    );
+    await assertMcpAccepted(unscopedTokens.access_token, `${label}: /mcp`);
   }
 
   // 5. /revoke --------------------------------------------------------------------------------

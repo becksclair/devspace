@@ -195,8 +195,8 @@ try {
   assert.equal(storeFailure.headers.get("cache-control"), "no-store");
   assert.deepEqual(storeFailure.body, { error: "server_error", error_description: "Internal Server Error" });
 
-  // /authorize: what the provider receives. Omitted scope is an empty list (the KNOWN DEFECT
-  // pinned by the oracle), there is no `issuer`, and POST reads the form body.
+  // /authorize: what the provider receives. An omitted scope is the first supported scope, there
+  // is no `issuer`, and POST reads the form body.
   const approved = await form("/authorize", {
     response_type: "code",
     client_id: "one-uri",
@@ -206,7 +206,7 @@ try {
   });
   assert.equal(approved.status, 200);
   assert.deepEqual(Object.keys(calls.authorize[0]).sort(), ["codeChallenge", "redirectUri", "resource", "scopes", "state"]);
-  assert.deepEqual(calls.authorize[0].scopes, []);
+  assert.deepEqual(calls.authorize[0].scopes, ["devspace"]);
   assert.equal(calls.authorize[0].redirectUri, loopback);
   assert.equal(calls.authorize[0].state, undefined);
   assert.equal(calls.authorize[0].resource?.href, `${origin}/mcp`);
