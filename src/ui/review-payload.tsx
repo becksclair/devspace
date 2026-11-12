@@ -12,7 +12,7 @@ import { FileDiff } from "@pierre/diffs/react";
 import type { ToolResultCard } from "./card-types.js";
 import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
 import { PlainFallback, StatusLine, type ThemeType } from "./payload-fallback.js";
-import { reviewFileDisplay } from "./review-files.js";
+import { reviewFileDisplay, reviewFileKindLabel } from "./review-files.js";
 import {
   PREFERRED_HIGHLIGHTER,
   renderFailureMessage,
@@ -77,7 +77,7 @@ export default function ReviewPayload({
               >
                 <span className="review-diff-file-name" title={title}>{title}</span>
                 <span className="review-diff-file-stats">
-                  <span className={`review-diff-file-kind ${display.kind}`}>{display.kind}</span>
+                  <span className={`review-diff-file-kind ${display.kind}`}>{reviewFileKindLabel(display)}</span>
                   {display.showStats ? (
                     <>
                       <span className="add">+{stats.additions}</span>
