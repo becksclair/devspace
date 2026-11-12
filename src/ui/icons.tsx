@@ -77,6 +77,13 @@ const TOOL_ICON_PATHS: Record<IconName, ReactNode> = {
       <path d="M12 17h7" />
     </>
   ),
+  alert: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5v5.5" />
+      <path d="M12 16.5h.01" />
+    </>
+  ),
   review: (
     <>
       <path d="M5 4h14v16H5z" />

@@ -26,7 +26,13 @@ export default function HeavyPayload({
 }) {
   if (isEditTool(card.tool) || isWriteTool(card.tool)) {
     const patch = card.payload?.patch || card.payload?.diff;
-    if (!patch) return <StatusLine message="Diff payload is not available." />;
+    if (!patch) {
+      // write_file results carry no diff; show the result message instead.
+      const message = payloadText(card.payload);
+      return message
+        ? <pre className={`text-payload ${card.tool}`}>{message}</pre>
+        : <StatusLine message="Diff payload is not available." />;
+    }
 
     return <DiffPayload patch={patch} path={card.path} tool={card.tool} themeType={themeType} />;
   }

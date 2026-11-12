@@ -19,6 +19,10 @@ assert.equal(cardFromToolResult(result({ _meta: { tool: "not_a_tool" }, structur
 assert.equal(cardFromToolResult(result({ _meta: { tool: "read_file" } })), null, "no structured card");
 assert.deepEqual(cardFromToolResult(result({ _meta: { tool: "read_file", card: { path: "b" } } })), { path: "b", tool: "read_file" });
 
+// isError comes from the result, not the card.
+assert.equal(cardFromToolResult(result({ isError: true, _meta: { tool: "run_shell", card: { summary: {} } } }))?.isError, true);
+assert.equal(cardFromToolResult(result({ _meta: { tool: "run_shell", card: { summary: {} } } }))?.isError, undefined);
+
 // A result resets the per-card toggles and bumps the version.
 let state = widgetReducer(initialWidgetState, {
   type: "toolResult",

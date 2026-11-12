@@ -12,6 +12,7 @@ import { FileDiff } from "@pierre/diffs/react";
 import type { ToolResultCard } from "./card-types.js";
 import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
 import { PlainFallback, StatusLine, type ThemeType } from "./payload-fallback.js";
+import { reviewFileDisplay } from "./review-files.js";
 import {
   PREFERRED_HIGHLIGHTER,
   renderFailureMessage,
@@ -49,14 +50,21 @@ export default function ReviewPayload({
         {visibleFiles.map((fileDiff, index) => {
           const key = fileDiff.cacheKey ?? `${fileDiff.prevName ?? ""}->${fileDiff.name}-${index}`;
           const stats = diffStats(fileDiff);
-          const isOpen = openFiles.has(key);
+          const section = sections.length === files.length ? sections[index] : undefined;
+          const display = reviewFileDisplay(
+            { type: fileDiff.type, prevName: fileDiff.prevName, name: fileDiff.name, hunkCount: fileDiff.hunks.length },
+            section,
+          );
+          const isOpen = display.expandable && openFiles.has(key);
+          const title = display.previousPath ? `${display.previousPath} → ${fileDiff.name}` : fileDiff.name;
 
           return (
             <div className="review-diff-file" key={key}>
               <button
                 type="button"
                 className="review-diff-file-header"
-                aria-expanded={isOpen}
+                aria-expanded={display.expandable ? isOpen : undefined}
+                disabled={!display.expandable}
                 onClick={() => {
                   const next = new Set(openFiles);
                   if (next.has(key)) {
@@ -67,17 +75,22 @@ export default function ReviewPayload({
                   setOpenFiles(next);
                 }}
               >
-                <span className="review-diff-file-name">{fileDiff.name}</span>
+                <span className="review-diff-file-name" title={title}>{title}</span>
                 <span className="review-diff-file-stats">
-                  <span className="add">+{stats.additions}</span>
-                  <span className="remove">-{stats.removals}</span>
+                  <span className={`review-diff-file-kind ${display.kind}`}>{display.kind}</span>
+                  {display.showStats ? (
+                    <>
+                      <span className="add">+{stats.additions}</span>
+                      <span className="remove">-{stats.removals}</span>
+                    </>
+                  ) : null}
                 </span>
               </button>
               {isOpen ? (
                 <ReviewFileDiff
                   fileDiff={fileDiff}
                   options={options}
-                  plainText={sections.length === files.length ? sections[index] ?? patch : patch}
+                  plainText={section ?? patch}
                 />
               ) : null}
             </div>

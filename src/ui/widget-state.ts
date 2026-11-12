@@ -68,5 +68,6 @@ export function cardFromToolResult(result: CallToolResult): ToolResultCard | nul
   const structuredContent = result.structuredContent as Partial<ToolResultCard> | undefined;
   const structured = metaCard ? { ...structuredContent, ...metaCard } : structuredContent;
   if (!isToolName(tool) || !isToolResultCard(structured)) return null;
-  return { ...structured, tool: tool as ToolName };
+  const card: ToolResultCard = { ...structured, tool: tool as ToolName };
+  return result.isError === true ? { ...card, isError: true } : card;
 }

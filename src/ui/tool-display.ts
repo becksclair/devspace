@@ -8,6 +8,7 @@ import {
   isShellTool,
   isTerminalTool,
   isWriteTool,
+  payloadText,
   summaryNumber,
   type ToolName,
   type ToolResultCard,
@@ -22,7 +23,8 @@ export type IconName =
   | "files"
   | "list"
   | "terminal"
-  | "review";
+  | "review"
+  | "alert";
 
 export interface ToolDisplay {
   icon: IconName;
@@ -33,8 +35,10 @@ export interface ToolDisplay {
 
 export type SummaryBadge =
   | { kind: "stats"; label: string; additions: number; removals: number }
-  | { kind: "workspace"; agentsFiles: number; skills: number }
-  | { kind: "text"; text: string };
+  | { kind: "workspace"; agentsFiles?: number; skills?: number }
+  | { kind: "text"; text: string }
+  | { kind: "error"; text: string }
+  | { kind: "none" };
 
 /** Number of review files listed before "Show N more files". */
 export const REVIEW_COLLAPSED_FILES = 3;
@@ -145,6 +149,11 @@ function getToolLabel(card: ToolResultCard): string {
 export function summaryBadge(card: ToolResultCard): SummaryBadge {
   const summary = card.summary ?? {};
 
+  if (card.isError) {
+    const exitCode = exitCodeFromText(payloadText(card.payload));
+    return { kind: "error", text: exitCode === undefined ? "error" : `exit ${exitCode}` };
+  }
+
   if (isReviewTool(card.tool)) {
     return {
       kind: "stats",
@@ -155,19 +164,21 @@ export function summaryBadge(card: ToolResultCard): SummaryBadge {
   }
 
   if (isEditTool(card.tool) || isWriteTool(card.tool)) {
-    return {
-      kind: "stats",
-      label: "Diff statistics",
-      additions: Number(summary.additions ?? 0),
-      removals: Number(summary.removals ?? 0),
-    };
+    // edit_file and write_file results carry no counts in their summary; count the patch when
+    // there is one, and show no badge rather than a made-up +0 -0 when there is not.
+    const additions = summaryNumber(summary, "additions");
+    const removals = summaryNumber(summary, "removals");
+    const counts = additions !== undefined && removals !== undefined
+      ? { additions, removals }
+      : patchLineCounts(card.payload?.patch);
+    return counts ? { kind: "stats", label: "Diff statistics", ...counts } : { kind: "none" };
   }
 
   if (card.tool === "open_workspace") {
     return {
       kind: "workspace",
-      agentsFiles: summaryNumber(summary, "agentsFiles") ?? 0,
-      skills: summaryNumber(summary, "skills") ?? 0,
+      agentsFiles: summaryNumber(summary, "agentsFiles") ?? card.agentsFiles?.length,
+      skills: summaryNumber(summary, "skills") ?? card.skills?.length,
     };
   }
 
@@ -181,6 +192,46 @@ export function summaryBadge(card: ToolResultCard): SummaryBadge {
   }
 
   return { kind: "text", text: `${String(summary.lines ?? 0)} lines` };
+}
+
+/**
+ * Added and removed lines of a unified diff, counted within each hunk's declared line ranges, or
+ * undefined when the patch has no hunk.
+ */
+export function patchLineCounts(patch: string | undefined): { additions: number; removals: number } | undefined {
+  if (!patch) return undefined;
+  let additions = 0;
+  let removals = 0;
+  let oldLeft = 0;
+  let newLeft = 0;
+  let sawHunk = false;
+  for (const line of patch.split("\n")) {
+    const hunk = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+    if (hunk) {
+      sawHunk = true;
+      oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]);
+      newLeft = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      continue;
+    }
+    if (oldLeft <= 0 && newLeft <= 0) continue;
+    if (line.startsWith("+")) {
+      additions += 1;
+      newLeft -= 1;
+    } else if (line.startsWith("-")) {
+      removals += 1;
+      oldLeft -= 1;
+    } else if (!line.startsWith("\\")) {
+      oldLeft -= 1;
+      newLeft -= 1;
+    }
+  }
+  return sawHunk ? { additions, removals } : undefined;
+}
+
+/** The exit code of a failed shell command, from the message DevSpace appends to its output. */
+export function exitCodeFromText(text: string): number | undefined {
+  const match = /Command exited with code (\d+)\s*$/.exec(text);
+  return match ? Number(match[1]) : undefined;
 }
 
 /** How many review files the header lists and how many hide behind "Show N more files". */

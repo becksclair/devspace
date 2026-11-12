@@ -40,7 +40,8 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   if (state.card.tool === "open_workspace" && feed.enabled) {
     return <ActivityCard {...props} card={state.card} />;
   }
-  if (isReviewTool(state.card.tool)) return <ReviewCard {...props} card={state.card} />;
+  // A failed review call has no review to show; it renders as a plain error card.
+  if (isReviewTool(state.card.tool) && !state.card.isError) return <ReviewCard {...props} card={state.card} />;
   return <ToolCard {...props} card={state.card} />;
 }
 
@@ -61,7 +62,7 @@ function ToolCard({ card, state, themeType, onToggleExpanded }: CardProps) {
 
   return (
     <main className="shell">
-      <section className={`tool-card ${display.tone}`}>
+      <section className={card.isError ? `tool-card ${display.tone} error` : `tool-card ${display.tone}`}>
         <button
           className={machine ? "tool-header has-machine" : "tool-header"}
           type="button"
@@ -69,7 +70,7 @@ function ToolCard({ card, state, themeType, onToggleExpanded }: CardProps) {
           disabled={!expandable}
           onClick={expandable ? onToggleExpanded : undefined}
         >
-          <span className="tool-icon" aria-hidden="true"><ToolIcon name={display.icon} /></span>
+          <span className="tool-icon" aria-hidden="true"><ToolIcon name={card.isError ? "alert" : display.icon} /></span>
           <span className="tool-main">
             <span className="tool-title">{display.title}</span>
             <span className="tool-label" title={display.label}>{display.label}</span>
@@ -213,17 +214,27 @@ function SummaryBadgeView({ card }: { card: ToolResultCard }) {
         </span>
       );
     case "workspace":
+      if (badge.agentsFiles === undefined && badge.skills === undefined) return <span />;
       return (
         <span className="badge-group" role="group" aria-label="Workspace summary">
-          <span className={`badge ${badge.agentsFiles > 0 ? "success" : "muted"}`}>
-            {badge.agentsFiles > 0 ? <CheckCircleIcon /> : null}
-            {badge.agentsFiles > 0 ? "AGENTS.md" : "No AGENTS.md"}
-          </span>
-          <span className="badge">{`${badge.skills} skills`}</span>
+          {badge.agentsFiles === undefined ? null : (
+            <span className={`badge ${badge.agentsFiles > 0 ? "success" : "muted"}`}>
+              {badge.agentsFiles > 0 ? <CheckCircleIcon /> : null}
+              {badge.agentsFiles > 0 ? "AGENTS.md" : "No AGENTS.md"}
+            </span>
+          )}
+          {badge.skills === undefined ? null : (
+            <span className="badge">{`${badge.skills} ${badge.skills === 1 ? "skill" : "skills"}`}</span>
+          )}
         </span>
       );
     case "text":
       return <span className="badge">{badge.text}</span>;
+    case "error":
+      return <span className="badge error">{badge.text}</span>;
+    case "none":
+      // Keeps the header grid's badge column.
+      return <span />;
   }
 }
 

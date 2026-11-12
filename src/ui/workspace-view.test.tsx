@@ -71,6 +71,31 @@ html = render({ tool: "run_shell", summary: { command: "ls", lines: 2 }, payload
 assert.match(html, /<span class="tool-label" title="ls">ls<\/span><\/span><span class="badge">ran · 2 lines<\/span>/);
 assert.match(html, /<div class="tool-body"><pre class="text-payload run_shell">a\nb<\/pre><\/div>/);
 
+// A failed shell call renders as an error, with its output as error text when expanded.
+const failedShell: ToolResultCard = {
+  tool: "run_shell",
+  isError: true,
+  summary: { command: "exit 3", lines: 5 },
+  payload: { content: [{ type: "text", text: "fatal: simulated failure\n\n\nCommand exited with code 3" }] },
+};
+html = render(failedShell, { expanded: true });
+assert.match(html, /<section class="tool-card shell error">/);
+assert.match(html, /<circle cx="12" cy="12" r="8.5"><\/circle>/);
+assert.match(html, /<span class="badge error">exit 3<\/span>/);
+assert.match(html, /<div class="tool-body"><pre class="text-payload error-payload" role="alert">fatal: simulated failure\n\n\nCommand exited with code 3<\/pre><\/div>/);
+// A failed read never reaches the code renderer.
+html = render({ tool: "read_file", isError: true, path: "missing.ts", payload: { content: [{ type: "text", text: "ENOENT" }] } }, { expanded: true });
+assert.match(html, /<section class="tool-card read error">.*<span class="badge error">error<\/span>/);
+assert.match(html, /<pre class="text-payload error-payload" role="alert">ENOENT<\/pre>/);
+assert.equal(html.includes("Loading details"), false);
+// A failed review call renders as an error card, not a review.
+html = render({ tool: "show_changes", isError: true, payload: { content: [{ type: "text", text: "not a git repository" }] } });
+assert.match(html, /<section class="tool-card review error"><button class="tool-header"/);
+
+// A write result without a patch shows no diff badge (an empty span keeps the grid column).
+html = render({ tool: "write_file", path: "a.ts", summary: { lines: 1 }, payload: { content: [{ type: "text", text: "Successfully wrote" }] } });
+assert.match(html, /<span class="tool-label" title="a.ts">a.ts<\/span><\/span><span><\/span><span class="chevron"/);
+
 // Workspace card with AGENTS.md, expanded.
 const workspace: ToolResultCard = {
   tool: "open_workspace",
