@@ -61,6 +61,9 @@ async function runTool<TInput, TDetails = unknown>(
 ): Promise<ToolResponse<TDetails>> {
   try {
     const result = await execute(input, requestId, signal);
+    // Pi 1.x reports a failed tool (for example a non-zero shell exit) as a
+    // result flagged isError instead of throwing. Keep the thrown-error shape.
+    if (result.isError) return { content: toMcpContent(result), isError: true };
     return {
       content: toMcpContent(result),
       details: result.details,
