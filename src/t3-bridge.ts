@@ -11,7 +11,6 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import { ProtocolError, SdkHttpError } from "@modelcontextprotocol/client";
 import type { McpServer, CallToolResult } from "@modelcontextprotocol/server";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -1497,9 +1496,8 @@ export async function closeSharedT3Bridges(): Promise<void> {
 export async function registerT3Tools(server: McpServer, bridge: T3Bridge, annotationProfile: AnnotationProfile): Promise<void> {
   const definitions = await bridge.toolDefinitions();
   for (const definition of definitions) {
-    registerAppTool(
-      server as never,
-      definition.name as never,
+    server.registerTool(
+      definition.name,
       {
         title: definition.title,
         description: definition.description,
@@ -1512,13 +1510,13 @@ export async function registerT3Tools(server: McpServer, bridge: T3Bridge, annot
           openWorldHint: !definition.readOnly,
         }),
         _meta: {},
-      } as never,
-      (async (input: unknown, extra: { mcpReq?: { signal?: AbortSignal } } | undefined) => {
-        const result = await bridge.call(definition.name, isRecord(input) ? input : {}, extra?.mcpReq?.signal);
+      },
+      async (input, ctx) => {
+        const result = await bridge.call(definition.name, isRecord(input) ? input : {}, ctx.mcpReq.signal);
         if (result.content.length > 0) return result;
         const text = result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : "";
         return { ...result, content: [{ type: "text", text }] };
-      }) as never,
+      },
     );
   }
 }

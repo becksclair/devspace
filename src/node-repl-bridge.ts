@@ -50,7 +50,7 @@ export async function createNodeReplBridge(config: { nodeRepl?: { binPath: strin
     };
   }
   const env = bridgeChildEnvironment(process.env, secretNames);
-  const transport = new StdioClientTransport({ command: binPath, args: [], cwd, env, stderr: "inherit" } as never);
+  const transport = new StdioClientTransport({ command: binPath, args: [], cwd, env, stderr: "inherit" });
   const client = new Client({ name: "devspace-node-repl-bridge", version: "1.0.0" }, { capabilities: {} });
   try { await client.connect(transport); } catch (e) {
     return {
@@ -74,7 +74,7 @@ export async function createNodeReplBridge(config: { nodeRepl?: { binPath: strin
     async close() { try { await client.close(); } catch {} },
     async callTool(name, args, signal) {
       try {
-        const res = await client.callTool({ name, arguments: args as Record<string, unknown> } as never, { signal } as never);
+        const res = await client.callTool({ name, arguments: args as Record<string, unknown> }, { signal });
         const content = (res as { content?: unknown[] }).content ?? [];
         const structuredContent = (res as { structuredContent?: unknown }).structuredContent;
         const isError = (res as { isError?: boolean }).isError;
