@@ -3,6 +3,12 @@
   font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
   background: transparent;
   color: var(--color-text-primary, #f5f5f6);
+  /* Status text colours: the MCP Apps variable, the legacy name, then the hue mixed into the
+     host's primary text colour, which keeps contrast on the host's background in either theme
+     (and on the dark fallback backgrounds when the host sends no variables). */
+  --status-success: var(--color-text-success, var(--color-success-text, color-mix(in srgb, #16a34a 50%, var(--color-text-primary, #f5f5f6))));
+  --status-danger: var(--color-text-danger, var(--color-danger-text, color-mix(in srgb, #dc2626 50%, var(--color-text-primary, #f5f5f6))));
+  --status-info: var(--color-text-info, var(--color-accent-primary, color-mix(in srgb, #2563eb 50%, var(--color-text-primary, #f5f5f6))));
 }
 
 * {
@@ -95,9 +101,9 @@ body {
   max-width: 100%;
   overflow: hidden;
   padding: 1px 7px;
-  border: 1px solid color-mix(in srgb, var(--color-accent-primary, #8ab4f8) 42%, var(--color-border-primary, #3a3a40));
+  border: 1px solid color-mix(in srgb, var(--status-info) 42%, var(--color-border-primary, #3a3a40));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-accent-primary, #8ab4f8) 12%, transparent);
+  background: color-mix(in srgb, var(--status-info) 12%, transparent);
   color: var(--color-text-secondary, #d6d6dc);
   font-size: var(--font-text-sm-size, 12px);
   font-weight: 500;
@@ -153,8 +159,8 @@ body {
 }
 
 .badge.success {
-  border-color: color-mix(in srgb, var(--color-success-text, #6fda83) 44%, var(--color-border-primary, #3a3a40));
-  color: var(--color-success-text, #6fda83);
+  border-color: color-mix(in srgb, var(--status-success) 44%, var(--color-border-primary, #3a3a40));
+  color: var(--status-success);
 }
 
 .badge.muted {
@@ -169,11 +175,11 @@ body {
 }
 
 .add {
-  color: var(--color-success-text, #6fda83);
+  color: var(--status-success);
 }
 
 .remove {
-  color: var(--color-danger-text, #ee7676);
+  color: var(--status-danger);
 }
 
 .chevron {
@@ -311,22 +317,22 @@ body {
   padding: 0 6px;
   border: 1px solid color-mix(in srgb, currentColor 36%, transparent);
   border-radius: 999px;
-  color: var(--color-text-tertiary, #a3a3aa);
+  color: var(--color-text-secondary, #d6d6dc);
   font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
   font-size: 11px;
   line-height: 16px;
 }
 
 .review-diff-file-kind.added {
-  color: var(--color-success-text, #6fda83);
+  color: var(--status-success);
 }
 
 .review-diff-file-kind.deleted {
-  color: var(--color-danger-text, #ee7676);
+  color: var(--status-danger);
 }
 
 .review-diff-file-kind.renamed {
-  color: var(--color-accent-primary, #8ab4f8);
+  color: var(--status-info);
 }
 
 .review-diff-file-name,
@@ -353,7 +359,7 @@ body {
 }
 
 .status.error {
-  color: var(--color-danger-text, #ee7676);
+  color: var(--status-danger);
 }
 
 .pierre-diff,
@@ -387,17 +393,17 @@ body {
 
 /* Failed tool calls: the card, its icon and badge take the danger tone. */
 .tool-card.error {
-  border-color: color-mix(in srgb, var(--color-text-danger, var(--color-danger-text, #ee7676)) 45%, var(--color-border-primary, #3a3a40));
+  border-color: color-mix(in srgb, var(--status-danger) 45%, var(--color-border-primary, #3a3a40));
 }
 
 .tool-card.error .tool-icon,
 .badge.error,
 .text-payload.error-payload {
-  color: var(--color-text-danger, var(--color-danger-text, #ee7676));
+  color: var(--status-danger);
 }
 
 .badge.error {
-  border-color: color-mix(in srgb, var(--color-text-danger, var(--color-danger-text, #ee7676)) 44%, var(--color-border-primary, #3a3a40));
+  border-color: color-mix(in srgb, var(--status-danger) 44%, var(--color-border-primary, #3a3a40));
 }
 
 .text-payload.run_shell,
@@ -476,15 +482,15 @@ body {
 }
 
 .activity-row.success .activity-status {
-  color: var(--color-success-text, #6fda83);
+  color: var(--status-success);
 }
 
 .activity-row.error .activity-status {
-  color: var(--color-danger-text, #ee7676);
+  color: var(--status-danger);
 }
 
 .activity-row.running .activity-status {
-  color: var(--color-accent-primary, #8ab4f8);
+  color: var(--status-info);
   animation: activity-pulse 1.15s ease-in-out infinite alternate;
 }
 
@@ -534,8 +540,8 @@ body {
 }
 
 .activity-error {
-  border-top: 1px solid color-mix(in srgb, var(--color-danger-text, #ee7676) 24%, transparent);
-  color: var(--color-danger-text, #ee7676);
+  border-top: 1px solid color-mix(in srgb, var(--status-danger) 24%, transparent);
+  color: var(--status-danger);
 }
 
 .activity-footer {
