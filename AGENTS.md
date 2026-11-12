@@ -68,7 +68,9 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - File-tool path canonicalization lives in `src/roots.ts` (`canonicalTarget`).
 - Child-process environments must come from `src/shell-environment.ts`: `createShellRuntime` for shell and terminal children (strips `config.secretNames`), `bridgeChildEnvironment` for MCP bridge children such as sky-cua and node_repl (additionally strips `GH_TOKEN`, `GITHUB_TOKEN`, and `*_NODE_TOKEN`), `gitChildEnvironment` for git children (strips the names that `WorkspaceRegistry` and `createGatewayServer` register from `config.secretNames`, and the names listed in `DEVSPACE_INFRA_SECRET_NAMES`). Never copy `process.env` directly.
 - Never log tokens or secret values.
-- The OAuth authorization-server routes are composed in `src/oauth-routes.ts` from the individual `@modelcontextprotocol/server-legacy/auth` handlers, not its `mcpAuthRouter`, which would add the RFC 9207 `iss` redirect parameter and metadata claim. `src/server-oauth-http.test.ts` pins the OAuth wire output.
+- DevSpace owns its OAuth authorization-server endpoint code in `src/oauth/` (`/authorize`, `/token`, `/register`, `/revoke`, client authentication, CORS, the `OAuthHttpError` type). No upstream package maintains or patches it, so treat changes there as security review, not dependency bumps. The discovery documents and `/mcp` bearer authentication come from the maintained `@modelcontextprotocol/express` (`mcpAuthMetadataRouter`, `requireBearerAuth`).
+- Token verifiers must throw `OAuthHttpError` with `invalid_token`; anything else makes `/mcp` answer 500 instead of a 401 challenge.
+- `src/server-oauth-http.test.ts` pins the OAuth wire output, including its `KNOWN DEFECT` cases; RFC 9207 `iss` is deliberately not sent (see the comment in `src/oauth/authorize.ts`).
 
 ## Environment notes
 

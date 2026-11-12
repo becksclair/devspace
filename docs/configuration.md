@@ -105,6 +105,8 @@ MCP clients discover metadata from:
 
 The authorization server does not implement RFC 9207: its metadata has no `authorization_response_iss_parameter_supported` field, and authorization redirects carry no `iss` parameter.
 
+The authorization-server endpoints are DevSpace's own code in `src/oauth/`; the discovery documents and `/mcp` bearer authentication use the maintained `@modelcontextprotocol/express` package. See [Security](security.md#oauth-and-network-exposure).
+
 ## Tool Modes
 
 `DEVSPACE_TOOL_NAMING` controls tool names.
