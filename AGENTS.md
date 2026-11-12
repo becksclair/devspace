@@ -83,5 +83,5 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 
 ## Delivery and plans
 
-- Pushing `main` to Gitea runs `.gitea/workflows/publish-runtime-artifact.yml`, which publishes the runtime artifact **and** dispatches `.gitea/workflows/deploy-runtime-artifact.yml`.
+- Production is the gateway on Svartal. It is deployed by hand from a release directory with `bun run release:prepare` and `bun run release:activate` (`docs/svartal-gateway.md`); merging to `main` deploys nothing. The repository's only remote is GitHub, so the workflows under `.gitea/workflows/` (publish and deploy a Linux runtime artifact on a push to `main`) do not run.
 - Improvement plans live in `plans/`; `plans/README.md` is the index.

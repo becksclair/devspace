@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import type { ServerConfig, WidgetMode } from "./config.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
 import { normalizeRootPolicies } from "./roots.js";
-import { createServer } from "./server.js";
+import { createServer, isWorkspaceAppResourceUri } from "./server.js";
 
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const accessToken = "wire-shape-test-access-token";
@@ -35,8 +35,9 @@ interface WireResource {
   _meta?: Record<string, unknown>;
 }
 
-// `bun run test` runs before the UI build in CI; widgets need only the manifest entry to list the
-// card resource, so a placeholder manifest is written when there is none and removed afterwards.
+// `bun run test` runs before the UI build in CI. Listing the card needs the manifest entry and
+// reading it needs the entry's asset to exist, so a placeholder manifest and asset are written
+// when there is no build and removed afterwards.
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const uiDir = join(distDir, "ui");
 const manifestDir = join(uiDir, ".vite");
@@ -45,8 +46,13 @@ const createdDistDir = !existsSync(distDir);
 const createdUiDir = !existsSync(uiDir);
 const createdManifestDir = !existsSync(manifestDir);
 const createdManifest = !existsSync(manifestPath);
+const assetsDir = join(uiDir, "assets");
+const createdAssetsDir = !existsSync(assetsDir);
+const placeholderAsset = join(assetsDir, "workspace-app-placeholder.js");
 if (createdManifest) {
   await mkdir(manifestDir, { recursive: true });
+  await mkdir(assetsDir, { recursive: true });
+  await writeFile(placeholderAsset, "");
   await writeFile(manifestPath, JSON.stringify({ "workspace-app.html": { file: "assets/workspace-app-placeholder.js" } }));
 }
 
@@ -104,11 +110,28 @@ function configFor(stateDir: string, widgets: WidgetMode): ServerConfig {
   };
 }
 
+/** The card's address under a widget build other than the current one. */
+const EARLIER_BUILD_URI = "ui://devspace/workspace-app-0123456789ab.html";
+/** Addresses that only resemble the card's; none of them may be answered. */
+const FOREIGN_URIS = [
+  "ui://other-server/workspace-app-0123456789ab.html",
+  "ui://devspace/other-app-0123456789ab.html",
+  "ui://devspace/workspace-app-0123456789ab.html/extra",
+  "ui://devspace/workspace-app-latest.html",
+  "ui://devspace/workspace-app-0123456789AB.html",
+  "ui://devspace/workspace-app-0123456789a.html",
+  "ui://devspace/workspace-app-0123456789abc.html",
+  "ui://devspace/workspace-app-0123456789ab.htmlx",
+  "file:///etc/workspace-app-0123456789ab.html",
+];
+
 interface WireLists {
   tools: WireTool[];
   /** The resources/list result, or the JSON-RPC error when the server has no resources capability. */
   resources: { resources?: WireResource[]; error?: { code: number } };
   templates: { resourceTemplates?: unknown[]; error?: { code: number } };
+  /** resources/read results or errors, by requested address (widgets on only). */
+  reads: Record<string, { result?: unknown; error?: { code: number; message?: string } }>;
   /** tools/call errors for an unknown name and for a real tool this session does not register. */
   unregisteredCalls: Record<string, { result?: unknown; error?: { code: number; message?: string } }>;
 }
@@ -151,7 +174,16 @@ async function listWire(widgets: WidgetMode): Promise<WireLists> {
       const call = await post(endpoint, { jsonrpc: "2.0", id: 5 + index, method: "tools/call", params: { name, arguments: {} } }, sessionId);
       unregisteredCalls[name] = { result: call.result, error: call.error };
     }
+    const reads: WireLists["reads"] = {};
+    const listed = (resources.result as { resources?: WireResource[] } | undefined)?.resources?.[0]?.uri;
+    if (listed) {
+      for (const [index, uri] of [listed, EARLIER_BUILD_URI, ...FOREIGN_URIS].entries()) {
+        const read = await post(endpoint, { jsonrpc: "2.0", id: 20 + index, method: "resources/read", params: { uri } }, sessionId);
+        reads[uri] = { result: read.result, error: read.error };
+      }
+    }
     return {
+      reads,
       unregisteredCalls,
       tools: (tools.result as { tools: WireTool[] }).tools,
       resources: resources.error ? { error: resources.error } : (resources.result as { resources: WireResource[] }),
@@ -213,8 +245,35 @@ try {
     assert.equal(tool._meta?.ui?.resourceUri, card.uri, `${tool.name} references the listed card`);
     assert.equal(tool._meta?.["ui/resourceUri"], card.uri, `${tool.name} carries the legacy ui/resourceUri key`);
   }
-  assert.deepEqual(full.templates, { resourceTemplates: [] });
+  // The card is also readable under earlier builds' addresses; that is advertised as one template
+  // and adds nothing to resources/list.
+  assert.deepEqual(
+    (full.templates.resourceTemplates as Array<{ uriTemplate: string; mimeType?: string }>).map((template) => [template.uriTemplate, template.mimeType]),
+    [["ui://devspace/workspace-app-{build}.html", "text/html;profile=mcp-app"]],
+  );
   process.stdout.write("ok - widgets full: 2020-12 schemas, no execution, one content-hashed card resource\n");
+
+  // A host keeps the card's address from its last scan, and the address changes with every widget
+  // build: an earlier build's address is answered with the current bundle, under the address asked for.
+  assert.notEqual(card.uri, EARLIER_BUILD_URI);
+  assert.equal(isWorkspaceAppResourceUri(card.uri), true, "the pattern matches the address the server really produces");
+  const readContents = (uri: string) => (full.reads[uri]?.result as { contents: Array<{ uri: string; mimeType: string; text: string; _meta?: Record<string, unknown> }> } | undefined)?.contents;
+  const current = readContents(card.uri);
+  const earlier = readContents(EARLIER_BUILD_URI);
+  assert.equal(current?.length, 1);
+  assert.equal(current?.[0]?.uri, card.uri);
+  assert.match(current?.[0]?.text ?? "", /<main id="app"/);
+  assert.equal(earlier?.length, 1, "an earlier build's address is answered");
+  assert.equal(earlier?.[0]?.uri, EARLIER_BUILD_URI, "under the address that was asked for");
+  assert.equal(earlier?.[0]?.text, current?.[0]?.text, "with the current bundle");
+  assert.equal(earlier?.[0]?.mimeType, "text/html;profile=mcp-app");
+  assert.deepEqual(earlier?.[0]?._meta, current?.[0]?._meta);
+  for (const uri of FOREIGN_URIS) {
+    assert.equal(full.reads[uri]?.result, undefined, `${uri}: no contents`);
+    assert.equal(full.reads[uri]?.error?.code, -32602, `${uri}: not found`);
+    assert.match(full.reads[uri]?.error?.message ?? "", /^Resource not found: /, `${uri}: the SDK's not-found message`);
+  }
+  process.stdout.write("ok - an earlier build's card address reads the current bundle; foreign addresses are not found\n");
 
   // SDK v2 / MCP specification behavior: tools/call for a tool the session does not register is a
   // JSON-RPC -32602 error, not a tool result with isError (SDK v1 answered isError: true).
@@ -233,6 +292,8 @@ try {
   process.stdout.write("ok - widgets off: 2020-12 schemas, no execution, no resources capability\n");
 } finally {
   if (createdManifest) await rm(manifestPath, { force: true });
+  if (createdManifest) await rm(placeholderAsset, { force: true });
+  if (createdAssetsDir) await rm(assetsDir, { recursive: true, force: true });
   if (createdManifestDir) await rm(manifestDir, { recursive: true, force: true });
   if (createdUiDir) await rm(uiDir, { recursive: true, force: true });
   if (createdDistDir) await rm(distDir, { recursive: true, force: true });
