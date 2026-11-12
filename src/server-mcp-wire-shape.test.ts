@@ -1,6 +1,7 @@
 // Pins the tools/list and resources/list wire shape that MCP hosts see under SDK v2: every tool
 // schema is JSON Schema 2020-12, no tool advertises `execution`, and the workspace card resource
-// is listed (with widgets on) under a content-hashed ui:// URI that the tools reference.
+// is listed (with widgets on) under a content-hashed ui:// URI that the tools reference. It also
+// pins the JSON-RPC error that tools/call answers for a tool the session does not register.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -108,6 +109,8 @@ interface WireLists {
   /** The resources/list result, or the JSON-RPC error when the server has no resources capability. */
   resources: { resources?: WireResource[]; error?: { code: number } };
   templates: { resourceTemplates?: unknown[]; error?: { code: number } };
+  /** tools/call errors for an unknown name and for a real tool this session does not register. */
+  unregisteredCalls: Record<string, { result?: unknown; error?: { code: number; message?: string } }>;
 }
 
 async function listWire(widgets: WidgetMode): Promise<WireLists> {
@@ -143,7 +146,13 @@ async function listWire(widgets: WidgetMode): Promise<WireLists> {
     assert.equal(tools.error, undefined, "tools/list succeeds");
     const resources = await post(endpoint, { jsonrpc: "2.0", id: 3, method: "resources/list", params: {} }, sessionId);
     const templates = await post(endpoint, { jsonrpc: "2.0", id: 4, method: "resources/templates/list", params: {} }, sessionId);
+    const unregisteredCalls: WireLists["unregisteredCalls"] = {};
+    for (const [index, name] of ["no_such_tool", "show_changes"].entries()) {
+      const call = await post(endpoint, { jsonrpc: "2.0", id: 5 + index, method: "tools/call", params: { name, arguments: {} } }, sessionId);
+      unregisteredCalls[name] = { result: call.result, error: call.error };
+    }
     return {
+      unregisteredCalls,
       tools: (tools.result as { tools: WireTool[] }).tools,
       resources: resources.error ? { error: resources.error } : (resources.result as { resources: WireResource[] }),
       templates: templates.error ? { error: templates.error } : (templates.result as { resourceTemplates: unknown[] }),
@@ -157,7 +166,7 @@ async function listWire(widgets: WidgetMode): Promise<WireLists> {
   }
 }
 
-async function post(endpoint: string, body: unknown, sessionId?: string): Promise<{ sessionId?: string; result?: unknown; error?: { code: number } }> {
+async function post(endpoint: string, body: unknown, sessionId?: string): Promise<{ sessionId?: string; result?: unknown; error?: { code: number; message?: string } }> {
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -171,7 +180,7 @@ async function post(endpoint: string, body: unknown, sessionId?: string): Promis
   assert.ok(response.ok, `${JSON.stringify(body)} answered HTTP ${response.status}`);
   const text = await response.text();
   const data = text.split("\n").filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("");
-  const message = data ? (JSON.parse(data) as { result?: unknown; error?: { code: number } }) : undefined;
+  const message = data ? (JSON.parse(data) as { result?: unknown; error?: { code: number; message?: string } }) : undefined;
   return { sessionId: response.headers.get("mcp-session-id") ?? undefined, result: message?.result, error: message?.error };
 }
 
@@ -206,6 +215,15 @@ try {
   }
   assert.deepEqual(full.templates, { resourceTemplates: [] });
   process.stdout.write("ok - widgets full: 2020-12 schemas, no execution, one content-hashed card resource\n");
+
+  // SDK v2 / MCP specification behavior: tools/call for a tool the session does not register is a
+  // JSON-RPC -32602 error, not a tool result with isError (SDK v1 answered isError: true).
+  assert.equal(full.tools.some((tool) => tool.name === "show_changes"), false, "show_changes is not registered with widgets full");
+  for (const name of ["no_such_tool", "show_changes"]) {
+    assert.equal(full.unregisteredCalls[name]?.result, undefined, `${name}: no tool result`);
+    assert.deepEqual(full.unregisteredCalls[name]?.error, { code: -32602, message: `Tool ${name} not found` }, `${name}: JSON-RPC invalid params`);
+  }
+  process.stdout.write("ok - tools/call for an unregistered tool answers JSON-RPC -32602\n");
 
   const off = await listWire("off");
   assertToolSchemas(off.tools);
