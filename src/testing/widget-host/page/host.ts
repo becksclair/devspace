@@ -117,11 +117,14 @@ let frame: HTMLIFrameElement | undefined;
 let lastResult: ToolResult | undefined;
 let lastSizeChangeAt = 0;
 let cspViolations = 0;
+let widgetFailures = 0;
 let logCount = 0;
 let activityTotal = -1;
 const activityWaiters: Array<() => void> = [];
 
 function setHarnessState(next: "loading" | "ready" | "error", message?: string): void {
+  // A widget failure is sticky: a later "ready" does not hide it.
+  if (next === "ready" && widgetFailures > 0) return;
   document.documentElement.dataset.harnessState = next;
   ui.status.textContent = next;
   if (next === "error") {
@@ -131,6 +134,23 @@ function setHarnessState(next: "loading" | "ready" | "error", message?: string):
     ui.error.hidden = true;
     ui.error.textContent = "";
   }
+}
+
+/**
+ * zod probes for `new Function` support once per load (in the mcp-app-vendor chunk) and falls back
+ * when the CSP blocks it; that report is expected. Every other violation, including a blocked
+ * WebAssembly compilation (`wasm-eval`), is a widget failure.
+ */
+function isKnownBenignViolation(detail: { directive?: string; blockedURI?: string }): boolean {
+  return detail.directive === "script-src" && detail.blockedURI === "eval";
+}
+
+/** Marks the run as failed; automation reads `data-harness-state` and `data-harness-failures`. */
+function recordWidgetFailure(message: string): void {
+  widgetFailures += 1;
+  document.documentElement.dataset.harnessFailures = String(widgetFailures);
+  log("host", `widget failure: ${message}`);
+  setHarnessState("error", widgetFailures === 1 ? message : `${message} (and ${widgetFailures - 1} earlier)`);
 }
 
 function updateUrl(): void {
@@ -385,15 +405,20 @@ async function mountWidget(options: {
   };
   created.onloggingmessage = ({ logger, level, data }) => {
     if (logger !== "widget-host/sandbox") return;
-    const detail = data as { kind?: string; policy?: string } | undefined;
+    const detail = data as { kind?: string; policy?: string; directive?: string; blockedURI?: string; message?: string } | undefined;
     if (detail?.kind === "csp-applied" && typeof detail.policy === "string") {
       ui.cspPolicy.textContent = detail.policy.split("; ").join(";\n");
     } else if (detail?.kind === "csp-violation") {
       cspViolations += 1;
+      document.documentElement.dataset.harnessCspViolations = String(cspViolations);
       ui.csp.textContent = `CSP violations: ${cspViolations}`;
       console.warn("widget CSP violation", detail);
+      if (!isKnownBenignViolation(detail)) {
+        recordWidgetFailure(`CSP violation: ${detail.directive ?? "?"} blocked ${detail.blockedURI ?? "?"}`);
+      }
     } else if (level === "error") {
       console.error("widget error", detail);
+      recordWidgetFailure(`${detail?.kind ?? "error"}: ${detail?.message ?? JSON.stringify(detail)}`);
     }
   };
 
@@ -481,6 +506,8 @@ function bindControls(navigate: () => void): void {
 }
 
 async function main(): Promise<void> {
+  document.documentElement.dataset.harnessFailures = "0";
+  document.documentElement.dataset.harnessCspViolations = "0";
   setHarnessState("loading");
   applyPageTheme();
   updateUrl();

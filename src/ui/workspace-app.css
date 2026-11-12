@@ -299,8 +299,34 @@ body {
   text-align: left;
 }
 
-.review-diff-file-header:hover {
+.review-diff-file-header:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-background-tertiary, #333338) 84%, transparent);
+}
+
+.review-diff-file-header:disabled {
+  cursor: default;
+}
+
+.review-diff-file-kind {
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, currentColor 36%, transparent);
+  border-radius: 999px;
+  color: var(--color-text-tertiary, #a3a3aa);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.review-diff-file-kind.added {
+  color: var(--color-success-text, #6fda83);
+}
+
+.review-diff-file-kind.deleted {
+  color: var(--color-danger-text, #ee7676);
+}
+
+.review-diff-file-kind.renamed {
+  color: var(--color-accent-primary, #8ab4f8);
 }
 
 .review-diff-file-name,
@@ -357,6 +383,21 @@ body {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Failed tool calls: the card, its icon and badge take the danger tone. */
+.tool-card.error {
+  border-color: color-mix(in srgb, var(--color-text-danger, var(--color-danger-text, #ee7676)) 45%, var(--color-border-primary, #3a3a40));
+}
+
+.tool-card.error .tool-icon,
+.badge.error,
+.text-payload.error-payload {
+  color: var(--color-text-danger, var(--color-danger-text, #ee7676));
+}
+
+.badge.error {
+  border-color: color-mix(in srgb, var(--color-text-danger, var(--color-danger-text, #ee7676)) 44%, var(--color-border-primary, #3a3a40));
 }
 
 .text-payload.run_shell,

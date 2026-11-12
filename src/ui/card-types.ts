@@ -31,6 +31,8 @@ export type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
 
 export interface ToolResultCard {
   tool: ToolName;
+  /** The tool result's `isError`; set by the widget from the result, not sent in the card. */
+  isError?: boolean;
   machine?: {
     id?: string;
     displayName?: string;
