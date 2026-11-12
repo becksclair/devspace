@@ -75,7 +75,15 @@ export default function ReviewPayload({
                   setOpenFiles(next);
                 }}
               >
-                <span className="review-diff-file-name" title={title}>{title}</span>
+                {display.previousPath ? (
+                  // The previous path gives way first, so a narrow row keeps the current path.
+                  <span className="review-diff-file-name renamed" title={title}>
+                    <span className="review-diff-file-previous">{`${display.previousPath} →\u00a0`}</span>
+                    <span className="review-diff-file-current">{fileDiff.name}</span>
+                  </span>
+                ) : (
+                  <span className="review-diff-file-name" title={title}>{title}</span>
+                )}
                 <span className="review-diff-file-stats">
                   <span className={`review-diff-file-kind ${display.kind}`}>{reviewFileKindLabel(display)}</span>
                   {display.showStats ? (

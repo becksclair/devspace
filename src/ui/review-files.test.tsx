@@ -113,6 +113,10 @@ assert.match(headers[1]!, /class="review-diff-file-kind deleted"/);
 assert.match(headers[2]!, /class="review-diff-file-kind renamed"/);
 assert.match(headers[3]!, /class="review-diff-file-kind modified"/);
 assert.match(headers[5]!, /disabled=""/);
+// A rename keeps the current path in its own element, which the CSS truncates last.
+assert.match(headers[5]!, /title="src\/legacy-name.ts → src\/display-name.ts"/);
+assert.match(headers[5]!, /<span class="review-diff-file-current">src\/display-name.ts<\/span>/);
+assert.match(headers[7]!, /<span class="review-diff-file-name" title="src\/greeting.ts">src\/greeting.ts<\/span>/);
 assert.match(headers[7]!, /aria-expanded="false"/);
 assert.equal(headers[7]!.includes("disabled"), false);
 

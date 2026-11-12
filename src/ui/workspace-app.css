@@ -349,6 +349,26 @@ body {
   overflow: visible;
 }
 
+.review-diff-file-name.renamed {
+  display: flex;
+  min-width: 0;
+}
+
+.review-diff-file-previous,
+.review-diff-file-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.review-diff-file-previous {
+  flex: 0 100000 auto;
+}
+
+.review-diff-file-current {
+  flex: 0 1 auto;
+}
+
 .status {
   padding: 12px 14px;
   font-size: var(--font-text-sm-size, 13px);
