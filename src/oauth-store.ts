@@ -1,8 +1,6 @@
 import { eq, and } from "drizzle-orm";
-import {
-  OAuthClientInformationFullSchema,
-  type OAuthClientInformationFull,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/server";
+import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/core";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import {
   oauthClients,

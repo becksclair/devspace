@@ -4,10 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Response } from "express";
-import type {
-  OAuthClientInformationFull,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
+import type { AuthorizationParams } from "@modelcontextprotocol/server-legacy/auth";
+import type { OAuthClientInformationFull } from "@modelcontextprotocol/server";
 import {
   SingleUserOAuthProvider,
   FailedApprovalLimiter,

@@ -2,14 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { hostHeaderValidation, localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
-import { DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/sdk/server/requestBody.js";
-import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
-import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl, requireBearerAuth } from "@modelcontextprotocol/server-legacy/auth";
+import { hostHeaderValidation, localhostHostValidation } from "@modelcontextprotocol/express";
+import { McpServer, isInitializeRequest, checkResourceAllowed, resourceUrlFromServerUrl, DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/server";
+import type { ServerContext } from "@modelcontextprotocol/server";
 import {
   registerAppResource,
   registerAppTool,
@@ -43,7 +40,7 @@ import { loadAutoloadSkillDocuments, type AutoloadedSkillDocument } from "./skil
 import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 import { registerGitChildSecretNames } from "./shell-environment.js";
 
-type Transport = StreamableHTTPServerTransport;
+type Transport = NodeStreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";
 
 // sky-cua bridge singleton: lazily created stdio MCP client that proxies sky-cua's tools/list live.
@@ -54,7 +51,7 @@ const skyBridgeCache = new Map<string, Promise<import("./sky-cua/bridge.js").Sky
 // node_repl per-session bridges: one process per MCP session for isolation (UR-REV-004).
 // Keyed by sessionId, sweep alongside transports. Cap via config.nodeRepl.maxPerHost.
 const sessionNodeReplBridges = new Map<string, import("./node-repl-bridge.js").NodeReplBridge>();
-const serverNodeReplBridge = new WeakMap<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, import("./node-repl-bridge.js").NodeReplBridge>();
+const serverNodeReplBridge = new WeakMap<McpServer, import("./node-repl-bridge.js").NodeReplBridge>();
 let pendingNodeReplCreates = 0;
 const serverTransportMap = new WeakMap<object, unknown>();
 async function getSkyBridge(config: ServerConfig): Promise<import("./sky-cua/bridge.js").SkyBridge | null> {
@@ -597,7 +594,7 @@ function serverInstructions(config: ServerConfig, toolNames: ToolNames, effectiv
 
   return `Use DevSpace to work directly in local development workspaces. Call ${toolNames.openWorkspace} once per project folder to obtain a workspaceId. Reuse that workspaceId for later tools in the same folder. The open result reports canonical path, writability, Git, shell, terminal, user-systemd, and privilege capabilities; heed its warnings. Use mode="isolated" when a source checkout or its Git metadata is read-only and writable independent work is required. Use workspace_status to refresh capabilities. Prefer terminal_start/read/write/resize/status/close for installers, builds, upgrades, long test suites, interactive processes, and any work that should survive an MCP or network interruption; use the shell tool for bounded non-interactive commands. Close the workspace when the workstream is complete. ${agentsMd}${skills}${inspection}Use ${toolNames.read}, ${toolNames.edit}, ${toolNames.write}, and ${toolNames.shell} in whatever combination completes the task most effectively. ${toolNames.shell} provides direct, unfiltered local Bash execution and may be root-capable according to host policy. File tools enforce canonical configured root policy, but shell and terminal tools can perform any action available to the service account. When asked to change, build, or fix something, make the in-scope changes and run relevant validation instead of stopping at instructions or recommendations.${skyCua}${showChanges}${autoloadedSkillsInstructions(autoloadedSkills, toolNames.openWorkspace)}`;
 }
-function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
+function resultOutputSchema(extra: Record<string, z.ZodType> = {}): Record<string, z.ZodType> {
   return {
     result: z
       .string()
@@ -854,11 +851,11 @@ async function routeGatewayTool(
   canonicalTool: CanonicalToolName,
   publicTool: string,
   args: Record<string, unknown>,
-  extra: { requestId: string | number; signal: AbortSignal },
+  extra: ServerContext,
 ) {
   const routed = await router.execute(canonicalTool, args, {
-    requestId: String(extra.requestId).slice(0, 128),
-    signal: extra.signal,
+    requestId: String(extra.mcpReq.id).slice(0, 128),
+    signal: extra.mcpReq.signal,
   });
   return gatewayPublicResult(routed, canonicalTool, publicTool, args);
 }
@@ -868,12 +865,12 @@ async function routeStandaloneTool(
   canonicalTool: CanonicalToolName,
   publicTool: string,
   args: Record<string, unknown>,
-  extra: { requestId: string | number; signal: AbortSignal },
+  extra: ServerContext,
 ) {
   if (!executor) throw new Error("Standalone executor is unavailable in gateway mode");
   const result = await executor.execute(canonicalTool, args as never, {
-    requestId: String(extra.requestId).slice(0, 128),
-    signal: extra.signal,
+    requestId: String(extra.mcpReq.id).slice(0, 128),
+    signal: extra.mcpReq.signal,
   });
   const workspaceId = canonicalTool === "open_workspace"
     ? String(result.structuredContent?.workspaceId ?? "")
@@ -1089,7 +1086,7 @@ async function createMcpServer(
     },
     (async (input: unknown, extra: unknown) => {
       const { path, mode, baseRef, create, fresh, machine } = input as { path: string; mode?: string; baseRef?: string; create?: boolean; fresh?: boolean; machine?: string };
-      const ex = extra as { requestId: string | number; signal: AbortSignal };
+      const ex = extra as ServerContext;
       const res = gatewayRouter
         ? await routeGatewayTool(gatewayRouter, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh, machine }, ex)
         : (() => { if (machine !== undefined) throw new Error("machine selection is available only in gateway mode"); return routeStandaloneTool(executor, "open_workspace", "open_workspace", { path, mode, baseRef, create, fresh }, ex); })();
@@ -1177,7 +1174,7 @@ async function createMcpServer(
           afterSeq ?? 0,
           limit ?? 100,
           waitMs ?? 20_000,
-          extra.signal,
+          extra.mcpReq.signal,
         );
         return {
           content: [{ type: "text", text: `${page.events.length} workspace activity events` }],
@@ -1689,7 +1686,7 @@ async function createMcpServer(
         if (!b.healthy) throw new Error(b.error ?? "node_repl unavailable");
         if (sessionNodeReplBridges.size >= maxPerHost) { try { await b.close(); } catch {} throw new Error(`node_repl per-host cap ${maxPerHost} reached`); }
         lazyBridge = b;
-        serverNodeReplBridge.set(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer, b);
+        serverNodeReplBridge.set(server as unknown as McpServer, b);
         const maybeTransport: unknown = serverTransportMap.get(server as unknown as object);
         const sid: string | undefined = (maybeTransport as { sessionId?: string } | undefined)?.sessionId;
         if (sid) sessionNodeReplBridges.set(sid, b);
@@ -1718,11 +1715,11 @@ async function createMcpServer(
           annotations: toolAnnotationsForProfile(config.annotationProfile, { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as ToolAnnotations),
           _meta: {},
         } as never,
-        (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
+        (async (input: unknown, extra: ServerContext) => {
           const parsed = looseSchema.safeParse(input);
           if (!parsed.success) throw new Error(`Invalid arguments for tool ${def.name}: ${parsed.error.message}`);
-          const b = await getOrCreateBridge(extra.signal);
-          const result = await b.callTool(def.name, input as Record<string, unknown>, extra.signal);
+          const b = await getOrCreateBridge(extra.mcpReq.signal);
+          const result = await b.callTool(def.name, input as Record<string, unknown>, extra.mcpReq.signal);
           const mapped: Record<string, unknown> = {
             content: result.content as unknown[],
             ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
@@ -1735,7 +1732,7 @@ async function createMcpServer(
     }
     const origClose = (server as unknown as { close?: () => Promise<void> }).close;
     (server as unknown as { close: () => Promise<void> }).close = async () => {
-      const b = lazyBridge ?? serverNodeReplBridge.get(server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer);
+      const b = lazyBridge ?? serverNodeReplBridge.get(server as unknown as McpServer);
       if (b) try { await b.close(); } catch {}
       if (origClose) await origClose.call(server);
     };
@@ -1769,14 +1766,14 @@ async function createMcpServer(
             annotations: toolAnnotationsForProfile(config.annotationProfile, skyAnnotations as ToolAnnotations),
             _meta: {},
           } as never,
-          (async (input: unknown, extra: { signal: AbortSignal; requestId: string | number }) => {
+          (async (input: unknown, extra: ServerContext) => {
             // Validate against original JSON Schema-derived Zod type when MCP layer used empty shape fallback
             if (!hasShape) {
               const parsed = (tool.inputSchema as z.ZodTypeAny).safeParse(input);
               if (!parsed.success) throw new Error(`Invalid arguments for tool ${tool.name}: ${parsed.error.message}`);
             }
             const normalized = normalizePhoneSelectorForBridge(tool.name, (input as Record<string, unknown>) ?? {});
-            const result = await bridge.callTool(tool.name, normalized, extra.signal);
+            const result = await bridge.callTool(tool.name, normalized, extra.mcpReq.signal);
             const mapped: Record<string, unknown> = {
               content: result.content as unknown[],
               ...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
@@ -2043,8 +2040,8 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
         } catch {}
         // RB-001 fix: bridge is created in createMcpServer before sessionId exists.
         // Capture server reference and link bridge in onsessioninitialized when sid is known.
-        let serverForBridge: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer | null = null;
-        transport = new StreamableHTTPServerTransport({
+        let serverForBridge: McpServer | null = null;
+        transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             if (transport) {
@@ -2104,7 +2101,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
 
         const effectiveDisabled = pendingEffectiveDisabled;
         const server = await createMcpServer(config, executor, options.gatewayRouter, effectiveDisabled, options.t3Bridge);
-        serverForBridge = server as unknown as import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
+        serverForBridge = server as unknown as McpServer;
         await server.connect(transport);
         serverTransportMap.set(server as unknown as object, transport);
       } else {

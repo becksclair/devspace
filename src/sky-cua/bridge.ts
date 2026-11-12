@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { Client } from "@modelcontextprotocol/client";
 import * as z from "zod/v4";
 import type { SkyCuaConfig } from "../config.js";
 import { jsonSchemaToZod, normalizeAnnotations } from "../mcp-bridge-utils.js";
@@ -117,7 +117,7 @@ export async function createSkyBridge(config: SkyCuaConfig, secretNames: string[
     async close() { try { await client.close(); } catch {} },
     async callTool(name, args, signal) {
       try {
-        const res = await client.callTool({ name, arguments: args as Record<string, unknown> } as never, undefined, { signal } as never);
+        const res = await client.callTool({ name, arguments: args as Record<string, unknown> } as never, { signal } as never);
         // normalize SDK result shape
         const content = (res as { content?: unknown[] }).content ?? [];
         const structuredContent = (res as { structuredContent?: unknown }).structuredContent;

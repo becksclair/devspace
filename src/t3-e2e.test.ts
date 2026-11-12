@@ -10,9 +10,8 @@ import type { Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { CallToolResult } from "@modelcontextprotocol/client";
 import type express from "express";
 import type { ServerConfig, T3BridgeConfig } from "./config.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
@@ -142,7 +141,7 @@ function recordResults(client: Client, outputs: string[]): void {
 }
 
 function callerFor(client: Client): T3Call {
-  return async (name, args) => (await client.callTool({ name, arguments: args ?? {} }, undefined, { timeout: 60_000 })) as CallToolResult;
+  return async (name, args) => (await client.callTool({ name, arguments: args ?? {} }, { timeout: 60_000 })) as CallToolResult;
 }
 
 async function warmCatalog(bridge: T3Bridge): Promise<void> {

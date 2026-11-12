@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
+import type { OAuthTokenVerifier } from "@modelcontextprotocol/server-legacy/auth";
+import type { AuthInfo } from "@modelcontextprotocol/server";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 
 const KEY_PREFIX = "obsk_";
