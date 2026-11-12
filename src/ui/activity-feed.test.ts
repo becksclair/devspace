@@ -90,4 +90,38 @@ assert.equal(isWorkspaceActivityPage({ events: [], latestSeq: "1", totalOperatio
 assert.equal(isWorkspaceActivityPage({ events: [{ seq: 1, operationId: "x", tool: "read", status: "done", label: "" }], latestSeq: 1, totalOperations: 1 }), false);
 assert.equal(isWorkspaceActivityPage(null), false);
 
+// Gateway restart: the server's sequence numbers start again from 1. Model the server's
+// listActivity (afterSeq 0 returns the latest page; otherwise events after afterSeq; latestSeq is
+// the newest sequence) and poll it the way the hook does.
+function serverPage(log: WorkspaceActivityEvent[], afterSeq: number): WorkspaceActivityPage {
+  const events = afterSeq === 0 ? log.slice(-200) : log.filter((item) => item.seq > afterSeq).slice(0, 200);
+  return { events, latestSeq: log.at(-1)?.seq ?? 0, totalOperations: log.length };
+}
+const before = Array.from({ length: 57 }, (_, index) => event(index + 1, { operationId: `old-${index + 1}` }));
+let restartFeed = applyActivityPage(EMPTY_ACTIVITY_FEED, serverPage(before, 0));
+assert.equal(restartFeed.cursor, 57);
+const after = Array.from({ length: 5 }, (_, index) => event(index + 1, { operationId: `new-${index + 1}` }));
+const seen: string[] = [];
+for (let poll = 0; poll < 3; poll += 1) {
+  const pageAfterRestart = serverPage(after, restartFeed.cursor);
+  seen.push(...pageAfterRestart.events.map((item) => item.operationId));
+  restartFeed = applyActivityPage(restartFeed, pageAfterRestart);
+}
+assert.deepEqual(
+  sortedOperations(restartFeed).map((item) => item.operationId),
+  ["new-1", "new-2", "new-3", "new-4", "new-5"],
+  "every event after the restart is fetched, and the pre-restart events are dropped",
+);
+assert.deepEqual(seen, ["new-1", "new-2", "new-3", "new-4", "new-5"], "each event is fetched exactly once");
+assert.equal(restartFeed.cursor, 5);
+assert.equal(restartFeed.totalOperations, 5);
+
+// The reset page itself carries no events (latestSeq < afterSeq), so the cursor goes to 0 and
+// the next poll asks for the latest page instead of skipping to the stale latestSeq.
+const resetFeed = applyActivityPage(applyActivityPage(EMPTY_ACTIVITY_FEED, serverPage(before, 0)), serverPage(after, 57));
+assert.equal(resetFeed.cursor, 0);
+assert.equal(resetFeed.events.size, 0);
+assert.equal(resetFeed.totalOperations, 5);
+assert.deepEqual(activityPollArguments("ws", resetFeed), { workspaceId: "ws", afterSeq: 0, limit: 200, waitMs: 20_000 });
+
 console.log("activity-feed tests passed");

@@ -63,13 +63,13 @@ export function activityPollArguments(workspaceId: string, feed: ActivityFeed): 
 
 /** Merges an accepted page into the feed and advances the cursor. */
 export function applyActivityPage(feed: ActivityFeed, page: WorkspaceActivityPage): ActivityFeed {
-  let events = new Map(feed.events);
-  let cursor = feed.cursor;
-  if (page.latestSeq < cursor) {
-    // The server's sequence went backwards (a gateway restart): start over.
-    events = new Map();
-    cursor = 0;
+  if (page.latestSeq < feed.cursor) {
+    // The server's sequence went backwards (a gateway restart). Its events after our cursor are
+    // none of the new ones, so drop the old events and poll from 0, which returns the latest
+    // page; advancing to this page's latestSeq would skip every event up to it.
+    return { enabled: true, events: new Map(), cursor: 0, totalOperations: page.totalOperations, error: null };
   }
+  const events = new Map(feed.events);
   for (const event of page.events) {
     if (!isToolName(event.tool)) continue;
     const existing = events.get(event.operationId);
@@ -81,11 +81,10 @@ export function applyActivityPage(feed: ActivityFeed, page: WorkspaceActivityPag
       .slice(0, events.size - ACTIVITY_MAX_OPERATIONS);
     for (const event of oldest) events.delete(event.operationId);
   }
-  cursor = page.events.at(-1)?.seq ?? page.latestSeq;
   return {
     enabled: true,
     events,
-    cursor,
+    cursor: page.events.at(-1)?.seq ?? page.latestSeq,
     totalOperations: page.totalOperations,
     error: null,
   };
