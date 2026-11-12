@@ -55,6 +55,7 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - Tests under `src/` are standalone `tsx` scripts using `node:assert/strict`; `scripts/release-utils.test.mjs` runs under `node --test`.
 - Append every new `src/*.test.ts` to the `"test"` script in `package.json` by hand, or it never runs.
 - `src/testing/` holds the fake T3 Code server and CLI, the captured T3 contract fixtures, and the T3 orchestrator scenarios and behavior checks shared by the T3 suites; `tsconfig.build.json` excludes it from the build.
+  `src/testing/widget-host/` is the developer MCP Apps host for the workspace card (`bun run widget:host`, see `docs/widget-host.md`).
 - Any tool with an `outputSchema` in `src/server.ts` needs at least one MCP-level success-path test, because the MCP SDK validates `structuredContent` only on non-error results (pattern: `src/server-mcp-routing.test.ts`).
 
 ## Tool contract

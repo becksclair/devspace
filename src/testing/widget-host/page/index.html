@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DevSpace widget host</title>
+    <link rel="stylesheet" href="./host.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <strong class="brand">DevSpace widget host</strong>
+      <label>Scenario <select id="scenario"></select></label>
+      <label>Theme
+        <select id="theme">
+          <option value="light">light</option>
+          <option value="dark">dark</option>
+        </select>
+      </label>
+      <label>Width
+        <select id="width">
+          <option value="360">360 px</option>
+          <option value="480">480 px</option>
+          <option value="768">768 px</option>
+        </select>
+      </label>
+      <label>CSP
+        <select id="csp-mode">
+          <option value="spec">spec</option>
+          <option value="wasm">spec + wasm</option>
+        </select>
+      </label>
+      <button id="rerun" type="button">Re-run</button>
+      <button id="resend" type="button" disabled>Re-send result</button>
+      <button id="teardown" type="button" disabled>Teardown</button>
+    </header>
+    <section class="status-bar">
+      <span id="harness-status">loading</span>
+      <span id="harness-mode"></span>
+      <span id="harness-csp"></span>
+    </section>
+    <p id="harness-error" class="error" hidden></p>
+    <main id="stage" class="stage"></main>
+    <section id="index" class="index" hidden></section>
+    <details id="csp-panel" class="panel">
+      <summary>Applied Content-Security-Policy</summary>
+      <pre id="csp-policy">(no widget mounted)</pre>
+    </details>
+    <details id="log-panel" class="panel">
+      <summary>Bridge log (<span id="log-count">0</span>)</summary>
+      <ol id="log"></ol>
+    </details>
+    <script type="module" src="./host.ts"></script>
+  </body>
+</html>
