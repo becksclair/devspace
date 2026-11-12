@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StaticKeyStore, StaticKeyVerifier, mintApiKey, DEFAULT_KEY_TTL_SECONDS } from "./static-key-provider.js";
 import { openDatabase } from "./db/client.js";
+import { OAuthHttpError } from "./oauth/errors.js";
 
 const TEST_RESOURCE = "https://devspace.example.com/mcp";
 
@@ -80,6 +81,11 @@ await withIsolatedStore(async (store) => {
   await assert.rejects(
     () => verifier.verifyAccessToken("obsk_nonexistent"),
     /Invalid or expired static API key/,
+  );
+  // Verifier failures must be OAuthHttpError invalid_token so /mcp answers a 401 challenge.
+  await assert.rejects(
+    () => verifier.verifyAccessToken("obsk_nonexistent"),
+    (error: unknown) => error instanceof OAuthHttpError && error.code === "invalid_token" && error.status === 401,
   );
 });
 
