@@ -649,14 +649,28 @@ try {
     }
   }
 
-  // KNOWN DEFECT: when the SDK's parameter schema fails (missing PKCE challenge, non-S256 method,
-  // unsupported response_type) the redirect omits `state`, and an unsupported response_type is
-  // reported as invalid_request rather than unsupported_response_type (RFC 6749 section 4.1.2.1).
-  await assertErrorRedirect({ ...baseParams, code_challenge: undefined }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize missing code_challenge");
-  await assertErrorRedirect({ ...baseParams, code_challenge_method: "plain" }, { error: "invalid_request", error_description: /code_challenge_method/ }, "authorize plain PKCE");
-  await assertErrorRedirect({ ...baseParams, code_challenge_method: undefined }, { error: "invalid_request", error_description: /code_challenge_method/ }, "authorize missing code_challenge_method");
-  await assertErrorRedirect({ ...baseParams, response_type: "token" }, { error: "invalid_request", error_description: /response_type/ }, "authorize response_type=token");
-  await assertErrorRedirect({ ...baseParams, resource: "not a url" }, { error: "invalid_request", error_description: /resource/ }, "authorize unparsable resource");
+  // Parameter failures (RFC 6749 section 4.1.2.1) redirect with `state` whenever the request
+  // carried a non-empty one, even when another parameter fails validation.
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined }, { error: "invalid_request", error_description: /code_challenge/, state: "oracle-state" }, "authorize missing code_challenge");
+  await assertErrorRedirect({ ...baseParams, code_challenge_method: "plain" }, { error: "invalid_request", error_description: /code_challenge_method/, state: "oracle-state" }, "authorize plain PKCE");
+  await assertErrorRedirect({ ...baseParams, code_challenge_method: undefined }, { error: "invalid_request", error_description: /code_challenge_method/, state: "oracle-state" }, "authorize missing code_challenge_method");
+  await assertErrorRedirect({ ...baseParams, resource: "not a url" }, { error: "invalid_request", error_description: /resource/, state: "oracle-state" }, "authorize unparsable resource");
+  // Without a usable `state` the redirect carries only the error.
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined, state: undefined }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize schema failure without state");
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined, state: "" }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize schema failure with empty state");
+  // A missing (or empty) response_type is invalid_request; any other value is unsupported_response_type,
+  // which is checked before the remaining parameters.
+  await assertErrorRedirect({ ...baseParams, response_type: undefined }, { error: "invalid_request", error_description: /response_type/, state: "oracle-state" }, "authorize missing response_type");
+  await assertErrorRedirect({ ...baseParams, response_type: "" }, { error: "invalid_request", error_description: /response_type/, state: "oracle-state" }, "authorize empty response_type");
+  const unsupportedResponseType = { error: "unsupported_response_type", error_description: 'Only response_type "code" is supported', state: "oracle-state" };
+  await assertErrorRedirect({ ...baseParams, response_type: "token" }, unsupportedResponseType, "authorize response_type=token");
+  await assertErrorRedirect({ ...baseParams, response_type: "code token" }, unsupportedResponseType, "authorize response_type=code token");
+  await assertErrorRedirect({ ...baseParams, response_type: "token", code_challenge: undefined }, unsupportedResponseType, "authorize response_type=token without code_challenge");
+  // Client and redirect URI failures still answer 400 JSON and never redirect, whatever else is wrong.
+  const unregisteredWithBadType = await authorizeGet({ ...baseParams, response_type: "token", redirect_uri: "http://127.0.0.1:43123/other" });
+  assertOAuthError(unregisteredWithBadType, 400, "invalid_request", "Unregistered redirect_uri", "authorize unregistered redirect_uri with response_type=token");
+  assert.equal(unregisteredWithBadType.headers.get("location"), null);
+  assertOAuthError(await authorizeGet({ ...baseParams, response_type: "token", client_id: "devspace-unknown" }), 400, "invalid_client", "Invalid client_id", "authorize unknown client_id with response_type=token");
 
   // Provider-level failures keep `state`.
   const resourceError = { error: "invalid_request", error_description: "Invalid or missing OAuth resource", state: "oracle-state" };

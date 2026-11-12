@@ -76,12 +76,21 @@ async function verifyClient(provider: OAuthServerProvider, input: unknown): Prom
   throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "redirect_uri must be specified when client has multiple registered URIs");
 }
 
+function requestParam(input: unknown, name: string): unknown {
+  return typeof input === "object" && input !== null ? (input as Record<string, unknown>)[name] : undefined;
+}
+
+/** The request's `state`, read before any schema check: a non-empty string, or nothing. */
+function requestState(input: unknown): string | undefined {
+  const state = requestParam(input, "state");
+  return typeof state === "string" && state !== "" ? state : undefined;
+}
+
 function errorRedirect(redirectUri: string, error: OAuthError, state: string | undefined): string {
   const url = new URL(redirectUri);
   url.searchParams.set("error", error.code);
   url.searchParams.set("error_description", error.message);
-  // `state` is echoed only when it parsed and is non-empty.
-  if (state) url.searchParams.set("state", state);
+  if (state !== undefined) url.searchParams.set("state", state);
   return url.href;
 }
 
@@ -107,14 +116,17 @@ export function authorizationEndpoint(provider: OAuthServerProvider): RequestHan
       return;
     }
 
-    // Phase 2: everything else. Failures redirect back to the verified redirect URI. A schema
-    // failure loses `state`, because it is read only from a successful parse.
-    let state: string | undefined;
+    // Phase 2: everything else. Failures redirect back to the verified redirect URI, echoing
+    // `state` whenever the request carried a non-empty string, even if other parameters fail.
+    const errorState = requestState(input);
     try {
+      const responseType = requestParam(input, "response_type");
+      if (responseType !== undefined && responseType !== "" && responseType !== "code") {
+        throw new OAuthHttpError(OAuthErrorCode.UnsupportedResponseType, "Only response_type \"code\" is supported");
+      }
       const parsed = RequestParamsSchema.safeParse(input);
       if (!parsed.success) throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, parsed.error.message);
-      state = parsed.data.state;
-      const { scope, code_challenge, resource } = parsed.data;
+      const { state, scope, code_challenge, resource } = parsed.data;
 
       // RFC 9207 is intentionally not implemented: no `iss` is passed to the provider or appended
       // to its redirect, and the metadata does not advertise it. Adopting it means appending `iss`
@@ -132,7 +144,7 @@ export function authorizationEndpoint(provider: OAuthServerProvider): RequestHan
         res,
       );
     } catch (error) {
-      res.redirect(302, errorRedirect(verified.redirectUri, asOAuthError(error), state));
+      res.redirect(302, errorRedirect(verified.redirectUri, asOAuthError(error), errorState));
     }
   });
 
