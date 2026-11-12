@@ -645,6 +645,8 @@ export class FakeT3 {
    */
   readonly home: string;
   readonly calls: Array<{ tool: string; args: Record<string, unknown>; label: string }> = [];
+  /** Tools whose in-flight call was cancelled by the client (its request signal aborted while running). */
+  readonly cancelledCalls: string[] = [];
   readonly cliInvocations: Array<{ args: string[]; envNames: string[] }> = [];
 
   private readonly port: number;
@@ -1338,11 +1340,17 @@ export class FakeT3 {
       if (problem) throw rpcError(ProtocolErrorCode.InvalidParams, `Invalid parameters for tool '${name}': ${problem}`);
 
       let result: CallToolResult;
+      const onCancelled = (): void => {
+        this.cancelledCalls.push(name);
+      };
+      ctx.mcpReq.signal.addEventListener("abort", onCancelled, { once: true });
       try {
         result = ok(await this.callTool(name, args, { clientId: session?.clientId ?? "unknown", signal: ctx.mcpReq.signal }));
       } catch (error) {
         if (!(error instanceof ToolFailure)) throw error;
         result = failure(error.code, error.message);
+      } finally {
+        ctx.mcpReq.signal.removeEventListener("abort", onCancelled);
       }
 
       const pendingDrops = this.drops.get(name) ?? 0;

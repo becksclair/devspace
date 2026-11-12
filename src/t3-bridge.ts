@@ -323,6 +323,8 @@ export interface T3BridgeOptions {
   resolveOrigin?: () => Promise<string>;
   now?: () => number;
   catalogTimeoutMs?: number;
+  /** Per-request timeout for forwarded tool calls. Default 120 s. */
+  callTimeoutMs?: number;
   /** Optional DevSpace logging; the bridge never logs credentials. */
   logging?: LoggingConfig;
 }
@@ -671,6 +673,7 @@ export class T3Bridge {
   private readonly resolveOrigin: () => Promise<string>;
   private readonly now: () => number;
   private readonly catalogTimeoutMs: number;
+  private readonly callTimeoutMs: number;
   private readonly logging?: LoggingConfig;
   private slot?: ConnectionSlot;
   private liveTools?: Map<string, LiveTool>;
@@ -698,6 +701,7 @@ export class T3Bridge {
         now: this.now,
       });
     this.catalogTimeoutMs = options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS;
+    this.callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
     this.logging = options.logging;
   }
 
@@ -1054,7 +1058,7 @@ export class T3Bridge {
       try {
         return await client.request(
           { method: "tools/call", params: { name: tool, arguments: args } },
-          { signal: scoped.signal, timeout: CALL_TIMEOUT_MS },
+          { signal: scoped.signal, timeout: this.callTimeoutMs },
         );
       } finally {
         signal?.removeEventListener("abort", forward);
