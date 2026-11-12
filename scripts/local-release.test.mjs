@@ -15,6 +15,7 @@ import {
   parseNodeMajor,
   linkedRelease,
   pointLink,
+  releaseChildEnvironment,
   releaseEnvironment,
   removeStaleStages,
   resolveActivationCommit,
@@ -246,6 +247,66 @@ test("prepare removes stages left by runs that are no longer alive", (t) => {
   mkdirSync(join(appRoot, "releases", ".stage-notes"));
   removeStaleStages(appRoot);
   assert.deepEqual(readdirSync(join(appRoot, "releases")).sort(), [".stage-notes", `.stage-${process.pid}`, "a"].sort());
+});
+
+test("child environments drop DevSpace control-plane secrets", () => {
+  const env = {
+    PATH: "/usr/bin",
+    HOME: "/home/op",
+    GH_TOKEN: "development credential, kept",
+    DEVSPACE_OAUTH_OWNER_TOKEN: "owner",
+    SVARTAL_NODE_TOKEN: "node bearer",
+    DEVSPACE_INFRA_SECRET_NAMES: "TUNNEL_TOKEN, EXTRA_SECRET",
+    TUNNEL_TOKEN: "tunnel",
+    EXTRA_SECRET: "extra",
+  };
+  assert.deepEqual(releaseChildEnvironment(env), {
+    PATH: "/usr/bin",
+    HOME: "/home/op",
+    GH_TOKEN: "development credential, kept",
+    DEVSPACE_INFRA_SECRET_NAMES: "TUNNEL_TOKEN, EXTRA_SECRET",
+  });
+  const pinned = releaseEnvironment("/pinned/bin", env);
+  assert.equal(pinned.PATH, ["/pinned/bin", "/usr/bin"].join(delimiter));
+  assert.equal("DEVSPACE_OAUTH_OWNER_TOKEN" in pinned, false);
+  assert.equal("TUNNEL_TOKEN" in pinned, false);
+});
+
+test("an activation refuses to overlap another one for the same app root", async (t) => {
+  const appRoot = appRootWith("a", "b");
+  t.after(() => rmSync(appRoot, { recursive: true, force: true }));
+  pointLink(appRoot, "current", "a");
+  let overlapping;
+  const fake = recorder();
+  const result = await activateRelease({
+    appRoot,
+    commit: "b",
+    restart: async () => {
+      // A second activation starts while the first is between its switch and its health check.
+      overlapping = activateRelease({ appRoot, commit: "a", restart: fake.restart, probe: fake.probe });
+      overlapping.catch(() => {});
+    },
+    probe: fake.probe,
+  });
+  await assert.rejects(overlapping, /another activation \(pid \d+\) is running/);
+  assert.equal(result.commit, "b");
+  assert.equal(fake.calls.restart, 0);
+  assert.equal(readlinkSync(join(appRoot, "current")), join("releases", "b"));
+  assert.equal(existsSync(join(appRoot, ".activate-lock")), false);
+});
+
+test("an activation replaces a lock left by a dead process and releases its own on failure", async (t) => {
+  const appRoot = appRootWith("a");
+  t.after(() => rmSync(appRoot, { recursive: true, force: true }));
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  mkdirSync(join(appRoot, ".activate-lock"));
+  writeFileSync(join(appRoot, ".activate-lock", "pid"), `${dead}\n`);
+  const failing = recorder(() => false);
+  await assert.rejects(activateRelease({ appRoot, commit: "a", restart: failing.restart, probe: failing.probe }), /did not become healthy/);
+  assert.equal(existsSync(join(appRoot, ".activate-lock")), false);
+  const fake = recorder();
+  await activateRelease({ appRoot, commit: "a", restart: fake.restart, probe: fake.probe });
+  assert.equal(existsSync(join(appRoot, ".activate-lock")), false);
 });
 
 test("release Node must be the launcher's major version", () => {

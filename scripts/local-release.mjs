@@ -72,14 +72,49 @@ export function buildMetadataSource({ commit, packageVersion, toolContractHash }
 }
 
 /** An environment whose PATH resolves `node` (and anything else in binDir) first. */
+/**
+ * The caller's environment minus DevSpace's control-plane secrets, for every child this script
+ * starts: git, installs with their lifecycle scripts, the build, and the smoke test all run
+ * programs the repository or its dependencies choose. It strips the same names as the
+ * child-environment helpers in src/shell-environment.ts, which a plain .mjs script cannot import.
+ */
+export function releaseChildEnvironment(env = process.env) {
+  const listed = new Set(
+    (env.DEVSPACE_INFRA_SECRET_NAMES ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean),
+  );
+  const filtered = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (name === "DEVSPACE_OAUTH_OWNER_TOKEN" || name.endsWith("_NODE_TOKEN") || listed.has(name)) continue;
+    filtered[name] = value;
+  }
+  return filtered;
+}
+
+/** The filtered child environment with the release's Node directory first on PATH. */
 export function releaseEnvironment(binDir, env = process.env) {
-  return { ...env, PATH: env.PATH ? `${binDir}${delimiter}${env.PATH}` : binDir };
+  const filtered = releaseChildEnvironment(env);
+  return { ...filtered, PATH: filtered.PATH ? `${binDir}${delimiter}${filtered.PATH}` : binDir };
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else.
+    return error?.code === "EPERM";
+  }
 }
 
 export function resolveCommit(repoRoot, rev) {
   const commit = execFileSync("git", ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: releaseChildEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`could not resolve ${rev} to a full commit`);
@@ -87,14 +122,14 @@ export function resolveCommit(repoRoot, rev) {
 }
 
 function run(command, args, options) {
-  const result = spawnSync(command, args, { stdio: "inherit", ...options });
+  const result = spawnSync(command, args, { stdio: "inherit", env: releaseChildEnvironment(), ...options });
   if (result.error) throw new Error(`${command} ${args.join(" ")} failed to start: ${result.error.message}`);
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed (${result.status ?? result.signal})`);
   }
 }
 
-function describeNode(nodePath, env) {
+function describeNode(nodePath, env = releaseChildEnvironment()) {
   const output = execFileSync(
     nodePath,
     ["-p", "JSON.stringify({ version: process.version, platform: process.platform, arch: process.arch, execPath: process.execPath })"],
@@ -108,7 +143,7 @@ function readToolContractHash(cwd, nodePath) {
   const hash = execFileSync(
     nodePath,
     ["--input-type=module", "-e", 'import { TOOL_CONTRACT_HASH } from "./dist/tool-contract.js"; console.log(TOOL_CONTRACT_HASH)'],
-    { cwd, encoding: "utf8" },
+    { cwd, encoding: "utf8", env: releaseChildEnvironment() },
   ).trim();
   const bare = hash.startsWith("sha256:") ? hash.slice(7) : hash;
   if (!/^[0-9a-f]{64}$/.test(bare)) throw new Error("tool contract hash is not a lowercase SHA-256");
@@ -202,7 +237,9 @@ export function prepareRelease({
     return { commit, target, prepared: true };
   } finally {
     rmSync(stage, { recursive: true, force: true });
-    if (worktreeAdded) spawnSync("git", ["worktree", "remove", "--force", checkout], { cwd: repoRoot, stdio: "ignore" });
+    if (worktreeAdded) {
+      spawnSync("git", ["worktree", "remove", "--force", checkout], { cwd: repoRoot, env: releaseChildEnvironment(), stdio: "ignore" });
+    }
     rmSync(build, { recursive: true, force: true });
   }
 }
@@ -214,11 +251,7 @@ export function removeStaleStages(appRoot) {
   for (const entry of readdirSync(releases)) {
     const pid = /^\.stage-(\d+)$/.exec(entry)?.[1];
     if (pid === undefined) continue;
-    try {
-      process.kill(Number(pid), 0);
-    } catch (error) {
-      if (error?.code === "ESRCH") rmSync(join(releases, entry), { recursive: true, force: true });
-    }
+    if (!processAlive(Number(pid))) rmSync(join(releases, entry), { recursive: true, force: true });
   }
 }
 
@@ -261,10 +294,47 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Takes the per-app-root activation lock and returns its release function. Two overlapping
+ * activations would each prune the release the other selected, so the whole switch, health
+ * check, rollback and prune runs under one lock. A lock left by a dead process is replaced.
+ */
+function acquireActivationLock(appRoot) {
+  const lock = join(appRoot, ".activate-lock");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(lock);
+      writeFileSync(join(lock, "pid"), `${process.pid}\n`);
+      return () => rmSync(lock, { recursive: true, force: true });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      let owner;
+      try {
+        owner = Number(readFileSync(join(lock, "pid"), "utf8"));
+      } catch {}
+      if (!Number.isInteger(owner)) {
+        throw new Error(`another activation holds ${lock}; remove it if no activation is running`);
+      }
+      if (processAlive(owner)) throw new Error(`another activation (pid ${owner}) is running for ${appRoot}`);
+      rmSync(lock, { recursive: true, force: true });
+    }
+  }
+  throw new Error(`could not take the activation lock at ${lock}`);
+}
+
 export async function activateRelease({ appRoot, commit, restart, probe }) {
   if (!existsSync(join(appRoot, "releases", commit, "dist", "cli.js"))) {
     throw new Error(`release ${commit} is not prepared under ${appRoot}`);
   }
+  const releaseLock = acquireActivationLock(appRoot);
+  try {
+    return await switchRelease({ appRoot, commit, restart, probe });
+  } finally {
+    releaseLock();
+  }
+}
+
+async function switchRelease({ appRoot, commit, restart, probe }) {
   // Only a link that targets a prepared release is a rollback target. A dangling or hand-made
   // link must neither be restored nor replace a good `previous`.
   const replaced = linkedRelease(appRoot, "current");
