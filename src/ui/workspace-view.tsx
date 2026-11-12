@@ -1,7 +1,8 @@
 // Presentational components of the workspace card widget. State and host wiring live in
 // workspace-root.tsx; this module only renders, so it can be rendered on the server in tests.
 
-import { Component, type ReactNode } from "react";
+import { Component, useRef, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { isExpandableCard, isReviewTool, machineDisplayName, type ToolResultCard } from "./card-types.js";
 import { ACTIVITY_COLLAPSED_ROWS, sortedOperations, type ActivityFeed, type WorkspaceActivityEvent } from "./activity-feed.js";
 import { CheckCircleIcon, ChevronIcon, ToolIcon } from "./icons.js";
@@ -126,10 +127,28 @@ function ToolCard({ card, state, themeType, onToggleExpanded }: CardProps) {
   );
 }
 
+/**
+ * The first control at or after `start` that can take focus. The "Show N more files" button
+ * unmounts when clicked, so focus moves to the first newly revealed file row instead of `body`.
+ */
+export function firstEnabledFrom<T extends { disabled: boolean }>(controls: ArrayLike<T>, start: number): T | undefined {
+  return Array.from(controls).slice(start).find((control) => !control.disabled);
+}
+
 function ReviewCard({ card, state, themeType, onShowAllReviewFiles }: CardProps) {
   const display = getToolDisplay(card);
   const machine = machineDisplayName(card);
   const { hidden } = reviewFileCounts(card, state.reviewFilesExpanded);
+  const summaryRef = useRef<HTMLDivElement>(null);
+
+  const showAllFiles = () => {
+    flushSync(onShowAllReviewFiles);
+    const summary = summaryRef.current;
+    if (!summary) return;
+    const headers = summary.querySelectorAll<HTMLButtonElement>(".review-diff-file-header");
+    // Pure renames and binary rows are disabled buttons; then the list itself takes focus.
+    (firstEnabledFrom(headers, REVIEW_COLLAPSED_FILES) ?? summary).focus();
+  };
 
   return (
     <main className="shell">
@@ -143,7 +162,7 @@ function ReviewCard({ card, state, themeType, onShowAllReviewFiles }: CardProps)
           <SummaryBadgeView card={card} />
           {machine ? <MachineBadge name={machine} /> : null}
         </div>
-        <div className="review-summary">
+        <div className="review-summary" ref={summaryRef} tabIndex={-1}>
           {/* A new result remounts the list, so no file stays open from the previous review. */}
           <PayloadBody
             key={state.cardVersion}
@@ -155,7 +174,7 @@ function ReviewCard({ card, state, themeType, onShowAllReviewFiles }: CardProps)
         </div>
         {hidden > 0 ? (
           <div className="review-actions">
-            <button className="review-action" type="button" onClick={onShowAllReviewFiles}>
+            <button className="review-action" type="button" onClick={showAllFiles}>
               {`Show ${hidden} more ${hidden === 1 ? "file" : "files"}`}
             </button>
           </div>

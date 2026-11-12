@@ -120,4 +120,14 @@ assert.match(headers[7]!, /<span class="review-diff-file-name" title="src\/greet
 assert.match(headers[7]!, /aria-expanded="false"/);
 assert.equal(headers[7]!.includes("disabled"), false);
 
+// A clean review (empty patch, no files) says so instead of reporting a missing payload.
+assert.equal(
+  renderToStaticMarkup(<ReviewPayload card={{ tool: "show_changes", files: [], payload: { patch: "" } }} themeType="light" />),
+  '<div class="status muted">No changes to review.</div>',
+);
+assert.equal(
+  renderToStaticMarkup(<ReviewPayload card={{ tool: "show_changes", payload: {} }} themeType="light" />),
+  '<div class="status muted">Diff payload is not available.</div>',
+);
+
 console.log("review-files tests passed");

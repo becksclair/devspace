@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolResultCard } from "./card-types.js";
 import { EMPTY_ACTIVITY_FEED, applyActivityPage, type ActivityFeed } from "./activity-feed.js";
 import { initialWidgetState, type WidgetState } from "./widget-state.js";
-import { WidgetErrorBoundary, WorkspaceView, type WorkspaceViewProps } from "./workspace-view.js";
+import { firstEnabledFrom, WidgetErrorBoundary, WorkspaceView, type WorkspaceViewProps } from "./workspace-view.js";
 
 function render(card: ToolResultCard | null, overrides: Partial<WidgetState> = {}, props: Partial<WorkspaceViewProps> = {}): string {
   const noop = () => undefined;
@@ -124,10 +124,17 @@ html = render(review);
 assert.match(html, /^<main class="shell"><section class="tool-card review"><div class="review-header">/);
 assert.match(html, /<div class="review-title-group"><span class="tool-title">Show Changes<\/span><span class="tool-label" title="5 changed files">5 changed files<\/span><\/div>/);
 assert.match(html, /aria-label="Review diff statistics"><span class="add">\+19<\/span><span class="remove">-9<\/span>/);
-assert.match(html, /<div class="review-summary"><div class="status muted">Loading review...<\/div><\/div>/);
+assert.match(html, /<div class="review-summary" tabindex="-1"><div class="status muted">Loading review...<\/div><\/div>/);
 assert.match(html, /<div class="review-actions"><button class="review-action" type="button">Show 2 more files<\/button><\/div>/);
 assert.equal(count(render(review, { reviewFilesExpanded: true }), /review-actions/), 0);
+// "Show N more files" focuses the first newly revealed row that can take focus.
+const rows = [{ disabled: false, id: 0 }, { disabled: false, id: 1 }, { disabled: false, id: 2 }, { disabled: true, id: 3 }, { disabled: false, id: 4 }];
+assert.equal(firstEnabledFrom(rows, 3)?.id, 4);
+assert.equal(firstEnabledFrom(rows.slice(0, 4), 3), undefined);
 assert.match(render({ tool: "show_changes", summary: { files: 0 } }), /No changes since last review/);
+// A clean review has no +0 -0 badge.
+html = render({ tool: "show_changes", summary: { files: 0, additions: 0, removals: 0 }, files: [], payload: { patch: "" } });
+assert.equal(html.includes('class="stats"'), false);
 
 // Activity card: shown once the feed is enabled, with the newest seven rows and a toggle.
 const events = Array.from({ length: 9 }, (_, index) => ({

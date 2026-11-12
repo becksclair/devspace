@@ -94,17 +94,18 @@ function FilePayload({
       },
     });
     let disposed = false;
+    // Each run renders into its own element, so a run that settles after a newer one started
+    // (the theme changed while the highlighter loaded) removes only its own output.
+    const target = wrapper.appendChild(document.createElement("div"));
 
-    fileStream.setup(source, wrapper).then(
+    fileStream.setup(source, target).then(
       () => {
-        if (!disposed) return;
-        fileStream.cleanUp();
-        wrapper.replaceChildren();
+        if (disposed) fileStream.cleanUp();
       },
       (error: unknown) => {
         if (disposed) return;
         fileStream.cleanUp();
-        wrapper.replaceChildren();
+        target.remove();
         setFailure(renderFailureMessage(error));
       },
     );
@@ -112,7 +113,7 @@ function FilePayload({
     return () => {
       disposed = true;
       fileStream.cleanUp();
-      wrapper.replaceChildren();
+      target.remove();
     };
   }, [fileOptions, path, startLine, text]);
 

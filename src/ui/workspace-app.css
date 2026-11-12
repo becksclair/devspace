@@ -459,6 +459,14 @@ body {
   grid-column: 5;
 }
 
+/* With the machine badge the header is crowded at narrow widths: the title truncates instead of
+   running under the badges. */
+.tool-header.has-machine .tool-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .review-header.has-machine {
   grid-template-columns: 38px minmax(0, 1fr) auto auto;
 }

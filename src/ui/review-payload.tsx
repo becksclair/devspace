@@ -38,7 +38,11 @@ export default function ReviewPayload({
     : files;
   const [openFiles, setOpenFiles] = useState(() => new Set<string>());
 
-  if (!patch) return <StatusLine message="Diff payload is not available." />;
+  if (!patch) {
+    // A clean review carries an empty patch and no files.
+    const clean = card.files?.length === 0 || (card.files === undefined && patch === "");
+    return <StatusLine message={clean ? "No changes to review." : "Diff payload is not available."} />;
+  }
   if (parsed.error) return <PlainFallback message={parsed.error} text={patch} tool={card.tool} />;
   if (files.length === 0) return <StatusLine message="No diff hunks to review." />;
 

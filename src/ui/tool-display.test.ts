@@ -19,6 +19,9 @@ assert.deepEqual(summaryBadge(read), { kind: "text", text: "9 lines" });
 const shell: ToolResultCard = { tool: "run_shell", summary: { command: "ls", lines: 5 } };
 assert.deepEqual(getToolDisplay(shell), { icon: "terminal", title: "Bash", label: "ls", tone: "shell" });
 assert.deepEqual(summaryBadge(shell), { kind: "text", text: "ran · 5 lines" });
+assert.deepEqual(summaryBadge({ tool: "run_shell", summary: { lines: 1 } }), { kind: "text", text: "ran · 1 line" });
+assert.deepEqual(summaryBadge({ tool: "read_file", summary: { lines: 1 } }), { kind: "text", text: "1 line" });
+assert.deepEqual(summaryBadge({ tool: "read_file", summary: { lines: 0 } }), { kind: "text", text: "0 lines" });
 
 assert.equal(getToolDisplay({ tool: "grep", summary: { pattern: "greet" } }).label, "greet");
 assert.equal(getToolDisplay({ tool: "workspace_status" }).label, "capabilities and Git state");
@@ -34,6 +37,8 @@ assert.deepEqual(summaryBadge(review), { kind: "stats", label: "Review diff stat
 assert.deepEqual(reviewFileCounts(review, false), { visible: 3, hidden: 4 });
 assert.deepEqual(reviewFileCounts(review, true), { visible: 7, hidden: 0 });
 assert.deepEqual(reviewFileCounts({ tool: "show_changes" }, false), { visible: 0, hidden: 0 });
+// A clean review shows no +0 -0 badge.
+assert.deepEqual(summaryBadge({ tool: "show_changes", summary: { files: 0, additions: 0, removals: 0 }, files: [], payload: { patch: "" } }), { kind: "none" });
 
 assert.deepEqual(summaryBadge({ tool: "open_workspace", summary: { agentsFiles: 1, skills: 2 } }), { kind: "workspace", agentsFiles: 1, skills: 2 });
 
@@ -50,7 +55,12 @@ assert.equal(
   }),
   "Workspace: ws1\nRoot: /repo\nAccess: read-write\nGit: main abc clean\nSkills: none\n\nAGENTS.md\n\nRules",
 );
-assert.match(workspacePayloadText({ tool: "workspace_status" }), /Skills: none\n\nAGENTS\.md: none loaded$/);
+// workspace_status carries no AGENTS.md list, so the body does not claim none was loaded.
+assert.equal(
+  workspacePayloadText({ tool: "workspace_status", workspaceId: "ws1", root: "/repo", capabilities: { fileAccess: "read-write" } }),
+  "Workspace: ws1\nRoot: /repo\nAccess: read-write\nSkills: none",
+);
+assert.match(workspacePayloadText({ tool: "open_workspace", agentsFiles: [], skills: [] }), /^Skills: none\n\nAGENTS\.md: none loaded$/);
 
 assert.equal(
   terminalPayloadText({ tool: "terminal_read", terminal: { terminalId: "t1", status: "running", cols: 80, rows: 24, commandSummary: "bash" }, terminalOutput: "hi", truncated: true }),

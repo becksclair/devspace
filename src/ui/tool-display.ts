@@ -155,6 +155,8 @@ export function summaryBadge(card: ToolResultCard): SummaryBadge {
   }
 
   if (isReviewTool(card.tool)) {
+    // A clean review has no files and no counts to show.
+    if (Number(summary.files ?? card.files?.length ?? 0) === 0) return { kind: "none" };
     return {
       kind: "stats",
       label: "Review diff statistics",
@@ -188,10 +190,15 @@ export function summaryBadge(card: ToolResultCard): SummaryBadge {
   }
 
   if (isShellTool(card.tool)) {
-    return { kind: "text", text: `ran · ${String(summary.lines ?? 0)} lines` };
+    return { kind: "text", text: `ran · ${lineCount(summary.lines)}` };
   }
 
-  return { kind: "text", text: `${String(summary.lines ?? 0)} lines` };
+  return { kind: "text", text: lineCount(summary.lines) };
+}
+
+function lineCount(lines: unknown): string {
+  const count = lines ?? 0;
+  return `${String(count)} ${count === 1 ? "line" : "lines"}`;
 }
 
 /**
@@ -271,9 +278,13 @@ export function workspacePayloadText(card: ToolResultCard): string {
     availableAgentsFiles.length > 0
       ? `Nested instructions: ${availableAgentsFiles.map((file) => file.path ?? "unknown").join(", ")}`
       : undefined,
-    agentsFiles.length > 0
-      ? `\n${formatAgentsFiles(agentsFiles)}`
-      : "\nAGENTS.md: none loaded",
+    // workspace_status results carry no AGENTS.md list: say "none loaded" only when the result
+    // has the list and it is empty.
+    card.agentsFiles === undefined
+      ? undefined
+      : agentsFiles.length > 0
+        ? `\n${formatAgentsFiles(agentsFiles)}`
+        : "\nAGENTS.md: none loaded",
   ].filter((line): line is string => typeof line === "string");
 
   return lines.join("\n");
