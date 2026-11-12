@@ -49,3 +49,17 @@ export function reviewFileDisplay(
     expandable: file.hunkCount > 0,
   };
 }
+
+/**
+ * The `cacheKeyPrefix` for a review patch: `@pierre/diffs` reuses rendered hunks by cache key, and
+ * its keys are only prefix plus file index, so the prefix must differ between review results.
+ * A 32-bit FNV-1a hash of the patch, with its length.
+ */
+export function reviewCacheKeyPrefix(patch: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < patch.length; index += 1) {
+    hash ^= patch.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `review-${hash.toString(16).padStart(8, "0")}-${patch.length.toString(16)}`;
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
-import { isBinaryPatchSection, reviewFileDisplay, reviewFileKindLabel } from "./review-files.js";
+import { isBinaryPatchSection, reviewCacheKeyPrefix, reviewFileDisplay, reviewFileKindLabel } from "./review-files.js";
 import ReviewPayload from "./review-payload.js";
 
 assert.equal(isBinaryPatchSection("diff --git a/x.png b/x.png\nindex 1..2 100644\nGIT binary patch\nliteral 4"), true);
@@ -23,6 +23,12 @@ assert.deepEqual(reviewFileDisplay(file("deleted", 0), binarySection), { kind: "
 assert.deepEqual(reviewFileDisplay(file("rename-changed", 0, "a.ts"), binarySection), { kind: "renamed", binary: true, previousPath: "a.ts", showStats: false, expandable: false });
 assert.equal(reviewFileKindLabel({ kind: "deleted", binary: true }), "deleted · binary");
 assert.equal(reviewFileKindLabel({ kind: "deleted", binary: false }), "deleted");
+
+// Diff cache keys differ between review results, so a renderer never reuses another result's hunks.
+assert.equal(reviewCacheKeyPrefix("diff --git a/x b/x\n"), reviewCacheKeyPrefix("diff --git a/x b/x\n"));
+assert.notEqual(reviewCacheKeyPrefix("diff --git a/x b/x\n-a\n+b\n"), reviewCacheKeyPrefix("diff --git a/x b/x\n-a\n+c\n"));
+assert.notEqual(reviewCacheKeyPrefix(""), reviewCacheKeyPrefix("x"));
+assert.match(reviewCacheKeyPrefix("x"), /^review-[0-9a-f]{8}-1$/);
 
 // The review list as rendered from a patch with every change type.
 const patch = [

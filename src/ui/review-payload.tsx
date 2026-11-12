@@ -12,7 +12,7 @@ import { FileDiff } from "@pierre/diffs/react";
 import type { ToolResultCard } from "./card-types.js";
 import { CODE_THEMES, useHighlighterFailure } from "./highlighter.js";
 import { PlainFallback, StatusLine, type ThemeType } from "./payload-fallback.js";
-import { reviewFileDisplay, reviewFileKindLabel } from "./review-files.js";
+import { reviewCacheKeyPrefix, reviewFileDisplay, reviewFileKindLabel } from "./review-files.js";
 import {
   PREFERRED_HIGHLIGHTER,
   renderFailureMessage,
@@ -119,7 +119,7 @@ function parseFiles(patch: string | undefined): { files: FileDiffMetadata[]; err
   if (!patch) return { files: [] };
   try {
     return {
-      files: parsePatchFiles(patch, { cacheKeyPrefix: "review", throwOnError: true })
+      files: parsePatchFiles(patch, { cacheKeyPrefix: reviewCacheKeyPrefix(patch), throwOnError: true })
         .flatMap((parsedPatch) => parsedPatch.files),
     };
   } catch (error) {

@@ -107,7 +107,9 @@ function ReviewCard({ card, state, themeType, onShowAllReviewFiles }: CardProps)
           {machine ? <MachineBadge name={machine} /> : null}
         </div>
         <div className="review-summary">
+          {/* A new result remounts the list, so no file stays open from the previous review. */}
           <PayloadBody
+            key={state.cardVersion}
             card={card}
             themeType={themeType}
             tornDown={state.tornDown}
