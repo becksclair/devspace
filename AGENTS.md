@@ -41,6 +41,7 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 | T3 bridge against the real T3 Code and `t3` CLI on this machine, through an in-process DevSpace | `bun run test:t3-live` |
 | T3 bridge through the public DevSpace URL and the deployed Svartal gateway | `bun run test:t3-deployed` |
 | Build without a version bump. Deletes and rewrites `dist` (clean, `vite build` into `dist/ui`, then `tsc -p tsconfig.build.json`) | `bun run build:check` |
+| Build a self-contained release directory for this host; does not touch the running gateway (on Svartal pass `--node` with the launcher's Node 24, see `docs/svartal-gateway.md`) | `bun run release:prepare` |
 
 `bun test` is not the test command: it invokes Bun's own runner, which these scripts are not written for.
 
@@ -49,11 +50,12 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - `bun run build` (`scripts/versioned-build.mjs`): bumps the version in `package.json`, prepends `CHANGELOG.md`, and requires committed build inputs.
 - `bun run rebuild:local`: does everything `build` does, then restarts `devspace.service` and probes `/healthz`.
 - `bun run test:t3-live` and `bun run test:t3-deployed`: start real T3 Code threads that run agent turns and use provider credits, then settle and archive them; `test:t3-deployed` also authenticates against the production gateway (see `docs/t3-code.md`).
+- `bun run release:activate`: switches the live Svartal gateway to a prepared release and restarts it.
 - On Svartal, `/Users/rclair/projects/devspace` is the checkout the production gateway runs from (`~/.local/bin/devspace-gateway` executes its `dist/cli.js`). In that checkout, `bun run build:check`, `bun run build`, `bun install`, and `bun update` replace files the live gateway loads, so they are deploy steps. Build and test in a separate git worktree or clone.
 
 ## Tests
 
-- Tests under `src/` are standalone `tsx` scripts using `node:assert/strict`; `scripts/release-utils.test.mjs` runs under `node --test`.
+- Tests under `src/` are standalone `tsx` scripts using `node:assert/strict`; `scripts/release-utils.test.mjs` and `scripts/local-release.test.mjs` run under `node --test`.
 - Append every new `src/*.test.ts` to the `"test"` script in `package.json` by hand, or it never runs.
 - `src/testing/` holds the fake T3 Code server and CLI, the captured T3 contract fixtures, and the T3 orchestrator scenarios and behavior checks shared by the T3 suites; `tsconfig.build.json` excludes it from the build.
   `src/testing/widget-host/` is the developer MCP Apps host for the workspace card (`bun run widget:host`, see `docs/widget-host.md`).
