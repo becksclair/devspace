@@ -103,6 +103,8 @@ MCP clients discover metadata from:
 /.well-known/oauth-authorization-server
 ```
 
+The authorization server does not implement RFC 9207: its metadata has no `authorization_response_iss_parameter_supported` field, and authorization redirects carry no `iss` parameter.
+
 ## Tool Modes
 
 `DEVSPACE_TOOL_NAMING` controls tool names.
