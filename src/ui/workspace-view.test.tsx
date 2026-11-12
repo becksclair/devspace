@@ -89,8 +89,13 @@ assert.match(html, /<section class="tool-card read error">.*<span class="badge e
 assert.match(html, /<pre class="text-payload error-payload" role="alert">ENOENT<\/pre>/);
 assert.equal(html.includes("Loading details"), false);
 // A failed review call renders as an error card, not a review.
-html = render({ tool: "show_changes", isError: true, payload: { content: [{ type: "text", text: "not a git repository" }] } });
+const failedReview: ToolResultCard = { tool: "show_changes", isError: true, payload: { content: [{ type: "text", text: "not a git repository" }] } };
+html = render(failedReview);
 assert.match(html, /<section class="tool-card review error"><button class="tool-header"/);
+// Its header stays enabled, so the error message can be opened.
+assert.match(html, /<button class="tool-header" type="button" aria-expanded="false">/);
+html = render(failedReview, { expanded: true });
+assert.match(html, /<pre class="text-payload error-payload" role="alert">not a git repository<\/pre>/);
 
 // A write result without a patch shows no diff badge (an empty span keeps the grid column).
 html = render({ tool: "write_file", path: "a.ts", summary: { lines: 1 }, payload: { content: [{ type: "text", text: "Successfully wrote" }] } });

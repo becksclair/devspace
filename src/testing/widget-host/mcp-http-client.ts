@@ -61,13 +61,17 @@ export class McpHttpClient {
   /** Sends one request and returns its JSON-RPC result or error. Re-initializes once on a lost session. */
   async request(method: string, params: Record<string, unknown> = {}): Promise<RpcOutcome> {
     await this.ensureInitialized();
+    const sessionId = this.sessionId;
     try {
       return await this.send(method, params);
     } catch (error) {
       if (!(error instanceof McpHttpError) || error.status !== 404) throw error;
       // The server evicted the session (idle TTL or restart): start a new one and retry once.
-      this.sessionId = undefined;
-      this.initializing = undefined;
+      // A concurrent request that lost the same session may already have replaced it.
+      if (this.sessionId === sessionId) {
+        this.sessionId = undefined;
+        this.initializing = undefined;
+      }
       await this.ensureInitialized();
       return this.send(method, params);
     }

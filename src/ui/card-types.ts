@@ -175,6 +175,9 @@ export function summaryNumber(
 }
 
 export function isExpandableCard(card: ToolResultCard): boolean {
+  // A failed call expands to its error message, whatever the tool.
+  if (card.isError) return true;
+
   if (card.tool === "open_workspace") {
     return (
       Number(card.summary?.agentsFiles ?? 0) > 0 ||
