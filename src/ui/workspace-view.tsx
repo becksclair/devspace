@@ -1,6 +1,7 @@
 // Presentational components of the workspace card widget. State and host wiring live in
 // workspace-root.tsx; this module only renders, so it can be rendered on the server in tests.
 
+import { Component, type ReactNode } from "react";
 import { isExpandableCard, isReviewTool, machineDisplayName, type ToolResultCard } from "./card-types.js";
 import { ACTIVITY_COLLAPSED_ROWS, sortedOperations, type ActivityFeed, type WorkspaceActivityEvent } from "./activity-feed.js";
 import { CheckCircleIcon, ChevronIcon, ToolIcon } from "./icons.js";
@@ -43,6 +44,42 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   // A failed review call has no review to show; it renders as a plain error card.
   if (isReviewTool(state.card.tool) && !state.card.isError) return <ReviewCard {...props} card={state.card} />;
   return <ToolCard {...props} card={state.card} />;
+}
+
+interface WidgetErrorBoundaryProps {
+  /** Changes with every delivered tool result; a new value clears a caught error. */
+  resetKey: number;
+  children: ReactNode;
+}
+
+interface WidgetErrorBoundaryState {
+  error: unknown;
+  resetKey: number;
+}
+
+/**
+ * Catches a render failure anywhere in the card (for example a result with wrong-typed fields)
+ * and shows the widget's error state instead of an empty frame, until the next tool result.
+ */
+export class WidgetErrorBoundary extends Component<WidgetErrorBoundaryProps, WidgetErrorBoundaryState> {
+  override state: WidgetErrorBoundaryState = { error: undefined, resetKey: this.props.resetKey };
+
+  static getDerivedStateFromError(error: unknown): Partial<WidgetErrorBoundaryState> {
+    return { error: error ?? new Error("Unknown rendering error.") };
+  }
+
+  static getDerivedStateFromProps(
+    props: WidgetErrorBoundaryProps,
+    state: WidgetErrorBoundaryState,
+  ): Partial<WidgetErrorBoundaryState> | null {
+    return props.resetKey === state.resetKey ? null : { error: undefined, resetKey: props.resetKey };
+  }
+
+  override render(): ReactNode {
+    if (this.state.error === undefined) return this.props.children;
+    const detail = this.state.error instanceof Error ? this.state.error.message : String(this.state.error);
+    return <EmptyState message={`This result could not be displayed. ${detail}`.trim()} tone="error" />;
+  }
 }
 
 function EmptyState({ message, tone = "muted" }: { message: string; tone?: "muted" | "error" }) {

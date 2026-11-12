@@ -21,7 +21,7 @@ the MCP Apps resource.
 | `review-files.ts` | Pure labelling of review files (added, modified, deleted, renamed, binary). |
 | `activity-feed.ts`, `use-activity-feed.ts` | Activity feed state and cursor handling (pure), and the `workspace_activity` long-poll hook that aborts its in-flight call on a new result, teardown, or unmount. |
 | `use-host-context.ts` | Host context: `useHostStyles` for theme, variables and fonts, and safe-area insets. |
-| `workspace-view.tsx`, `icons.tsx` | Presentational card components and JSX icons. |
+| `workspace-view.tsx`, `icons.tsx` | Presentational card components, the root error boundary (the error state until the next result), and JSX icons. |
 | `payload-body.tsx` | Expanded card bodies; loads `heavy-payload.tsx` (read, write, edit) and `review-payload.tsx` (`show_changes`) with `React.lazy` so `@pierre/diffs` and Shiki stay out of the initial bundle. |
 | `payload-fallback.tsx`, `render-fallback.ts`, `highlighter.ts` | Error boundary and plain-text fallback for the lazy renderers, and the shared highlighter setup. |
 

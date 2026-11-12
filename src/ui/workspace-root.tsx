@@ -4,7 +4,7 @@ import { useApp, type App } from "@modelcontextprotocol/ext-apps/react";
 import { useActivityFeed } from "./use-activity-feed.js";
 import { useHostContext } from "./use-host-context.js";
 import { initialWidgetState, widgetReducer, type WidgetAction } from "./widget-state.js";
-import { WorkspaceView } from "./workspace-view.js";
+import { WidgetErrorBoundary, WorkspaceView } from "./workspace-view.js";
 
 const APP_INFO = { name: "devspace-tool-cards", version: "0.4.0" };
 
@@ -21,16 +21,18 @@ export function WorkspaceApp() {
   const feed = useActivityFeed(app, state.card, state.cardVersion, !state.tornDown);
 
   return (
-    <WorkspaceView
-      connected={isConnected}
-      connectionError={error ? error.message : null}
-      state={state}
-      feed={feed}
-      themeType={hostContext?.theme === "light" ? "light" : "dark"}
-      onToggleExpanded={() => dispatch({ type: "toggleExpanded" })}
-      onShowAllReviewFiles={() => dispatch({ type: "showAllReviewFiles" })}
-      onToggleActivityExpanded={() => dispatch({ type: "toggleActivityExpanded" })}
-    />
+    <WidgetErrorBoundary resetKey={state.cardVersion}>
+      <WorkspaceView
+        connected={isConnected}
+        connectionError={error ? error.message : null}
+        state={state}
+        feed={feed}
+        themeType={hostContext?.theme === "light" ? "light" : "dark"}
+        onToggleExpanded={() => dispatch({ type: "toggleExpanded" })}
+        onShowAllReviewFiles={() => dispatch({ type: "showAllReviewFiles" })}
+        onToggleActivityExpanded={() => dispatch({ type: "toggleActivityExpanded" })}
+      />
+    </WidgetErrorBoundary>
   );
 }
 

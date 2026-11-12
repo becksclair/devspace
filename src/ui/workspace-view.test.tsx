@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolResultCard } from "./card-types.js";
 import { EMPTY_ACTIVITY_FEED, applyActivityPage, type ActivityFeed } from "./activity-feed.js";
 import { initialWidgetState, type WidgetState } from "./widget-state.js";
-import { WorkspaceView, type WorkspaceViewProps } from "./workspace-view.js";
+import { WidgetErrorBoundary, WorkspaceView, type WorkspaceViewProps } from "./workspace-view.js";
 
 function render(card: ToolResultCard | null, overrides: Partial<WidgetState> = {}, props: Partial<WorkspaceViewProps> = {}): string {
   const noop = () => undefined;
@@ -157,5 +157,24 @@ assert.match(html, />Show latest</);
 html = render(workspace, {}, { feed: { ...applyActivityPage(EMPTY_ACTIVITY_FEED, { events: [], latestSeq: 0, totalOperations: 0 }), error: "Workspace activity feed is unavailable." } });
 assert.match(html, /<span class="badge">ready<\/span>/);
 assert.match(html, /<div class="activity-empty">Ready. Workspace activity will appear here.<\/div><\/div><div class="activity-error">Workspace activity feed is unavailable.<\/div>/);
+
+// Root error boundary. A card with wrong-typed fields throws while rendering; WorkspaceApp wraps
+// the view in WidgetErrorBoundary so the widget shows its error state instead of unmounting.
+// react-dom/server does not run error boundaries, so the boundary's static lifecycle methods and
+// its fallback render are exercised directly.
+assert.throws(() => render({ tool: "terminal_status", terminals: [null] } as unknown as ToolResultCard, { expanded: true }), /terminalId/);
+assert.throws(() => render({ tool: "grep_files", payload: { content: "text" } } as unknown as ToolResultCard, { expanded: true }), /map is not a function/);
+const boundary = new WidgetErrorBoundary({ resetKey: 1, children: <span>card</span> });
+assert.deepEqual(boundary.state, { error: undefined, resetKey: 1 });
+assert.equal(renderToStaticMarkup(<>{boundary.render()}</>), "<span>card</span>");
+const caught = { ...boundary.state, ...WidgetErrorBoundary.getDerivedStateFromError(new TypeError("bad card")) };
+boundary.state = caught;
+assert.equal(
+  renderToStaticMarkup(<>{boundary.render()}</>),
+  '<main class="shell"><section class="empty error">This result could not be displayed. bad card</section></main>',
+);
+// The error stays for re-renders of the same result and clears when the next result arrives.
+assert.equal(WidgetErrorBoundary.getDerivedStateFromProps({ resetKey: 1, children: null }, caught), null);
+assert.deepEqual(WidgetErrorBoundary.getDerivedStateFromProps({ resetKey: 2, children: null }, caught), { error: undefined, resetKey: 2 });
 
 console.log("workspace-view render tests passed");
