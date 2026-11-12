@@ -205,7 +205,6 @@ type ToolWidgetKind =
 
 interface ToolDefinitionMeta extends Record<string, unknown> {
   "openai/outputTemplate"?: string;
-  "ui/resourceUri"?: string;
   ui?: {
     resourceUri?: string;
     visibility: Array<"model" | "app">;
@@ -239,6 +238,9 @@ export function toolWidgetDescriptorMeta(
 
   return {
     _meta: {
+      // Documented ChatGPT compatibility alias for `_meta.ui.resourceUri`
+      // (https://developers.openai.com/apps-sdk/reference). Kept until a ChatGPT render check
+      // without it has been done.
       "openai/outputTemplate": resourceUri,
       ui: {
         resourceUri,
@@ -1078,6 +1080,10 @@ async function createMcpServer(
           ui: {
             csp: appCsp(config),
           },
+          // Documented legacy ChatGPT compatibility key, superseded by `_meta.ui.csp` except for
+          // `redirect_domains`, which the card does not use
+          // (https://developers.openai.com/apps-sdk/reference). Kept, here and on the read
+          // contents below, until a ChatGPT render check without it has been done.
           "openai/widgetCSP": openAiWidgetCsp(config),
         },
       },
@@ -1093,6 +1099,7 @@ async function createMcpServer(
                 ui: {
                   csp: appCsp(config),
                 },
+                // Legacy ChatGPT compatibility key; see the resource metadata above.
                 "openai/widgetCSP": openAiWidgetCsp(config),
               },
             },
