@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Response } from "express";
-import type { AuthorizationParams } from "@modelcontextprotocol/server-legacy/auth";
+import type { AuthorizationParams } from "./oauth/provider.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/server";
 import {
   SingleUserOAuthProvider,
@@ -13,6 +13,7 @@ import {
   CSRF_COOKIE_NAME,
 } from "./oauth-provider.js";
 import { SqliteOAuthStateStore, InMemoryOAuthStateStore } from "./oauth-store.js";
+import { OAuthHttpError } from "./oauth/errors.js";
 
 const stateDir = await mkdtemp(join(tmpdir(), "devspace-oauth-test-"));
 const mcpUrl = new URL("https://devspace.example.com/mcp");
@@ -75,7 +76,8 @@ try {
       redirect_uris: ["http://127.0.0.1/callback"],
       token_endpoint_auth_method: "none",
     }),
-    /capacity/,
+    (error: unknown) => error instanceof OAuthHttpError && error.code === "invalid_client_metadata" &&
+      error.message === "Client registration capacity reached",
   );
 
   const refreshedTokens = await secondProvider.exchangeRefreshToken(
@@ -94,7 +96,8 @@ try {
   await secondProvider.revokeToken(client, { token: refreshedTokens.access_token });
   await assert.rejects(
     () => secondProvider.verifyAccessToken(refreshedTokens.access_token),
-    /Invalid or expired access token/,
+    (error: unknown) => error instanceof OAuthHttpError && error.code === "invalid_token" && error.status === 401 &&
+      error.message === "Invalid or expired access token",
   );
   secondStore.close();
 

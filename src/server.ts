@@ -3,8 +3,12 @@ import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { getOAuthProtectedResourceMetadataUrl, requireBearerAuth } from "@modelcontextprotocol/server-legacy/auth";
-import { hostHeaderValidation, localhostHostValidation } from "@modelcontextprotocol/express";
+import {
+  getOAuthProtectedResourceMetadataUrl,
+  hostHeaderValidation,
+  localhostHostValidation,
+  requireBearerAuth,
+} from "@modelcontextprotocol/express";
 import { McpServer, isInitializeRequest, checkResourceAllowed, resourceUrlFromServerUrl, DEFAULT_MAX_REQUEST_BODY_SIZE } from "@modelcontextprotocol/server";
 import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
 import {
@@ -39,7 +43,7 @@ import { toolAnnotationsForProfile } from "./mcp-bridge-utils.js";
 import { loadAutoloadSkillDocuments, type AutoloadedSkillDocument } from "./skills.js";
 import { configuredLogicalRoots, normalizeRootPolicies, rootPoliciesFromStrings } from "./roots.js";
 import { registerGitChildSecretNames } from "./shell-environment.js";
-import { oauthRoutes } from "./oauth-routes.js";
+import { oauthRoutes } from "./oauth/routes.js";
 
 type Transport = NodeStreamableHTTPServerTransport;
 const WORKSPACE_APP_URI_PREFIX = "ui://devspace/workspace-app";

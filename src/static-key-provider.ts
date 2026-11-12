@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
-import type { OAuthTokenVerifier } from "@modelcontextprotocol/server-legacy/auth";
+import { OAuthErrorCode, OAuthHttpError } from "./oauth/errors.js";
+import type { OAuthTokenVerifier } from "./oauth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 
@@ -142,16 +142,16 @@ export class StaticKeyVerifier implements OAuthTokenVerifier {
     const keyHash = hashKey(token);
     const record = this.store.findByHash(keyHash);
     if (!record) {
-      throw new InvalidTokenError("Invalid or expired static API key");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidToken, "Invalid or expired static API key");
     }
 
     const now = Math.floor(Date.now() / 1000);
     if (record.expiresAt < now) {
-      throw new InvalidTokenError("Static API key has expired");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidToken, "Static API key has expired");
     }
 
     if (record.resource !== this.resource) {
-      throw new InvalidTokenError("Static API key is not valid for this resource");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidToken, "Static API key is not valid for this resource");
     }
 
     return {
