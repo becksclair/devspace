@@ -7,8 +7,9 @@
 // provider or its stores. Static API keys are minted and revoked through the public CLI.
 //
 // Cases marked "KNOWN DEFECT" pin current behavior that deviates from the relevant RFC or is
-// otherwise questionable. They are recorded, not endorsed; a reimplementation may fix them
-// deliberately and update the assertion in the same change.
+// otherwise questionable. They are recorded, not endorsed; a later change may fix them
+// deliberately and update the assertion in the same change. Cases marked "Intended" were reviewed
+// and kept on purpose; each says why.
 //
 // Never print tokens, authorization codes, client secrets, CSRF tokens, or the owner token.
 
@@ -22,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "./config.js";
+import { mintHeadlessOAuth } from "./headless-auth.js";
 import { normalizeRootPolicies } from "./roots.js";
 import { createServer } from "./server.js";
 
@@ -113,10 +115,10 @@ interface HttpResult {
   json(): unknown;
 }
 
-async function http(path: string, init: RequestInit = {}): Promise<HttpResult> {
+async function http(path: string, init: RequestInit = {}, base = origin): Promise<HttpResult> {
   const headers = new Headers(init.headers);
   headers.set("x-forwarded-for", nextClientIp());
-  const response = await fetch(`${origin}${path}`, { redirect: "manual", ...init, headers });
+  const response = await fetch(`${base}${path}`, { redirect: "manual", ...init, headers });
   const text = await response.text();
   return {
     status: response.status,
@@ -276,14 +278,18 @@ function authorizeParams(client: RegisteredClient, challenge: string, overrides:
   };
 }
 
-function authorizeGet(params: AuthorizeParams): Promise<HttpResult> {
-  return http(`/authorize?${new URLSearchParams(definedEntries(params)).toString()}`);
+/** `repeated` is appended verbatim, to send a parameter a second time. */
+function authorizeGet(params: AuthorizeParams, repeated = ""): Promise<HttpResult> {
+  return http(`/authorize?${new URLSearchParams(definedEntries(params)).toString()}${repeated}`);
 }
 
-const CSRF_COOKIE = "__Host-devspace-csrf";
+// The public base URL is plain http, where a `__Host-` cookie (which requires `Secure`) would be
+// refused by browsers; the https name is pinned by the https deployment at the end.
+const CSRF_COOKIE = "devspace-csrf";
+const SECURE_CSRF_COOKIE = "__Host-devspace-csrf";
 
-function csrfCookieValue(result: HttpResult): string {
-  const match = new RegExp(`${CSRF_COOKIE}=([^;]*)`).exec(result.headers.get("set-cookie") ?? "");
+function csrfCookieValue(result: HttpResult, cookieName = CSRF_COOKIE): string {
+  const match = new RegExp(`^${cookieName}=([^;]*)`).exec(result.headers.get("set-cookie") ?? "");
   assert.ok(match, "approval page sets the CSRF cookie");
   return decodeURIComponent(match[1]);
 }
@@ -296,6 +302,33 @@ async function approvalPage(params: AuthorizeParams): Promise<{ page: HttpResult
   assert.ok(field, "approval page has a csrf_token field");
   assert.ok(field[1] === csrfCookieValue(page), "csrf_token field matches the CSRF cookie");
   return { page, csrf: field[1] };
+}
+
+function htmlUnescape(value: string): string {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+/** The approval form's hidden fields in document order: what a browser submits besides the password. */
+function hiddenFields(page: HttpResult): Array<[string, string]> {
+  return [...page.text.matchAll(/<input type="hidden" name="([^"]*)" value="([^"]*)" \/>/g)]
+    .map((match): [string, string] => [htmlUnescape(match[1]), htmlUnescape(match[2])]);
+}
+
+/**
+ * Submits the approval form the way a browser would: the form has no `action`, so it posts to the
+ * page's own URL, with the hidden fields, the owner password, and the CSRF cookie the page set.
+ */
+function approveAsBrowser(pagePath: string, page: HttpResult): Promise<HttpResult> {
+  return http(pagePath, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie: `${CSRF_COOKIE}=${csrfCookieValue(page)}` },
+    body: new URLSearchParams([...hiddenFields(page), ["owner_token", ownerToken]]).toString(),
+  });
 }
 
 function approve(params: AuthorizeParams, fields: { owner_token?: string; csrf_token?: string }, cookie?: string): Promise<HttpResult> {
@@ -344,7 +377,7 @@ function assertTokenResponse(result: HttpResult, scope: string, label: string): 
   assert.equal(result.status, 200, `${label}: status (body ${bodyHint(result)})`);
   assert.equal(result.headers.get("content-type"), JSON_CONTENT_TYPE, `${label}: content-type`);
   assert.equal(result.headers.get("cache-control"), "no-store", `${label}: Cache-Control`);
-  // KNOWN DEFECT: RFC 6749 section 5.1 also requires `Pragma: no-cache`; it is not sent today.
+  // Intended: no `Pragma: no-cache`; OAuth 2.1 requires only `Cache-Control: no-store`.
   assert.equal(result.headers.get("pragma"), null, `${label}: Pragma`);
   assert.equal(result.headers.get("access-control-allow-origin"), "*", `${label}: ACAO`);
   const body = result.json() as TokenResponse;
@@ -481,6 +514,7 @@ try {
     token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     scopes_supported: ["devspace", "audit"],
+    // KNOWN DEFECT: /revoke also accepts public clients ("none"), which this list omits.
     revocation_endpoint_auth_methods_supported: ["client_secret_post"],
   });
 
@@ -543,26 +577,37 @@ try {
   assert.deepEqual(allowedHostBody.grant_types, ["authorization_code", "refresh_token"]);
   assert.deepEqual(allowedHostBody.response_types, ["code"]);
 
-  // KNOWN DEFECT: a registration that omits token_endpoint_auth_method is issued a client_secret
-  // (with an expiry) but the response reports token_endpoint_auth_method "none". The secret is
-  // then required by /token and /revoke (see the revocation cases below).
-  const confidentialByDefault = await postJson("/register", { redirect_uris: ["http://localhost:43124/cb"] });
-  assert.equal(confidentialByDefault.status, 201);
-  const confidentialBody = confidentialByDefault.json() as Record<string, unknown>;
+  // A registration that omits token_endpoint_auth_method is a public client: no secret, reported
+  // as "none". It completes /token and /revoke without a secret (see the revocation cases below).
+  const publicByDefault = await postJson("/register", { redirect_uris: ["http://localhost:43124/cb"] });
+  assert.equal(publicByDefault.status, 201);
+  const publicByDefaultBody = publicByDefault.json() as RegisteredClient;
+  assert.deepEqual(Object.keys(publicByDefaultBody).sort(), [
+    "client_id", "client_id_issued_at", "grant_types", "redirect_uris", "response_types", "token_endpoint_auth_method",
+  ]);
+  assert.equal(publicByDefaultBody.token_endpoint_auth_method, "none");
+
+  // client_secret_post is issued a 32-byte hex secret that expires after 30 days.
+  const confidentialRegistration = await postJson("/register", {
+    redirect_uris: ["http://localhost:43124/cb"],
+    token_endpoint_auth_method: "client_secret_post",
+  });
+  assert.equal(confidentialRegistration.status, 201);
+  const confidentialBody = confidentialRegistration.json() as Record<string, unknown>;
   assert.deepEqual(Object.keys(confidentialBody).sort(), [
     "client_id", "client_id_issued_at", "client_secret", "client_secret_expires_at", "grant_types",
     "redirect_uris", "response_types", "token_endpoint_auth_method",
   ]);
-  assert.equal(confidentialBody.token_endpoint_auth_method, "none");
+  assert.equal(confidentialBody.token_endpoint_auth_method, "client_secret_post");
   assertSecretMatches(String(confidentialBody.client_secret), /^[0-9a-f]{64}$/, "issued client_secret");
   assert.equal(
     confidentialBody.client_secret_expires_at,
     (confidentialBody.client_id_issued_at as number) + 30 * 24 * 60 * 60,
   );
 
-  // KNOWN DEFECT: RFC 7591 section 3.2.2 says invalid_redirect_uri; DevSpace answers invalid_request.
+  // A redirect host outside the allowlist is invalid_redirect_uri (RFC 7591 section 3.2.2).
   const disallowedHost = await postJson("/register", { redirect_uris: ["https://evil.example/cb"], token_endpoint_auth_method: "none" });
-  assertOAuthError(disallowedHost, 400, "invalid_request", "Client redirect_uri is not allowed for this DevSpace server", "register disallowed host");
+  assertOAuthError(disallowedHost, 400, "invalid_redirect_uri", "Client redirect_uri is not allowed for this DevSpace server", "register disallowed host");
   assert.equal(disallowedHost.headers.get("cache-control"), "no-store");
   assert.equal(disallowedHost.headers.get("access-control-allow-origin"), "*");
 
@@ -570,7 +615,7 @@ try {
   // among allowed ones rejects the whole registration.
   assertOAuthError(
     await postJson("/register", { redirect_uris: [loopbackRedirect, "http://chatgpt.example/cb"], token_endpoint_auth_method: "none" }),
-    400, "invalid_request", "Client redirect_uri is not allowed for this DevSpace server", "register mixed redirects",
+    400, "invalid_redirect_uri", "Client redirect_uri is not allowed for this DevSpace server", "register mixed redirects",
   );
   assertOAuthError(
     await postJson("/register", { redirect_uris: ["javascript:alert(1)"] }),
@@ -603,7 +648,7 @@ try {
   assert.equal(page.headers.get("cache-control"), "no-store");
   assertSecurityHeaders(page, "approval page");
   assertRateLimitHeaders(page, 100, 900, "approval page");
-  // The CSRF cookie is HttpOnly, SameSite=Lax, Path=/, 600 s; Secure only when the public URL is https.
+  // The CSRF cookie is HttpOnly, SameSite=Lax, Path=/, 600 s, and has no Secure attribute over http.
   assertSecretMatches(
     page.headers.get("set-cookie"),
     new RegExp(`^${CSRF_COOKIE}=[0-9a-f]{64}; Max-Age=600; Path=/; Expires=[^;]+; HttpOnly; SameSite=Lax$`),
@@ -612,6 +657,13 @@ try {
   assert.equal(page.headers.get("access-control-allow-origin"), null);
   assertSecretMatches(page.text, /name="csrf_token" value="[0-9a-f]{64}"/, "approval page csrf_token field");
   assertSecretMatches(page.text, /name="owner_token"/, "approval page owner_token field");
+  // The hidden fields carry the request back unchanged, so the hand-built approvals below submit
+  // what the page itself would.
+  assert.deepEqual(
+    hiddenFields(page).filter(([name]) => name !== "csrf_token"),
+    definedEntries(baseParams),
+    "approval page hidden fields",
+  );
 
   // Pre-redirect failures are direct 400 JSON responses and never redirect.
   const noClient = await authorizeGet({ ...baseParams, client_id: undefined });
@@ -635,9 +687,33 @@ try {
   assert.equal((await authorizeGet({ ...baseParams, redirect_uri: "http://127.0.0.1:50001/callback" })).status, 200);
   assert.equal((await authorizeGet({ ...baseParams, redirect_uri: undefined })).status, 200);
 
+  // Only the port is relaxed. A requested redirect_uri with a fragment or userinfo never matches,
+  // not even when it was registered verbatim: a 400 that never redirects.
+  const oddlyRegistered = await registerPublicClient(["http://127.0.0.1:43125/cb#frag", "http://user@127.0.0.1:43126/cb"]);
+  for (const [redirectUri, target] of [
+    ["http://127.0.0.1:50003/callback#frag", client],
+    ["http://127.0.0.1:43123/callback#", client],
+    ["http://user@127.0.0.1:50003/callback", client],
+    ["http://@127.0.0.1:50003/callback", client],
+    ["http://127.0.0.1:43125/cb#frag", oddlyRegistered],
+    ["http://user@127.0.0.1:43126/cb", oddlyRegistered],
+  ] as const) {
+    const rejected = await authorizeGet(authorizeParams(target, pair.challenge, { redirect_uri: redirectUri }));
+    assertOAuthError(rejected, 400, "invalid_request", "Unregistered redirect_uri", `authorize redirect_uri ${redirectUri}`);
+    assert.equal(rejected.headers.get("location"), null, `authorize redirect_uri ${redirectUri}: no redirect`);
+  }
+
+  // The same holds when redirect_uri is omitted and the only registered URI is such a URI.
+  for (const registered of ["http://127.0.0.1:43127/cb#frag", "http://user@127.0.0.1:43128/cb"]) {
+    const sole = await registerPublicClient([registered]);
+    const rejected = await authorizeGet(authorizeParams(sole, pair.challenge, { redirect_uri: undefined }));
+    assertOAuthError(rejected, 400, "invalid_request", "Registered redirect_uri is not usable", `authorize with the sole registered URI ${registered}`);
+    assert.equal(rejected.headers.get("location"), null, `authorize with the sole registered URI ${registered}: no redirect`);
+  }
+
   // Post-redirect failures are 302s to the redirect URI with error parameters.
-  async function assertErrorRedirect(params: AuthorizeParams, expected: Record<string, string | RegExp>, label: string): Promise<void> {
-    const result = await authorizeGet(params);
+  async function assertErrorRedirect(params: AuthorizeParams, expected: Record<string, string | RegExp>, label: string, repeated = ""): Promise<void> {
+    const result = await authorizeGet(params, repeated);
     assert.equal(result.status, 302, `${label}: status (body ${bodyHint(result)})`);
     assert.equal(result.headers.get("cache-control"), "no-store", `${label}: Cache-Control`);
     const location = new URL(result.headers.get("location") ?? "");
@@ -649,14 +725,32 @@ try {
     }
   }
 
-  // KNOWN DEFECT: when the SDK's parameter schema fails (missing PKCE challenge, non-S256 method,
-  // unsupported response_type) the redirect omits `state`, and an unsupported response_type is
-  // reported as invalid_request rather than unsupported_response_type (RFC 6749 section 4.1.2.1).
-  await assertErrorRedirect({ ...baseParams, code_challenge: undefined }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize missing code_challenge");
-  await assertErrorRedirect({ ...baseParams, code_challenge_method: "plain" }, { error: "invalid_request", error_description: /code_challenge_method/ }, "authorize plain PKCE");
-  await assertErrorRedirect({ ...baseParams, code_challenge_method: undefined }, { error: "invalid_request", error_description: /code_challenge_method/ }, "authorize missing code_challenge_method");
-  await assertErrorRedirect({ ...baseParams, response_type: "token" }, { error: "invalid_request", error_description: /response_type/ }, "authorize response_type=token");
-  await assertErrorRedirect({ ...baseParams, resource: "not a url" }, { error: "invalid_request", error_description: /resource/ }, "authorize unparsable resource");
+  // Parameter failures (RFC 6749 section 4.1.2.1) redirect with `state` whenever the request
+  // carried a non-empty one, even when another parameter fails validation.
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined }, { error: "invalid_request", error_description: /code_challenge/, state: "oracle-state" }, "authorize missing code_challenge");
+  await assertErrorRedirect({ ...baseParams, code_challenge_method: "plain" }, { error: "invalid_request", error_description: /code_challenge_method/, state: "oracle-state" }, "authorize plain PKCE");
+  await assertErrorRedirect({ ...baseParams, code_challenge_method: undefined }, { error: "invalid_request", error_description: /code_challenge_method/, state: "oracle-state" }, "authorize missing code_challenge_method");
+  await assertErrorRedirect({ ...baseParams, resource: "not a url" }, { error: "invalid_request", error_description: /resource/, state: "oracle-state" }, "authorize unparsable resource");
+  // Without a usable `state` the redirect carries only the error.
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined, state: undefined }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize schema failure without state");
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined, state: "" }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize schema failure with empty state");
+  // A missing (or empty) response_type is invalid_request; any other value is unsupported_response_type,
+  // which is checked before the remaining parameters.
+  await assertErrorRedirect({ ...baseParams, response_type: undefined }, { error: "invalid_request", error_description: /response_type/, state: "oracle-state" }, "authorize missing response_type");
+  await assertErrorRedirect({ ...baseParams, response_type: "" }, { error: "invalid_request", error_description: /response_type/, state: "oracle-state" }, "authorize empty response_type");
+  const unsupportedResponseType = { error: "unsupported_response_type", error_description: 'Only response_type "code" is supported', state: "oracle-state" };
+  await assertErrorRedirect({ ...baseParams, response_type: "token" }, unsupportedResponseType, "authorize response_type=token");
+  await assertErrorRedirect({ ...baseParams, response_type: "code token" }, unsupportedResponseType, "authorize response_type=code token");
+  // A repeated parameter (RFC 6749 section 3.1) is invalid_request, also for response_type, and a
+  // repeated `state` is not a usable state, so it is not echoed.
+  await assertErrorRedirect(baseParams, { error: "invalid_request", error_description: /response_type/, state: "oracle-state" }, "authorize repeated response_type", "&response_type=code");
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize repeated state", "&state=second");
+  await assertErrorRedirect({ ...baseParams, response_type: "token", code_challenge: undefined }, unsupportedResponseType, "authorize response_type=token without code_challenge");
+  // Client and redirect URI failures still answer 400 JSON and never redirect, whatever else is wrong.
+  const unregisteredWithBadType = await authorizeGet({ ...baseParams, response_type: "token", redirect_uri: "http://127.0.0.1:43123/other" });
+  assertOAuthError(unregisteredWithBadType, 400, "invalid_request", "Unregistered redirect_uri", "authorize unregistered redirect_uri with response_type=token");
+  assert.equal(unregisteredWithBadType.headers.get("location"), null);
+  assertOAuthError(await authorizeGet({ ...baseParams, response_type: "token", client_id: "devspace-unknown" }), 400, "invalid_client", "Invalid client_id", "authorize unknown client_id with response_type=token");
 
   // Provider-level failures keep `state`.
   const resourceError = { error: "invalid_request", error_description: "Invalid or missing OAuth resource", state: "oracle-state" };
@@ -664,9 +758,10 @@ try {
   await assertErrorRedirect({ ...baseParams, resource: "https://evil.example/mcp" }, resourceError, "authorize foreign-origin resource");
   await assertErrorRedirect({ ...baseParams, resource: `${origin}/` }, resourceError, "authorize root resource");
   await assertErrorRedirect({ ...baseParams, resource: `${origin}/mcpx` }, resourceError, "authorize sibling-path resource");
+  // An unsupported scope is invalid_scope (RFC 6749 section 4.1.2.1).
   await assertErrorRedirect(
     { ...baseParams, scope: "devspace admin" },
-    { error: "invalid_request", error_description: "Requested scope is not supported", state: "oracle-state" },
+    { error: "invalid_scope", error_description: "Requested scope is not supported", state: "oracle-state" },
     "authorize unsupported scope",
   );
   // Resource indicators below the /mcp path are accepted.
@@ -683,6 +778,16 @@ try {
   assert.equal((await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf })).status, 400, "csrf field without cookie");
   assert.equal((await approve(baseParams, { owner_token: ownerToken }, csrf)).status, 400, "csrf cookie without field");
   assert.equal((await approve(baseParams, { owner_token: ownerToken, csrf_token: "0".repeat(64) }, csrf)).status, 400, "csrf mismatch");
+  // A cookie whose percent-encoding cannot be decoded is no cookie; it never redirects with server_error.
+  const malformedCookie = await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf }, "%E0%A4%A");
+  assert.equal(malformedCookie.status, 400, "malformed csrf cookie");
+  assert.equal(malformedCookie.headers.get("location"), null, "malformed csrf cookie: no redirect");
+  // Over http only the http name is read: the right token under the https name is no cookie at all.
+  assert.equal(
+    (await postForm("/authorize", { ...baseParams, owner_token: ownerToken, csrf_token: csrf }, { cookie: `${SECURE_CSRF_COOKIE}=${csrf}` })).status,
+    400,
+    "https cookie name on an http deployment",
+  );
   const wrongOwner = await approve(baseParams, { owner_token: "not-the-owner-token", csrf_token: csrf }, csrf);
   assert.equal(wrongOwner.status, 401);
   assert.equal(wrongOwner.headers.get("content-type"), HTML_CONTENT_TYPE);
@@ -691,7 +796,7 @@ try {
   assertSecurityHeaders(wrongOwner, "wrong owner token");
   assertSecretMatches(wrongOwner.headers.get("set-cookie"), new RegExp(`^${CSRF_COOKIE}=[0-9a-f]{64};`), "wrong owner Set-Cookie");
 
-  // The CSRF token is not single-use: the same cookie/field pair still approves after a failure.
+  // Intended: the CSRF pair stays usable after a failed approval; approval needs the owner password in the same request.
   const approved = await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf }, csrf);
   assert.equal(approved.status, 302);
   assert.equal(approved.headers.get("cache-control"), "no-store");
@@ -717,6 +822,14 @@ try {
   assert.equal(`${stateless.location.origin}${stateless.location.pathname}`, "http://127.0.0.1:50002/callback");
   assert.deepEqual([...stateless.location.searchParams.keys()], ["code"]);
 
+  // The repository's headless client (`devspace auth`) completes the approval over http, where the
+  // CSRF cookie has the http name.
+  {
+    const bundle = await mintHeadlessOAuth({ baseUrl: origin, ownerToken, clientName: "Oracle headless client" });
+    assert.equal(bundle.tokens.scope, "devspace audit");
+    await assertMcpAccepted(bundle.tokens.access_token, "headless-minted access token");
+  }
+
   // 4. /token ---------------------------------------------------------------------------------
 
   const codeGrant = {
@@ -729,7 +842,8 @@ try {
   };
   const otherClient = await registerPublicClient([loopbackRedirect]);
 
-  // Failed exchanges do not consume the code: each case below is followed by a successful exchange.
+  // Intended: a failed exchange does not consume the code; mandatory PKCE S256 makes a retry worthless, and consuming would let an interceptor burn codes.
+  // Each case below is followed by a successful exchange.
   const wrongVerifier = await tokenRequest({ ...codeGrant, code_verifier: pkcePair().verifier });
   assertOAuthError(wrongVerifier, 400, "invalid_grant", "code_verifier does not match the challenge", "token wrong verifier");
   assert.equal(wrongVerifier.headers.get("cache-control"), "no-store");
@@ -754,8 +868,7 @@ try {
   assertRateLimitHeaders(exchanged, 50, 900, "token");
   assertOAuthError(await tokenRequest(codeGrant), 400, "invalid_grant", "Invalid authorization code", "token reused code");
 
-  // KNOWN DEFECT: redirect_uri may be omitted at the token endpoint even though the authorization
-  // request carried one (RFC 6749 section 4.1.3 requires it).
+  // Intended: redirect_uri is optional at /token; OAuth 2.1 drops it from the token request because PKCE binds the code.
   {
     const omittedPair = pkcePair();
     const omitted = await authorizationCode(authorizeParams(client, omittedPair.challenge));
@@ -786,10 +899,10 @@ try {
 
   // Refresh: rotation, scope narrowing, and rejections.
   const refreshGrant = { grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id };
-  // KNOWN DEFECT: requesting a broader scope answers access_denied; RFC 6749 section 5.2 says invalid_scope.
+  // Requesting a broader scope is invalid_scope (RFC 6749 sections 5.2 and 6).
   assertOAuthError(
     await tokenRequest({ ...refreshGrant, scope: "devspace audit admin" }),
-    400, "access_denied", "Refresh token cannot grant requested scopes", "refresh broader scope",
+    400, "invalid_scope", "Refresh token cannot grant requested scopes", "refresh broader scope",
   );
   assertOAuthError(await tokenRequest({ ...refreshGrant, resource: "https://evil.example/mcp" }), 400, "invalid_grant", "Invalid resource", "refresh foreign resource");
   assertOAuthError(await tokenRequest({ ...refreshGrant, client_id: otherClient.client_id }), 400, "invalid_grant", "Invalid refresh token", "refresh by another client");
@@ -811,14 +924,23 @@ try {
   // The narrowed refresh token cannot widen back.
   assertOAuthError(
     await tokenRequest({ grant_type: "refresh_token", refresh_token: narrowed.refresh_token, client_id: client.client_id, scope: "devspace" }),
-    400, "access_denied", "Refresh token cannot grant requested scopes", "refresh re-widen narrowed token",
+    400, "invalid_scope", "Refresh token cannot grant requested scopes", "refresh re-widen narrowed token",
+  );
+  // The rejected widening did not consume the narrowed refresh token.
+  const afterRejectedWidening = assertTokenResponse(
+    await tokenRequest({ grant_type: "refresh_token", refresh_token: narrowed.refresh_token, client_id: client.client_id }),
+    "audit", "refresh after a rejected widening",
+  );
+  // An empty `scope` is an omitted one, as at /authorize: the refresh keeps the granted scope.
+  assertTokenResponse(
+    await tokenRequest({ grant_type: "refresh_token", refresh_token: afterRejectedWidening.refresh_token, client_id: client.client_id, scope: "" }),
+    "audit", "refresh with an empty scope",
   );
 
   // 6 (OAuth half). /mcp with OAuth tokens ----------------------------------------------------
 
   await assertMcpAccepted(refreshed.access_token, "OAuth access token");
-  // KNOWN DEFECT (or at least undocumented): rotating the refresh token leaves the previous
-  // access token valid until it expires.
+  // Intended: rotation leaves the previous access token valid (one-hour lifetime); no specification requires revoking it, and that would fail in-flight requests.
   await assertMcpAccepted(tokens.access_token, "access token from before refresh rotation");
   await assertMcpRejected(`Bearer ${narrowed.access_token}`, 403, "insufficient_scope", "Insufficient scope", "token without the devspace scope");
   await assertMcpRejected(undefined, 401, "invalid_token", "Missing Authorization header", "no Authorization header");
@@ -841,12 +963,33 @@ try {
   assert.equal(getWithoutAuth.status, 401);
   assert.equal(getWithoutAuth.headers.get("www-authenticate"), wwwAuthenticate("invalid_token", "Missing Authorization header"));
 
-  // KNOWN DEFECT: authorize without `scope` renders the page (which displays "devspace") but issues
-  // a token with an empty scope, which /mcp then rejects with insufficient_scope.
-  {
-    const unscoped = await issueTokens(client, { scope: undefined });
-    assert.equal(unscoped.scope, "");
-    await assertMcpRejected(`Bearer ${unscoped.access_token}`, 403, "insufficient_scope", "Insufficient scope", "token issued without scope");
+  // An absent or empty `scope` is granted the first supported scope, the one /mcp requires. The page
+  // shows it, its hidden field carries it, and the approval is submitted exactly as the page would.
+  for (const [label, scope] of [["omitted scope", undefined], ["empty scope", ""]] as const) {
+    const unscopedPair = pkcePair();
+    const params = authorizeParams(client, unscopedPair.challenge, { scope });
+    const pagePath = `/authorize?${new URLSearchParams(definedEntries(params)).toString()}`;
+    const unscopedPage = await http(pagePath);
+    assert.equal(unscopedPage.status, 200, `${label}: approval page (body ${bodyHint(unscopedPage)})`);
+    assert.match(unscopedPage.text, /<dt>Scope<\/dt><dd>devspace<\/dd>/, `${label}: displayed scope`);
+    assert.equal(new Map(hiddenFields(unscopedPage)).get("scope"), "devspace", `${label}: hidden scope field`);
+    const unscopedApproval = await approveAsBrowser(pagePath, unscopedPage);
+    assert.equal(unscopedApproval.status, 302, `${label}: approval (body ${bodyHint(unscopedApproval)})`);
+    const unscopedLocation = new URL(unscopedApproval.headers.get("location") ?? "");
+    assert.deepEqual([...unscopedLocation.searchParams.keys()], ["code", "state"], `${label}: redirect parameters`);
+    const unscopedTokens = assertTokenResponse(
+      await tokenRequest({
+        grant_type: "authorization_code",
+        code: unscopedLocation.searchParams.get("code") ?? "",
+        code_verifier: unscopedPair.verifier,
+        redirect_uri: params.redirect_uri,
+        client_id: client.client_id,
+        resource: mcpUrl,
+      }),
+      "devspace",
+      `${label}: token`,
+    );
+    await assertMcpAccepted(unscopedTokens.access_token, `${label}: /mcp`);
   }
 
   // 5. /revoke --------------------------------------------------------------------------------
@@ -861,7 +1004,8 @@ try {
   await assertMcpRejected(`Bearer ${refreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "revoked access token");
 
   // Revoking a refresh token kills it for refresh. KNOWN DEFECT: the access token issued with it
-  // stays valid, and token_type_hint is ignored.
+  // stays valid (no cascade).
+  // Intended: token_type_hint is ignored; RFC 7009 permits that, and lookup is by hash whatever the type.
   const pairForRevocation = await issueTokens(client);
   const revokeRefresh = await postForm("/revoke", { token: pairForRevocation.refresh_token, client_id: client.client_id, token_type_hint: "access_token" });
   assert.equal(revokeRefresh.status, 200);
@@ -886,7 +1030,19 @@ try {
   assert.equal(revokeNoClient.headers.get("cache-control"), null);
   assertOAuthError(await postForm("/revoke", { token: "not-a-token", client_id: "devspace-unknown" }), 400, "invalid_client", "Invalid client_id", "revoke unknown client_id");
   assertOAuthError(await postForm("/revoke", { client_id: client.client_id }), 400, "invalid_request", /token/, "revoke missing token");
-  // The client registered without token_endpoint_auth_method must present its secret.
+  // The client registered without token_endpoint_auth_method uses /token and /revoke with no secret.
+  {
+    const defaultTokens = await issueTokens(publicByDefaultBody);
+    const defaultRefreshed = assertTokenResponse(
+      await tokenRequest({ grant_type: "refresh_token", refresh_token: defaultTokens.refresh_token, client_id: publicByDefaultBody.client_id }),
+      "devspace audit", "refresh by client registered without an auth method",
+    );
+    const defaultRevoke = await postForm("/revoke", { token: defaultRefreshed.access_token, client_id: publicByDefaultBody.client_id });
+    assert.equal(defaultRevoke.status, 200, `revoke by client registered without an auth method (body ${bodyHint(defaultRevoke)})`);
+    assert.deepEqual(defaultRevoke.json(), {});
+    await assertMcpRejected(`Bearer ${defaultRefreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "token revoked by client registered without an auth method");
+  }
+  // The client_secret_post client must present its secret.
   assertOAuthError(
     await postForm("/revoke", { token: "not-a-token", client_id: String(confidentialBody.client_id) }),
     400, "invalid_client", "Client secret is required", "revoke secret-holding client without secret",
@@ -912,20 +1068,21 @@ try {
   const auditOnlyKey = mintStaticKey({ scope: "audit" });
   await assertMcpRejected(`Bearer ${auditOnlyKey.raw_key}`, 403, "insufficient_scope", "Insufficient scope", "static key without the devspace scope");
 
-  // Every static-key failure falls through to the OAuth verifier, so it reports the OAuth message.
+  // A rejected static key is still tried as an OAuth access token, but the challenge reports the
+  // static-key verifier's reason.
   const foreignKey = mintStaticKey({ publicBaseUrl: "https://other.example" });
   assert.equal(foreignKey.resource, "https://other.example/mcp");
-  await assertMcpRejected(`Bearer ${foreignKey.raw_key}`, 401, "invalid_token", "Invalid or expired access token", "static key for another resource");
-  await assertMcpRejected(`Bearer obsk_${randomBytes(32).toString("base64url")}`, 401, "invalid_token", "Invalid or expired access token", "unknown static key");
+  await assertMcpRejected(`Bearer ${foreignKey.raw_key}`, 401, "invalid_token", "Static API key is not valid for this resource", "static key for another resource");
+  await assertMcpRejected(`Bearer obsk_${randomBytes(32).toString("base64url")}`, 401, "invalid_token", "Invalid or expired static API key", "unknown static key");
 
   const revokedKey = mintStaticKey();
   await assertMcpAccepted(revokedKey.raw_key, "static key before revocation");
   runCli(["revoke-key", "--key-id", revokedKey.key_id]);
-  await assertMcpRejected(`Bearer ${revokedKey.raw_key}`, 401, "invalid_token", "Invalid or expired access token", "revoked static key");
+  await assertMcpRejected(`Bearer ${revokedKey.raw_key}`, 401, "invalid_token", "Invalid or expired static API key", "revoked static key");
 
   const waitMs = (shortLivedKey.expires_at + 1) * 1000 - Date.now();
   if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs + 50));
-  await assertMcpRejected(`Bearer ${shortLivedKey.raw_key}`, 401, "invalid_token", "Invalid or expired access token", "expired static key");
+  await assertMcpRejected(`Bearer ${shortLivedKey.raw_key}`, 401, "invalid_token", "Static API key has expired", "expired static key");
 
   // 7. Method handling and CORS preflight -----------------------------------------------------
 
@@ -969,6 +1126,7 @@ try {
   assert.equal(authorizePreflight.headers.get("access-control-allow-origin"), null);
 
   // 8. Rate-limit headers -----------------------------------------------------------------------
+  // KNOWN DEFECT: two layers of limiters, whose headers overwrite each other as described below.
   // /authorize and /token each pass through DevSpace's own limiter (10/60 s and 30/60 s) and then the
   // SDK's (100/900 s and 50/900 s). Responses that reach the SDK limiter carry its headers, which
   // overwrite DevSpace's; only responses produced before it (405s, /token preflight) show
@@ -980,6 +1138,76 @@ try {
   assertRateLimitHeaders(await preflight("/token"), 30, 60, "OPTIONS /token");
   assertNoRateLimitHeaders(await preflight("/revoke"), "OPTIONS /revoke");
   assertNoRateLimitHeaders(await mcpInitialize(), "POST /mcp");
+
+  // 9. The CSRF cookie on an https deployment ---------------------------------------------------
+  // The cookie's name and Secure attribute follow the public base URL, not the connection, so an
+  // https-configured server can be exercised over the local http listener.
+  {
+    const secureStateDir = await mkdtemp(join(tmpdir(), "devspace-oauth-http-test-secure-"));
+    const securePublicUrl = "https://devspace.example";
+    const secureListener = createHttpServer();
+    await new Promise<void>((resolve, reject) => {
+      secureListener.once("error", reject);
+      secureListener.listen(0, "127.0.0.1", resolve);
+    });
+    const secureOrigin = `http://127.0.0.1:${(secureListener.address() as AddressInfo).port}`;
+    const secureRunning = createServer({
+      ...config,
+      publicBaseUrl: securePublicUrl,
+      stateDir: secureStateDir,
+      worktreeRoot: join(secureStateDir, "worktrees"),
+      agentDir: secureStateDir,
+      globalInstructionsFile: join(secureStateDir, "AGENTS.md"),
+      terminals: { ...config.terminals, runtimeDir: join(secureStateDir, "terminal-runtime") },
+    });
+    secureListener.on("request", secureRunning.app);
+    try {
+      const secureRegistration = await http("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [loopbackRedirect], token_endpoint_auth_method: "none" }),
+      }, secureOrigin);
+      assert.equal(secureRegistration.status, 201, `https register: ${bodyHint(secureRegistration)}`);
+      const secureClient = secureRegistration.json() as RegisteredClient;
+      const securePair = pkcePair();
+      const secureParams = authorizeParams(secureClient, securePair.challenge, { resource: `${securePublicUrl}/mcp` });
+      const securePagePath = `/authorize?${new URLSearchParams(definedEntries(secureParams)).toString()}`;
+      const securePage = await http(securePagePath, {}, secureOrigin);
+      assert.equal(securePage.status, 200, `https approval page: ${bodyHint(securePage)}`);
+      // Byte for byte what an https deployment has always sent.
+      const secureSetCookie = new RegExp(`^${SECURE_CSRF_COOKIE}=[0-9a-f]{64}; Max-Age=600; Path=/; Expires=[^;]+; HttpOnly; Secure; SameSite=Lax$`);
+      assertSecretMatches(securePage.headers.get("set-cookie"), secureSetCookie, "https approval page Set-Cookie");
+      const secureCsrf = csrfCookieValue(securePage, SECURE_CSRF_COOKIE);
+      const secureApprove = (cookie: string, ownerPassword = ownerToken) => http(securePagePath, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams([...hiddenFields(securePage), ["owner_token", ownerPassword]]).toString(),
+      }, secureOrigin);
+
+      // The http name is not read on an https deployment.
+      const httpNamed = await secureApprove(`${CSRF_COOKIE}=${secureCsrf}`);
+      assert.equal(httpNamed.status, 400, "http cookie name on an https deployment");
+      assertSecretMatches(httpNamed.headers.get("set-cookie"), secureSetCookie, "https CSRF rejection Set-Cookie");
+      const secureWrongOwner = await secureApprove(`${SECURE_CSRF_COOKIE}=${secureCsrf}`, "not-the-owner-token");
+      assert.equal(secureWrongOwner.status, 401, "https wrong owner token");
+      assertSecretMatches(secureWrongOwner.headers.get("set-cookie"), secureSetCookie, "https wrong owner Set-Cookie");
+
+      const secureApproved = await secureApprove(`${SECURE_CSRF_COOKIE}=${secureCsrf}`);
+      assert.equal(secureApproved.status, 302, `https approval: ${bodyHint(secureApproved)}`);
+      assertSecretMatches(
+        secureApproved.headers.get("set-cookie"),
+        new RegExp(`^${SECURE_CSRF_COOKIE}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax$`),
+        "https approval clears the CSRF cookie",
+      );
+      assert.deepEqual([...new URL(secureApproved.headers.get("location") ?? "").searchParams.keys()], ["code", "state"]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        secureListener.close((error) => (error ? reject(error) : resolve()));
+      });
+      secureRunning.close?.();
+      await rm(secureStateDir, { recursive: true, force: true });
+    }
+  }
 } finally {
   await new Promise<void>((resolve, reject) => {
     httpServer.close((error) => (error ? reject(error) : resolve()));

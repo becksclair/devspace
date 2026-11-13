@@ -170,7 +170,8 @@ export async function mintHeadlessOAuth(options: MintOptions): Promise<HeadlessO
     state: pair.state,
     resource,
   });
-  const csrfCookieName = "__Host-devspace-csrf";
+  // DevSpace names its CSRF cookie by scheme: `__Host-` requires `Secure`, which http cannot store.
+  const csrfCookieName = base.protocol === "https:" ? "__Host-devspace-csrf" : "devspace-csrf";
   let csrfToken: string | undefined;
   let csrfCookie: string | undefined;
   try {
@@ -178,7 +179,7 @@ export async function mintHeadlessOAuth(options: MintOptions): Promise<HeadlessO
     const csrfResp = await fetchImpl(csrfUrl, { method: "GET", redirect: "manual", headers: { Accept: "text/html" } });
     if (csrfResp.ok) {
       const setCookie = csrfResp.headers.get("set-cookie") ?? csrfResp.headers.get("Set-Cookie") ?? "";
-      const m = setCookie.match(new RegExp(`${csrfCookieName}=([^;]+)`));
+      const m = setCookie.match(new RegExp(`(?:^|[;,]\\s*)${csrfCookieName}=([^;]+)`));
       if (m) csrfCookie = decodeURIComponent(m[1]);
       const html = await csrfResp.text();
       const htmlMatch = html.match(/name="csrf_token" value="([^"]+)"/);

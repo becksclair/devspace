@@ -15,6 +15,7 @@ import type { AuthorizationParams, OAuthServerProvider } from "./oauth/provider.
 import { oauthRoutes } from "./oauth/routes.js";
 import { constantTimeEqual, pkceS256Matches } from "./oauth/secrets.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
+import { staticKeyFirstVerifier } from "./static-key-provider.js";
 
 // --- Pure helpers -------------------------------------------------------------------------------
 
@@ -33,6 +34,31 @@ assert.equal(redirectUriMatches("https://chatgpt.com:444/cb", "https://chatgpt.c
 assert.equal(redirectUriMatches("https://chatgpt.com/cb/", "https://chatgpt.com/cb"), false, "exact match off loopback");
 assert.equal(redirectUriMatches("not a url", loopback), false);
 assert.equal(redirectUriMatches(loopback, "not a url"), false);
+// Only the port is relaxed: a fragment on the registered URI is not ignored either.
+assert.equal(redirectUriMatches("http://127.0.0.1:50000/callback", "http://127.0.0.1:43123/callback#f"), false, "registered fragment");
+// A requested URI with a fragment or userinfo never matches, even one registered verbatim.
+for (const [requested, registered] of [
+  ["http://127.0.0.1:43123/callback#f", loopback],
+  ["http://127.0.0.1:43123/callback#", loopback],
+  ["http://127.0.0.1:50000/callback#f", loopback],
+  ["http://127.0.0.1:43123/callback#f", "http://127.0.0.1:43123/callback#f"],
+  ["https://chatgpt.com/cb#f", "https://chatgpt.com/cb#f"],
+  ["http://user@127.0.0.1:43123/callback", loopback],
+  ["http://user:pw@127.0.0.1:50000/callback", loopback],
+  ["http://@127.0.0.1:50000/callback", loopback],
+  ["http://:@127.0.0.1:50000/callback", loopback],
+  ["http:@127.0.0.1:50000/callback", loopback],
+  ["http:\\\\@127.0.0.1:50000/callback", loopback],
+  [" http://@127.0.0.1:50000/callback", loopback],
+  ["ht\ttp://@127.0.0.1:50000/callback", loopback],
+  ["http://user@127.0.0.1:43123/callback", "http://user@127.0.0.1:43123/callback"],
+  ["https://user@chatgpt.com/cb", "https://user@chatgpt.com/cb"],
+] as const) {
+  assert.equal(redirectUriMatches(requested, registered), false, `${JSON.stringify(requested)} against ${JSON.stringify(registered)}`);
+}
+// An "@" outside the authority is not userinfo.
+assert.equal(redirectUriMatches("http://127.0.0.1:50000/callback?u=a@b", "http://127.0.0.1:43123/callback?u=a@b"), true);
+assert.equal(redirectUriMatches("http://127.0.0.1:50000/a@b", "http://127.0.0.1:43123/a@b"), true);
 
 // constantTimeEqual has exactly the semantics of ===, including for lone surrogates, which UTF-8
 // would collapse into the same replacement bytes.
@@ -56,7 +82,9 @@ for (const [code, status] of [
   [OAuthErrorCode.InvalidClient, 400],
   [OAuthErrorCode.InvalidGrant, 400],
   [OAuthErrorCode.AccessDenied, 400],
+  [OAuthErrorCode.InvalidScope, 400],
   [OAuthErrorCode.InvalidClientMetadata, 400],
+  [OAuthErrorCode.InvalidRedirectUri, 400],
   [OAuthErrorCode.UnsupportedGrantType, 400],
   [OAuthErrorCode.InvalidToken, 401],
   [OAuthErrorCode.InsufficientScope, 403],
@@ -195,8 +223,8 @@ try {
   assert.equal(storeFailure.headers.get("cache-control"), "no-store");
   assert.deepEqual(storeFailure.body, { error: "server_error", error_description: "Internal Server Error" });
 
-  // /authorize: what the provider receives. Omitted scope is an empty list (the KNOWN DEFECT
-  // pinned by the oracle), there is no `issuer`, and POST reads the form body.
+  // /authorize: what the provider receives. An omitted scope is the first supported scope, there
+  // is no `issuer`, and POST reads the form body.
   const approved = await form("/authorize", {
     response_type: "code",
     client_id: "one-uri",
@@ -206,7 +234,7 @@ try {
   });
   assert.equal(approved.status, 200);
   assert.deepEqual(Object.keys(calls.authorize[0]).sort(), ["codeChallenge", "redirectUri", "resource", "scopes", "state"]);
-  assert.deepEqual(calls.authorize[0].scopes, []);
+  assert.deepEqual(calls.authorize[0].scopes, ["devspace"]);
   assert.equal(calls.authorize[0].redirectUri, loopback);
   assert.equal(calls.authorize[0].state, undefined);
   assert.equal(calls.authorize[0].resource?.href, `${origin}/mcp`);
@@ -330,8 +358,82 @@ try {
   }), (_req, res) => {
     res.json({ ok: true });
   });
+  // The static-key-first verifier used by /mcp, over fake verifiers.
+  const verified = (clientId: string) => ({ token: "t", clientId, scopes: ["devspace"], expiresAt: nowSeconds + 3600 });
+  const invalid = (description: string) => async (): Promise<never> => {
+    throw new OAuthHttpError(OAuthErrorCode.InvalidToken, description);
+  };
+  const crash = (message: string) => async (): Promise<never> => {
+    throw new Error(message);
+  };
+  const oauthCalls: string[] = [];
+  const staticKeys = {
+    rejecting: { verifyAccessToken: invalid("Invalid or expired static API key") },
+    crashing: { verifyAccessToken: crash("static key store unavailable") },
+    failingOtherwise: { verifyAccessToken: async (): Promise<never> => { throw new OAuthHttpError(OAuthErrorCode.ServerError, "static key store unavailable"); } },
+  };
+  const oauthVerifiers = {
+    rejecting: { verifyAccessToken: async (token: string) => { oauthCalls.push(token); return invalid("Invalid or expired access token")(); } },
+    accepting: { verifyAccessToken: async (token: string) => { oauthCalls.push(token); return verified("oauth-client"); } },
+    crashing: { verifyAccessToken: async (token: string) => { oauthCalls.push(token); return crash("oauth store unavailable")(); } },
+  };
+  const composite = (path: string, staticVerifier: { verifyAccessToken(token: string): Promise<never> }, oauthVerifier: { verifyAccessToken(token: string): Promise<ReturnType<typeof verified>> }) => {
+    bearerApp.get(path, requireBearerAuth({
+      verifier: staticKeyFirstVerifier(staticVerifier, oauthVerifier),
+      requiredScopes: ["devspace"],
+      resourceMetadataUrl: metadataUrl,
+    }), (req, res) => {
+      res.json({ clientId: req.auth?.clientId });
+    });
+  };
+  composite("/both-reject", staticKeys.rejecting, oauthVerifiers.rejecting);
+  composite("/oauth-accepts", staticKeys.rejecting, oauthVerifiers.accepting);
+  composite("/static-crashes", staticKeys.crashing, oauthVerifiers.accepting);
+  composite("/static-fails-otherwise", staticKeys.failingOtherwise, oauthVerifiers.accepting);
+  composite("/oauth-crashes", staticKeys.rejecting, oauthVerifiers.crashing);
+  composite("/unprefixed", staticKeys.crashing, oauthVerifiers.rejecting);
+
   const bearer = await listen(bearerApp);
   try {
+    const get = (path: string, token: string) => fetch(`${bearer.origin}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    const staticToken = "obsk_fake";
+
+    // Both reject: a 401 that reports the static-key reason, after the OAuth verifier was tried.
+    oauthCalls.length = 0;
+    const bothReject = await get("/both-reject", staticToken);
+    assert.equal(bothReject.status, 401);
+    assert.equal(
+      bothReject.headers.get("www-authenticate"),
+      `Bearer error="invalid_token", error_description="Invalid or expired static API key", scope="devspace", resource_metadata="${metadataUrl}"`,
+    );
+    assert.deepEqual(await bothReject.json(), { error: "invalid_token", error_description: "Invalid or expired static API key" });
+    assert.equal(oauthCalls.length, 1, "the OAuth verifier is still tried");
+
+    // A prefixed token the OAuth verifier accepts is accepted.
+    assert.deepEqual(await (await get("/oauth-accepts", staticToken)).json(), { clientId: "oauth-client" });
+
+    // A static-key failure that is not invalid_token propagates as a 500 without trying OAuth.
+    oauthCalls.length = 0;
+    const staticCrash = await get("/static-crashes", staticToken);
+    assert.equal(staticCrash.status, 500);
+    assert.equal(staticCrash.headers.get("www-authenticate"), null);
+    const staticServerError = await get("/static-fails-otherwise", staticToken);
+    assert.equal(staticServerError.status, 500);
+    assert.equal(staticServerError.headers.get("www-authenticate"), null);
+    assert.equal(oauthCalls.length, 0, "OAuth is not consulted after a non-invalid_token failure");
+
+    // An OAuth failure that is not invalid_token propagates as a 500.
+    const oauthCrash = await get("/oauth-crashes", staticToken);
+    assert.equal(oauthCrash.status, 500);
+    assert.equal(oauthCrash.headers.get("www-authenticate"), null);
+
+    // A token without the prefix goes to the OAuth verifier alone, and reports its message.
+    oauthCalls.length = 0;
+    const unprefixed = await get("/unprefixed", "not-a-static-key");
+    assert.equal(unprefixed.status, 401);
+    assert.deepEqual(await unprefixed.json(), { error: "invalid_token", error_description: "Invalid or expired access token" });
+    assert.equal(oauthCalls.length, 1);
+
     const rejected = await fetch(`${bearer.origin}/provider`, { headers: { authorization: "Bearer unknown" } });
     assert.equal(rejected.status, 401);
     assert.equal(

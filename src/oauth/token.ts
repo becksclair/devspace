@@ -72,7 +72,8 @@ export function tokenEndpoint(provider: OAuthServerProvider): RequestHandler {
           const tokens = await provider.exchangeRefreshToken(
             client,
             refresh_token,
-            scope?.split(" "),
+            // An empty `scope` is an omitted one, as at /authorize: the granted scope is kept.
+            scope ? scope.split(" ") : undefined,
             resource ? new URL(resource) : undefined,
           );
           res.status(200).json(tokens);
