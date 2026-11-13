@@ -1998,9 +1998,11 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     const requestId = randomUUID();
     const startedAt = performance.now();
     res.locals.requestId = requestId;
+    // Read before routing: a mounted router (the OAuth endpoints, the discovery documents, the
+    // asset handlers) rewrites req.url to its own remainder, and "finish" can fire before it is restored.
+    const path = requestPath(req);
 
     res.on("finish", () => {
-      const path = requestPath(req);
       if (!config.logging.requests) return;
       if (!config.logging.assets && path.startsWith("/mcp-app-assets")) return;
 
