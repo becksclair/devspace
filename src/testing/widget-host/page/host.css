@@ -70,17 +70,21 @@ body {
   padding: 16px;
 }
 
+/* The dashed line marks the frame without clipping it. */
 .stage .frame-host {
   background: var(--chat-bubble);
-  border: 1px dashed var(--page-border);
-  border-radius: 8px;
-  overflow: hidden;
+  outline: 1px dashed var(--page-border);
+  outline-offset: 3px;
 }
 
+/* ChatGPT clips the widget frame itself to its 8px radius (the `--border-radius-lg` it sends), so a
+   card border drawn at the frame's edge is cut at the corners here as it is there. */
 .stage iframe {
   display: block;
   width: 100%;
   border: 0;
+  border-radius: 8px;
+  overflow: clip;
   background: transparent;
 }
 

@@ -28,11 +28,23 @@ body {
   overflow: hidden;
 }
 
+/* A host clips the frame to its own corner radius (ChatGPT: `--border-radius-lg`). A card border
+   drawn on that same arc at the frame's edge is clipped away at the corners, so the card sits one
+   pixel inside the frame on a concentric, one-pixel-smaller radius. The inset is on the mount
+   point only: the rendered view is a second `.shell` inside it. */
+#app {
+  padding: 1px;
+}
+
+/* The card clips its content to its rounded padding edge. Without that, a square body background
+   (`.tool-body`, `.review-summary`) or the header's hover background paints over the border's
+   corner arcs and out to the frame's clip. */
 .empty,
 .tool-card {
   width: 100%;
+  overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--color-border-primary, #3a3a40) 86%, transparent);
-  border-radius: 8px;
+  border-radius: calc(var(--border-radius-lg, 8px) - 1px);
   background: color-mix(in srgb, var(--color-background-secondary, #28282d) 92%, transparent);
   box-shadow: none;
   color: var(--color-text-primary, #f5f5f6);
@@ -66,6 +78,13 @@ body {
 
 .tool-header:disabled {
   cursor: default;
+}
+
+/* The header fills the card, which clips its content: a focus ring drawn outside the button would
+   be cut off, so it is drawn inside. */
+.tool-header:focus-visible {
+  outline: 2px solid var(--color-ring-primary, var(--color-text-primary, #f5f5f6));
+  outline-offset: -2px;
 }
 
 .tool-icon {
@@ -473,10 +492,6 @@ body {
 
 .review-header.has-machine > .machine-badge {
   justify-self: end;
-}
-
-.activity-card {
-  overflow: hidden;
 }
 
 .activity-feed {

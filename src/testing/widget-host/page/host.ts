@@ -55,7 +55,8 @@ const STYLE_VARIABLES: Record<Theme, Record<string, string>> = {
     "--color-border-secondary": "#e4e4df",
     "--font-sans": '"Harness Sans", system-ui, -apple-system, "Segoe UI", sans-serif',
     "--font-mono": 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    "--border-radius-md": "8px",
+    "--border-radius-md": "6px",
+    "--border-radius-lg": "8px",
   },
   dark: {
     "--color-background-primary": "#1f1f1d",
@@ -72,7 +73,8 @@ const STYLE_VARIABLES: Record<Theme, Record<string, string>> = {
     "--color-border-secondary": "#2f2f2b",
     "--font-sans": '"Harness Sans", system-ui, -apple-system, "Segoe UI", sans-serif',
     "--font-mono": 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    "--border-radius-md": "8px",
+    "--border-radius-md": "6px",
+    "--border-radius-lg": "8px",
   },
 };
 
