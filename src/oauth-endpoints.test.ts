@@ -114,6 +114,10 @@ const clients = new Map<string, OAuthClientInformationFull>([
   ["secret", { client_id: "secret", redirect_uris: [loopback], client_secret: "s3cret", client_secret_expires_at: nowSeconds + 3600 }],
   ["expired", { client_id: "expired", redirect_uris: [loopback], client_secret: "s3cret", client_secret_expires_at: nowSeconds - 10 }],
   ["no-expiry", { client_id: "no-expiry", redirect_uris: [loopback], client_secret: "s3cret", client_secret_expires_at: 0 }],
+  // Registrations /register now refuses but a store may still hold from before.
+  ["oddly-registered", { client_id: "oddly-registered", redirect_uris: ["http://127.0.0.1:43125/cb#frag", "http://user@127.0.0.1:43126/cb"] }],
+  ["sole-fragment", { client_id: "sole-fragment", redirect_uris: ["http://127.0.0.1:43127/cb#frag"] }],
+  ["sole-userinfo", { client_id: "sole-userinfo", redirect_uris: ["http://user@127.0.0.1:43128/cb"] }],
 ]);
 
 let authorizeFailure: unknown;
@@ -217,6 +221,22 @@ try {
   });
   assert.equal(calls.authorize.length, 0);
 
+  // /authorize: a stored redirect URI with a fragment or userinfo is never a target, not even when
+  // requested verbatim or when it is the only one registered: a 400 that never redirects.
+  for (const redirectUri of ["http://127.0.0.1:43125/cb#frag", "http://user@127.0.0.1:43126/cb"]) {
+    const rejected = await request(authorizeQuery({ client_id: "oddly-registered", redirect_uri: redirectUri }));
+    assert.equal(rejected.status, 400, redirectUri);
+    assert.equal(rejected.headers.get("location"), null, redirectUri);
+    assert.deepEqual(rejected.body, { error: "invalid_request", error_description: "Unregistered redirect_uri" }, redirectUri);
+  }
+  for (const clientId of ["sole-fragment", "sole-userinfo"]) {
+    const rejected = await request(authorizeQuery({ client_id: clientId }));
+    assert.equal(rejected.status, 400, clientId);
+    assert.equal(rejected.headers.get("location"), null, clientId);
+    assert.deepEqual(rejected.body, { error: "invalid_request", error_description: "Registered redirect_uri is not usable" }, clientId);
+  }
+  assert.equal(calls.authorize.length, 0);
+
   // /authorize: a store failure is an opaque 500, never a redirect.
   const storeFailure = await request(authorizeQuery({ client_id: "explodes" }));
   assert.equal(storeFailure.status, 500);
@@ -318,6 +338,19 @@ try {
   const publicClient = await postRegistration();
   assert.equal(publicClient.status, 201);
   assert.deepEqual(Object.keys(publicClient.body as object).sort(), ["client_id", "client_id_issued_at", "redirect_uris", "token_endpoint_auth_method"]);
+  // /register: a redirect URI with a fragment or userinfo is refused before the store is asked,
+  // with the same parser-aware check /authorize uses.
+  registerFailure = new Error("the store must not be reached");
+  for (const uri of ["http://127.0.0.1:1/cb#", "http://:@127.0.0.1:1/cb", "http:\\\\@127.0.0.1:1/cb", "https://user@chatgpt.com/cb"]) {
+    const refused = await request("/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [loopback, uri] }),
+    });
+    assert.equal(refused.status, 400, uri);
+    assert.deepEqual(refused.body, { error: "invalid_redirect_uri", error_description: "Client redirect_uri must not contain a fragment or userinfo" }, uri);
+  }
+  registerFailure = undefined;
 
   // A preflight without requested headers advertises none, but still varies on them.
   const preflight = await request("/revoke", { method: "OPTIONS", headers: { origin: "https://client.example", "access-control-request-method": "POST" } });
@@ -326,7 +359,7 @@ try {
   assert.equal(preflight.headers.get("vary"), "Access-Control-Request-Headers");
   assert.equal(preflight.headers.get("content-length"), "0");
 
-  // The registration limiter (20 per hour; 4 used above) answers 429 with an OAuth body.
+  // The registration limiter (20 per hour; 8 used above) answers 429 with an OAuth body.
   let limited: Awaited<ReturnType<typeof request>> | undefined;
   for (let attempt = 0; attempt < 30 && !limited; attempt += 1) {
     const result = await postRegistration();
