@@ -26,7 +26,7 @@ export interface OAuthStateStore {
   saveClientIfBelowLimit(client: OAuthClientInformationFull, maxClients: number): boolean;
   getToken(tokenHash: string, tokenType: OAuthTokenType): StoredOAuthToken | undefined;
   saveToken(token: StoredOAuthToken): void;
-  deleteToken(tokenHash: string, tokenType?: OAuthTokenType): void;
+  deleteToken(tokenHash: string, tokenType: OAuthTokenType): void;
   /** The token with this hash, whatever its type. */
   findToken(tokenHash: string): StoredOAuthToken | undefined;
   /** Deletes the refresh token and every access token of `clientId`, atomically. */
@@ -61,12 +61,7 @@ export class InMemoryOAuthStateStore implements OAuthStateStore {
     this.tokens.set(token.tokenHash, token);
   }
 
-  deleteToken(tokenHash: string, tokenType?: OAuthTokenType): void {
-    if (!tokenType) {
-      this.tokens.delete(tokenHash);
-      return;
-    }
-
+  deleteToken(tokenHash: string, tokenType: OAuthTokenType): void {
     const token = this.tokens.get(tokenHash);
     if (token?.tokenType === tokenType) this.tokens.delete(tokenHash);
   }
@@ -162,12 +157,11 @@ export class SqliteOAuthStateStore implements OAuthStateStore {
       .run();
   }
 
-  deleteToken(tokenHash: string, tokenType?: OAuthTokenType): void {
-    const condition = tokenType
-      ? and(eq(oauthTokens.tokenHash, tokenHash), eq(oauthTokens.tokenType, tokenType))
-      : eq(oauthTokens.tokenHash, tokenHash);
-
-    this.database.db.delete(oauthTokens).where(condition).run();
+  deleteToken(tokenHash: string, tokenType: OAuthTokenType): void {
+    this.database.db
+      .delete(oauthTokens)
+      .where(and(eq(oauthTokens.tokenHash, tokenHash), eq(oauthTokens.tokenType, tokenType)))
+      .run();
   }
 
   findToken(tokenHash: string): StoredOAuthToken | undefined {
