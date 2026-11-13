@@ -8,25 +8,44 @@ import type { OAuthServerProvider } from "./provider.js";
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
- * Whether a requested redirect URI matches a registered one: exactly, or (RFC 8252 section 7.3)
- * differing only in port when both are on the same loopback host. Scheme, hostname, path, and
- * query must still match; `localhost` and `127.0.0.1` do not match each other.
+ * Whether a redirect URI carries a fragment (RFC 6749 section 3.1.2) or userinfo, including an
+ * empty one such as `http://@host/`, which the URL parser would otherwise drop silently.
+ */
+function hasFragmentOrUserinfo(uri: string, url: URL): boolean {
+  if (uri.includes("#")) return true;
+  if (url.username !== "" || url.password !== "") return true;
+  if (url.host === "") return false;
+  // The URL parser's own preprocessing: trim C0 controls and spaces, drop tabs and newlines.
+  const input = uri.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
+  const authority = /^[A-Za-z][A-Za-z0-9+.-]*:[\\/]*([^\\/?#]*)/.exec(input)?.[1] ?? "";
+  return authority.includes("@");
+}
+
+/**
+ * Whether a requested redirect URI matches a registered one. A requested URI with a fragment or
+ * userinfo never matches. Otherwise it must match exactly, or (RFC 8252 section 7.3) differ only in
+ * port when both are on the same loopback host; `localhost` and `127.0.0.1` do not match each other.
  */
 export function redirectUriMatches(requested: string, registered: string): boolean {
-  if (requested === registered) return true;
   let requestedUrl: URL;
-  let registeredUrl: URL;
   try {
     requestedUrl = new URL(requested);
+  } catch {
+    return false;
+  }
+  if (hasFragmentOrUserinfo(requested, requestedUrl)) return false;
+  if (requested === registered) return true;
+  let registeredUrl: URL;
+  try {
     registeredUrl = new URL(registered);
   } catch {
     return false;
   }
   if (!LOOPBACK_HOSTS.has(requestedUrl.hostname) || !LOOPBACK_HOSTS.has(registeredUrl.hostname)) return false;
-  return requestedUrl.protocol === registeredUrl.protocol &&
-    requestedUrl.hostname === registeredUrl.hostname &&
-    requestedUrl.pathname === registeredUrl.pathname &&
-    requestedUrl.search === registeredUrl.search;
+  // Only the port is relaxed: everything else in the serialized URL must be identical.
+  requestedUrl.port = "";
+  registeredUrl.port = "";
+  return requestedUrl.href === registeredUrl.href;
 }
 
 // What must be valid before anything may be sent to the redirect URI.

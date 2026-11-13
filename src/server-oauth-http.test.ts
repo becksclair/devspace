@@ -684,6 +684,22 @@ try {
   assert.equal((await authorizeGet({ ...baseParams, redirect_uri: "http://127.0.0.1:50001/callback" })).status, 200);
   assert.equal((await authorizeGet({ ...baseParams, redirect_uri: undefined })).status, 200);
 
+  // Only the port is relaxed. A requested redirect_uri with a fragment or userinfo never matches,
+  // not even when it was registered verbatim: a 400 that never redirects.
+  const oddlyRegistered = await registerPublicClient(["http://127.0.0.1:43125/cb#frag", "http://user@127.0.0.1:43126/cb"]);
+  for (const [redirectUri, target] of [
+    ["http://127.0.0.1:50003/callback#frag", client],
+    ["http://127.0.0.1:43123/callback#", client],
+    ["http://user@127.0.0.1:50003/callback", client],
+    ["http://@127.0.0.1:50003/callback", client],
+    ["http://127.0.0.1:43125/cb#frag", oddlyRegistered],
+    ["http://user@127.0.0.1:43126/cb", oddlyRegistered],
+  ] as const) {
+    const rejected = await authorizeGet(authorizeParams(target, pair.challenge, { redirect_uri: redirectUri }));
+    assertOAuthError(rejected, 400, "invalid_request", "Unregistered redirect_uri", `authorize redirect_uri ${redirectUri}`);
+    assert.equal(rejected.headers.get("location"), null, `authorize redirect_uri ${redirectUri}: no redirect`);
+  }
+
   // Post-redirect failures are 302s to the redirect URI with error parameters.
   async function assertErrorRedirect(params: AuthorizeParams, expected: Record<string, string | RegExp>, label: string): Promise<void> {
     const result = await authorizeGet(params);

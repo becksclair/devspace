@@ -34,6 +34,31 @@ assert.equal(redirectUriMatches("https://chatgpt.com:444/cb", "https://chatgpt.c
 assert.equal(redirectUriMatches("https://chatgpt.com/cb/", "https://chatgpt.com/cb"), false, "exact match off loopback");
 assert.equal(redirectUriMatches("not a url", loopback), false);
 assert.equal(redirectUriMatches(loopback, "not a url"), false);
+// Only the port is relaxed: a fragment on the registered URI is not ignored either.
+assert.equal(redirectUriMatches("http://127.0.0.1:50000/callback", "http://127.0.0.1:43123/callback#f"), false, "registered fragment");
+// A requested URI with a fragment or userinfo never matches, even one registered verbatim.
+for (const [requested, registered] of [
+  ["http://127.0.0.1:43123/callback#f", loopback],
+  ["http://127.0.0.1:43123/callback#", loopback],
+  ["http://127.0.0.1:50000/callback#f", loopback],
+  ["http://127.0.0.1:43123/callback#f", "http://127.0.0.1:43123/callback#f"],
+  ["https://chatgpt.com/cb#f", "https://chatgpt.com/cb#f"],
+  ["http://user@127.0.0.1:43123/callback", loopback],
+  ["http://user:pw@127.0.0.1:50000/callback", loopback],
+  ["http://@127.0.0.1:50000/callback", loopback],
+  ["http://:@127.0.0.1:50000/callback", loopback],
+  ["http:@127.0.0.1:50000/callback", loopback],
+  ["http:\\\\@127.0.0.1:50000/callback", loopback],
+  [" http://@127.0.0.1:50000/callback", loopback],
+  ["ht\ttp://@127.0.0.1:50000/callback", loopback],
+  ["http://user@127.0.0.1:43123/callback", "http://user@127.0.0.1:43123/callback"],
+  ["https://user@chatgpt.com/cb", "https://user@chatgpt.com/cb"],
+] as const) {
+  assert.equal(redirectUriMatches(requested, registered), false, `${JSON.stringify(requested)} against ${JSON.stringify(registered)}`);
+}
+// An "@" outside the authority is not userinfo.
+assert.equal(redirectUriMatches("http://127.0.0.1:50000/callback?u=a@b", "http://127.0.0.1:43123/callback?u=a@b"), true);
+assert.equal(redirectUriMatches("http://127.0.0.1:50000/a@b", "http://127.0.0.1:43123/a@b"), true);
 
 // constantTimeEqual has exactly the semantics of ===, including for lone surrogates, which UTF-8
 // would collapse into the same replacement bytes.
