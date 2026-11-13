@@ -1003,23 +1003,47 @@ try {
   assert.deepEqual(revokeAccess.json(), {});
   await assertMcpRejected(`Bearer ${refreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "revoked access token");
 
-  // Revoking a refresh token kills it for refresh. KNOWN DEFECT: the access token issued with it
-  // stays valid (no cascade).
   // Intended: token_type_hint is ignored; RFC 7009 permits that, and lookup is by hash whatever the type.
-  const pairForRevocation = await issueTokens(client);
-  const revokeRefresh = await postForm("/revoke", { token: pairForRevocation.refresh_token, client_id: client.client_id, token_type_hint: "access_token" });
+  const refreshGrantFor = (refreshToken: string, owner: RegisteredClient) =>
+    tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: owner.client_id });
+
+  // Revoking an access token deletes only that token: the refresh token issued with it still refreshes.
+  {
+    const accessOnly = await issueTokens(client);
+    const revoked = await postForm("/revoke", { token: accessOnly.access_token, client_id: client.client_id, token_type_hint: "refresh_token" });
+    assert.equal(revoked.status, 200);
+    assert.deepEqual(revoked.json(), {});
+    await assertMcpRejected(`Bearer ${accessOnly.access_token}`, 401, "invalid_token", "Invalid or expired access token", "revoked access token (with a wrong hint)");
+    const recovered = assertTokenResponse(await refreshGrantFor(accessOnly.refresh_token, client), "devspace audit", "refresh after its access token was revoked");
+    await assertMcpAccepted(recovered.access_token, "access token refreshed after a revoked one");
+  }
+
+  // Another client cannot revoke this client's tokens. The answer is the same 200 `{}` as for an
+  // unknown token (RFC 7009 section 2.2), and nothing is deleted.
+  const victim = await issueTokens(client);
+  for (const [kind, token] of [["access", victim.access_token], ["refresh", victim.refresh_token]] as const) {
+    const foreign = await postForm("/revoke", { token, client_id: otherClient.client_id });
+    assert.equal(foreign.status, 200, `revoke another client's ${kind} token: status`);
+    assert.deepEqual(foreign.json(), {}, `revoke another client's ${kind} token: body`);
+  }
+  await assertMcpAccepted(victim.access_token, "access token another client tried to revoke");
+  const victimRefreshed = assertTokenResponse(await refreshGrantFor(victim.refresh_token, client), "devspace audit", "refresh token another client tried to revoke");
+
+  // Revoking a refresh token deletes it and every access token of the same client, including those
+  // of the client's other grants (tokens are not linked to their grant). The client's other refresh
+  // tokens survive and recover; other clients' tokens are untouched.
+  const otherClientTokens = await issueTokens(otherClient);
+  const secondGrant = await issueTokens(client);
+  const revokeRefresh = await postForm("/revoke", { token: victimRefreshed.refresh_token, client_id: client.client_id, token_type_hint: "access_token" });
   assert.equal(revokeRefresh.status, 200);
   assert.deepEqual(revokeRefresh.json(), {});
-  assertOAuthError(
-    await tokenRequest({ grant_type: "refresh_token", refresh_token: pairForRevocation.refresh_token, client_id: client.client_id }),
-    400, "invalid_grant", "Invalid refresh token", "refresh with revoked refresh token",
-  );
-  await assertMcpAccepted(pairForRevocation.access_token, "access token whose refresh token was revoked");
-
-  // KNOWN DEFECT: revocation does not check that the token belongs to the requesting client.
-  const revokeOtherClients = await postForm("/revoke", { token: pairForRevocation.access_token, client_id: otherClient.client_id });
-  assert.equal(revokeOtherClients.status, 200);
-  await assertMcpRejected(`Bearer ${pairForRevocation.access_token}`, 401, "invalid_token", "Invalid or expired access token", "token revoked by another client");
+  assertOAuthError(await refreshGrantFor(victimRefreshed.refresh_token, client), 400, "invalid_grant", "Invalid refresh token", "refresh with revoked refresh token");
+  await assertMcpRejected(`Bearer ${victimRefreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "access token whose refresh token was revoked");
+  await assertMcpRejected(`Bearer ${secondGrant.access_token}`, 401, "invalid_token", "Invalid or expired access token", "access token of the same client's other grant");
+  const secondRefreshed = assertTokenResponse(await refreshGrantFor(secondGrant.refresh_token, client), "devspace audit", "the same client's other refresh token");
+  await assertMcpAccepted(secondRefreshed.access_token, "access token refreshed from the surviving grant");
+  await assertMcpAccepted(otherClientTokens.access_token, "another client's access token");
+  assertTokenResponse(await refreshGrantFor(otherClientTokens.refresh_token, otherClient), "devspace audit", "another client's refresh token");
 
   // RFC 7009: unknown tokens are not an error.
   const revokeUnknown = await postForm("/revoke", { token: "not-a-token", client_id: client.client_id });

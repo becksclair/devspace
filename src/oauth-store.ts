@@ -27,6 +27,10 @@ export interface OAuthStateStore {
   getToken(tokenHash: string, tokenType: OAuthTokenType): StoredOAuthToken | undefined;
   saveToken(token: StoredOAuthToken): void;
   deleteToken(tokenHash: string, tokenType?: OAuthTokenType): void;
+  /** The token with this hash, whatever its type. */
+  findToken(tokenHash: string): StoredOAuthToken | undefined;
+  /** Deletes the refresh token and every access token of `clientId`, atomically. */
+  deleteRefreshTokenAndClientAccessTokens(tokenHash: string, clientId: string): void;
   close?(): void;
 }
 
@@ -65,6 +69,17 @@ export class InMemoryOAuthStateStore implements OAuthStateStore {
 
     const token = this.tokens.get(tokenHash);
     if (token?.tokenType === tokenType) this.tokens.delete(tokenHash);
+  }
+
+  findToken(tokenHash: string): StoredOAuthToken | undefined {
+    return this.tokens.get(tokenHash);
+  }
+
+  deleteRefreshTokenAndClientAccessTokens(tokenHash: string, clientId: string): void {
+    this.deleteToken(tokenHash, "refresh");
+    for (const [hash, token] of this.tokens) {
+      if (token.tokenType === "access" && token.clientId === clientId) this.tokens.delete(hash);
+    }
   }
 }
 
@@ -153,6 +168,26 @@ export class SqliteOAuthStateStore implements OAuthStateStore {
       : eq(oauthTokens.tokenHash, tokenHash);
 
     this.database.db.delete(oauthTokens).where(condition).run();
+  }
+
+  findToken(tokenHash: string): StoredOAuthToken | undefined {
+    const row = this.database.db
+      .select()
+      .from(oauthTokens)
+      .where(eq(oauthTokens.tokenHash, tokenHash))
+      .get();
+
+    return row ? rowToOAuthToken(row) : undefined;
+  }
+
+  deleteRefreshTokenAndClientAccessTokens(tokenHash: string, clientId: string): void {
+    this.database.sqlite.transaction(() => {
+      this.deleteToken(tokenHash, "refresh");
+      this.database.db
+        .delete(oauthTokens)
+        .where(and(eq(oauthTokens.clientId, clientId), eq(oauthTokens.tokenType, "access")))
+        .run();
+    })();
   }
 
   close(): void {
