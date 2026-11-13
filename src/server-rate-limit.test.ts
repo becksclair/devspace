@@ -110,7 +110,8 @@ try {
       redirect: "manual",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
-        cookie: `__Host-devspace-csrf=${csrf}`,
+        // The public base URL is http, so the CSRF cookie has no `__Host-` prefix.
+        cookie: `devspace-csrf=${csrf}`,
         "x-forwarded-for": xff,
       },
       body: new URLSearchParams({

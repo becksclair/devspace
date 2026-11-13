@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerConfig } from "./config.js";
+import { mintHeadlessOAuth } from "./headless-auth.js";
 import { normalizeRootPolicies } from "./roots.js";
 import { createServer } from "./server.js";
 
@@ -113,10 +114,10 @@ interface HttpResult {
   json(): unknown;
 }
 
-async function http(path: string, init: RequestInit = {}): Promise<HttpResult> {
+async function http(path: string, init: RequestInit = {}, base = origin): Promise<HttpResult> {
   const headers = new Headers(init.headers);
   headers.set("x-forwarded-for", nextClientIp());
-  const response = await fetch(`${origin}${path}`, { redirect: "manual", ...init, headers });
+  const response = await fetch(`${base}${path}`, { redirect: "manual", ...init, headers });
   const text = await response.text();
   return {
     status: response.status,
@@ -280,10 +281,13 @@ function authorizeGet(params: AuthorizeParams): Promise<HttpResult> {
   return http(`/authorize?${new URLSearchParams(definedEntries(params)).toString()}`);
 }
 
-const CSRF_COOKIE = "__Host-devspace-csrf";
+// The public base URL is plain http, where a `__Host-` cookie (which requires `Secure`) would be
+// refused by browsers; the https name is pinned by the https deployment at the end.
+const CSRF_COOKIE = "devspace-csrf";
+const SECURE_CSRF_COOKIE = "__Host-devspace-csrf";
 
-function csrfCookieValue(result: HttpResult): string {
-  const match = new RegExp(`${CSRF_COOKIE}=([^;]*)`).exec(result.headers.get("set-cookie") ?? "");
+function csrfCookieValue(result: HttpResult, cookieName = CSRF_COOKIE): string {
+  const match = new RegExp(`^${cookieName}=([^;]*)`).exec(result.headers.get("set-cookie") ?? "");
   assert.ok(match, "approval page sets the CSRF cookie");
   return decodeURIComponent(match[1]);
 }
@@ -641,7 +645,7 @@ try {
   assert.equal(page.headers.get("cache-control"), "no-store");
   assertSecurityHeaders(page, "approval page");
   assertRateLimitHeaders(page, 100, 900, "approval page");
-  // The CSRF cookie is HttpOnly, SameSite=Lax, Path=/, 600 s; Secure only when the public URL is https.
+  // The CSRF cookie is HttpOnly, SameSite=Lax, Path=/, 600 s, and has no Secure attribute over http.
   assertSecretMatches(
     page.headers.get("set-cookie"),
     new RegExp(`^${CSRF_COOKIE}=[0-9a-f]{64}; Max-Age=600; Path=/; Expires=[^;]+; HttpOnly; SameSite=Lax$`),
@@ -742,6 +746,12 @@ try {
   assert.equal((await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf })).status, 400, "csrf field without cookie");
   assert.equal((await approve(baseParams, { owner_token: ownerToken }, csrf)).status, 400, "csrf cookie without field");
   assert.equal((await approve(baseParams, { owner_token: ownerToken, csrf_token: "0".repeat(64) }, csrf)).status, 400, "csrf mismatch");
+  // Over http only the http name is read: the right token under the https name is no cookie at all.
+  assert.equal(
+    (await postForm("/authorize", { ...baseParams, owner_token: ownerToken, csrf_token: csrf }, { cookie: `${SECURE_CSRF_COOKIE}=${csrf}` })).status,
+    400,
+    "https cookie name on an http deployment",
+  );
   const wrongOwner = await approve(baseParams, { owner_token: "not-the-owner-token", csrf_token: csrf }, csrf);
   assert.equal(wrongOwner.status, 401);
   assert.equal(wrongOwner.headers.get("content-type"), HTML_CONTENT_TYPE);
@@ -775,6 +785,14 @@ try {
   );
   assert.equal(`${stateless.location.origin}${stateless.location.pathname}`, "http://127.0.0.1:50002/callback");
   assert.deepEqual([...stateless.location.searchParams.keys()], ["code"]);
+
+  // The repository's headless client (`devspace auth`) completes the approval over http, where the
+  // CSRF cookie has the http name.
+  {
+    const bundle = await mintHeadlessOAuth({ baseUrl: origin, ownerToken, clientName: "Oracle headless client" });
+    assert.equal(bundle.tokens.scope, "devspace audit");
+    await assertMcpAccepted(bundle.tokens.access_token, "headless-minted access token");
+  }
 
   // 4. /token ---------------------------------------------------------------------------------
 
@@ -1078,6 +1096,76 @@ try {
   assertRateLimitHeaders(await preflight("/token"), 30, 60, "OPTIONS /token");
   assertNoRateLimitHeaders(await preflight("/revoke"), "OPTIONS /revoke");
   assertNoRateLimitHeaders(await mcpInitialize(), "POST /mcp");
+
+  // 9. The CSRF cookie on an https deployment ---------------------------------------------------
+  // The cookie's name and Secure attribute follow the public base URL, not the connection, so an
+  // https-configured server can be exercised over the local http listener.
+  {
+    const secureStateDir = await mkdtemp(join(tmpdir(), "devspace-oauth-http-test-secure-"));
+    const securePublicUrl = "https://devspace.example";
+    const secureListener = createHttpServer();
+    await new Promise<void>((resolve, reject) => {
+      secureListener.once("error", reject);
+      secureListener.listen(0, "127.0.0.1", resolve);
+    });
+    const secureOrigin = `http://127.0.0.1:${(secureListener.address() as AddressInfo).port}`;
+    const secureRunning = createServer({
+      ...config,
+      publicBaseUrl: securePublicUrl,
+      stateDir: secureStateDir,
+      worktreeRoot: join(secureStateDir, "worktrees"),
+      agentDir: secureStateDir,
+      globalInstructionsFile: join(secureStateDir, "AGENTS.md"),
+      terminals: { ...config.terminals, runtimeDir: join(secureStateDir, "terminal-runtime") },
+    });
+    secureListener.on("request", secureRunning.app);
+    try {
+      const secureRegistration = await http("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [loopbackRedirect], token_endpoint_auth_method: "none" }),
+      }, secureOrigin);
+      assert.equal(secureRegistration.status, 201, `https register: ${bodyHint(secureRegistration)}`);
+      const secureClient = secureRegistration.json() as RegisteredClient;
+      const securePair = pkcePair();
+      const secureParams = authorizeParams(secureClient, securePair.challenge, { resource: `${securePublicUrl}/mcp` });
+      const securePagePath = `/authorize?${new URLSearchParams(definedEntries(secureParams)).toString()}`;
+      const securePage = await http(securePagePath, {}, secureOrigin);
+      assert.equal(securePage.status, 200, `https approval page: ${bodyHint(securePage)}`);
+      // Byte for byte what an https deployment has always sent.
+      const secureSetCookie = new RegExp(`^${SECURE_CSRF_COOKIE}=[0-9a-f]{64}; Max-Age=600; Path=/; Expires=[^;]+; HttpOnly; Secure; SameSite=Lax$`);
+      assertSecretMatches(securePage.headers.get("set-cookie"), secureSetCookie, "https approval page Set-Cookie");
+      const secureCsrf = csrfCookieValue(securePage, SECURE_CSRF_COOKIE);
+      const secureApprove = (cookie: string, ownerPassword = ownerToken) => http(securePagePath, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams([...hiddenFields(securePage), ["owner_token", ownerPassword]]).toString(),
+      }, secureOrigin);
+
+      // The http name is not read on an https deployment.
+      const httpNamed = await secureApprove(`${CSRF_COOKIE}=${secureCsrf}`);
+      assert.equal(httpNamed.status, 400, "http cookie name on an https deployment");
+      assertSecretMatches(httpNamed.headers.get("set-cookie"), secureSetCookie, "https CSRF rejection Set-Cookie");
+      const secureWrongOwner = await secureApprove(`${SECURE_CSRF_COOKIE}=${secureCsrf}`, "not-the-owner-token");
+      assert.equal(secureWrongOwner.status, 401, "https wrong owner token");
+      assertSecretMatches(secureWrongOwner.headers.get("set-cookie"), secureSetCookie, "https wrong owner Set-Cookie");
+
+      const secureApproved = await secureApprove(`${SECURE_CSRF_COOKIE}=${secureCsrf}`);
+      assert.equal(secureApproved.status, 302, `https approval: ${bodyHint(secureApproved)}`);
+      assertSecretMatches(
+        secureApproved.headers.get("set-cookie"),
+        new RegExp(`^${SECURE_CSRF_COOKIE}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax$`),
+        "https approval clears the CSRF cookie",
+      );
+      assert.deepEqual([...new URL(secureApproved.headers.get("location") ?? "").searchParams.keys()], ["code", "state"]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        secureListener.close((error) => (error ? reject(error) : resolve()));
+      });
+      secureRunning.close?.();
+      await rm(secureStateDir, { recursive: true, force: true });
+    }
+  }
 } finally {
   await new Promise<void>((resolve, reject) => {
     httpServer.close((error) => (error ? reject(error) : resolve()));

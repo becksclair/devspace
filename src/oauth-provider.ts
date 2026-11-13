@@ -27,7 +27,10 @@ interface AuthorizationCodeRecord {
 
 const CODE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RETAINED_CLIENTS = 500;
+/** The CSRF cookie on an https public base URL. Browsers accept `__Host-` only with `Secure`. */
 export const CSRF_COOKIE_NAME = "__Host-devspace-csrf";
+/** The CSRF cookie on a plain-http public base URL, where `Secure` cookies are not stored. */
+export const INSECURE_CSRF_COOKIE_NAME = "devspace-csrf";
 const CSRF_TOKEN_BYTES = 32;
 const CSRF_MAX_AGE_SECONDS = 600;
 const FAILED_APPROVAL_LIMIT = 20;
@@ -83,9 +86,15 @@ function generateCsrfToken(): string {
   return randomBytes(CSRF_TOKEN_BYTES).toString("hex");
 }
 
-function getCsrfCookie(req: Request): string | undefined {
+/** The one CSRF cookie name the server sets, reads, and clears for its scheme. */
+export function csrfCookieName(secure: boolean): string {
+  return secure ? CSRF_COOKIE_NAME : INSECURE_CSRF_COOKIE_NAME;
+}
+
+function getCsrfCookie(req: Request, secure: boolean): string | undefined {
+  const cookieName = csrfCookieName(secure);
   const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
-  if (cookies && typeof cookies[CSRF_COOKIE_NAME] === "string") return cookies[CSRF_COOKIE_NAME];
+  if (cookies && typeof cookies[cookieName] === "string") return cookies[cookieName];
   // fallback manual parse for environments without cookie-parser
   const header = (req.headers as Record<string, unknown>)?.cookie as string | undefined;
   if (!header || typeof header !== "string") return undefined;
@@ -95,7 +104,7 @@ function getCsrfCookie(req: Request): string | undefined {
     if (eq === -1) continue;
     const name = trimmed.slice(0, eq).trim();
     const value = trimmed.slice(eq + 1).trim();
-    if (name === CSRF_COOKIE_NAME) return decodeURIComponent(value);
+    if (name === cookieName) return decodeURIComponent(value);
   }
   return undefined;
 }
@@ -105,6 +114,7 @@ function isSecureRequest(resourceServerUrl: URL): boolean {
 }
 
 function setCsrfCookie(res: Response, token: string, secure: boolean): void {
+  const cookieName = csrfCookieName(secure);
   const cookieOpts: Record<string, unknown> = {
     httpOnly: true,
     secure,
@@ -114,11 +124,11 @@ function setCsrfCookie(res: Response, token: string, secure: boolean): void {
   };
   const anyRes = res as unknown as { cookie?: (name: string, value: string, opts: unknown) => void };
   if (typeof anyRes.cookie === "function") {
-    anyRes.cookie(CSRF_COOKIE_NAME, token, cookieOpts);
+    anyRes.cookie(cookieName, token, cookieOpts);
     return;
   }
   // fallback manual Set-Cookie
-  let cookie = `${CSRF_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${CSRF_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax`;
+  let cookie = `${cookieName}=${encodeURIComponent(token)}; Path=/; Max-Age=${CSRF_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax`;
   if (secure) cookie += "; Secure";
   const existing = res.getHeader?.("Set-Cookie");
   if (existing) {
@@ -130,12 +140,13 @@ function setCsrfCookie(res: Response, token: string, secure: boolean): void {
 }
 
 function clearCsrfCookie(res: Response, secure: boolean): void {
+  const cookieName = csrfCookieName(secure);
   const anyRes = res as unknown as { clearCookie?: (name: string, opts: unknown) => void };
   if (typeof anyRes.clearCookie === "function") {
-    anyRes.clearCookie(CSRF_COOKIE_NAME, { httpOnly: true, secure, sameSite: "lax" as const, path: "/" });
+    anyRes.clearCookie(cookieName, { httpOnly: true, secure, sameSite: "lax" as const, path: "/" });
     return;
   }
-  let cookie = `${CSRF_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`;
+  let cookie = `${cookieName}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`;
   if (secure) cookie += "; Secure";
   const existing = res.getHeader?.("Set-Cookie");
   if (existing) {
@@ -333,7 +344,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       );
     };
 
-    const cookieCsrf = getCsrfCookie(res.req);
+    const cookieCsrf = getCsrfCookie(res.req, secure);
     const bodyCsrf = String((res.req.body as Record<string, unknown>)?.csrf_token ?? "");
     if (!cookieCsrf || !bodyCsrf || !safeEquals(bodyCsrf, cookieCsrf)) {
       rejectWithForm(400, "Invalid request.");
