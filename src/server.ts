@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import {
@@ -838,6 +837,17 @@ export function currentEntryAssetFor(
   if (!kind) return undefined;
   const current = kind === "js" ? entry.file : entry.css?.[0];
   return current && `/${current}` !== requestPath ? current : undefined;
+}
+
+/**
+ * Sends one file of the UI build. The path is resolved under `uiDirectory` as the root: given an
+ * absolute path instead, Express refuses any path with a dot-directory in it, and a release lives
+ * below one (`~/.local/opt/devspace/releases/...`).
+ */
+export function sendUiBuildFile(res: Response, uiDirectory: string, relativePath: string, next: (error?: unknown) => void): void {
+  res.sendFile(relativePath, { root: uiDirectory, cacheControl: false }, (error) => {
+    if (error) next(error);
+  });
 }
 
 function assetUrl(baseUrl: string, assetPath: string): string {
@@ -2053,9 +2063,7 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     setAssetHeaders(config, res);
     // The name is another build's, so this response must not be cached under it.
     res.setHeader("Cache-Control", "no-cache");
-    res.sendFile(join(uiBuildDirectory(), current), { cacheControl: false }, (error) => {
-      if (error) next(error);
-    });
+    sendUiBuildFile(res, uiBuildDirectory(), current, next);
   });
 
   app.use(

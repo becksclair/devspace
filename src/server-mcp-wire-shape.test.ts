@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url";
 import type { ServerConfig, WidgetMode } from "./config.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
 import { normalizeRootPolicies } from "./roots.js";
-import { createServer, currentEntryAssetFor, isWorkspaceAppResourceUri } from "./server.js";
+import express from "express";
+import { createServer, currentEntryAssetFor, isWorkspaceAppResourceUri, sendUiBuildFile } from "./server.js";
 
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const accessToken = "wire-shape-test-access-token";
@@ -326,6 +327,32 @@ try {
   assert.equal(currentEntryAssetFor("/assets/workspace-app-AAAAAAAA.css", { file: entry.file }), undefined);
   assert.equal(currentEntryAssetFor("/assets/react-vendor-AAAAAAAA.js", entry), undefined);
   process.stdout.write("ok - another build's entry script and stylesheet names load the current entry; nothing else is aliased\n");
+
+  // A release lives below a dot-directory (~/.local/opt/devspace/releases/...). Express refuses an
+  // absolute path that contains one, so the aliased file must be sent relative to the build root.
+  const hiddenRoot = await mkdtemp(join(tmpdir(), "devspace-ui-dotdir-"));
+  const hiddenUi = join(hiddenRoot, ".local", "release", "dist", "ui");
+  await mkdir(join(hiddenUi, "assets"), { recursive: true });
+  await writeFile(join(hiddenUi, "assets", "entry.js"), "export const built = true;\n");
+  const fileApp = express();
+  fileApp.get("/entry", (_req, res, next) => sendUiBuildFile(res, hiddenUi, "assets/entry.js", next));
+  const fileServer = fileApp.listen(0, "127.0.0.1");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      fileServer.once("listening", resolve);
+      fileServer.once("error", reject);
+    });
+    const sent = await fetch(`http://127.0.0.1:${(fileServer.address() as AddressInfo).port}/entry`);
+    assert.equal(sent.status, 200, "a build below a dot-directory is served");
+    assert.equal(await sent.text(), "export const built = true;\n");
+  } finally {
+    await new Promise<void>((resolve) => {
+      fileServer.close(() => resolve());
+      fileServer.closeAllConnections();
+    });
+    await rm(hiddenRoot, { recursive: true, force: true });
+  }
+  process.stdout.write("ok - a UI build below a dot-directory is served\n");
 
   // SDK v2 / MCP specification behavior: tools/call for a tool the session does not register is a
   // JSON-RPC -32602 error, not a tool result with isError (SDK v1 answered isError: true).
