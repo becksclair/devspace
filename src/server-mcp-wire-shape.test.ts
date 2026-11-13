@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import type { ServerConfig, WidgetMode } from "./config.js";
 import { SqliteOAuthStateStore } from "./oauth-store.js";
 import { normalizeRootPolicies } from "./roots.js";
-import { createServer, isWorkspaceAppResourceUri } from "./server.js";
+import { createServer, currentEntryAssetFor, isWorkspaceAppResourceUri } from "./server.js";
 
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const accessToken = "wire-shape-test-access-token";
@@ -125,11 +125,26 @@ const FOREIGN_URIS = [
   "file:///etc/workspace-app-0123456789ab.html",
 ];
 
+/** The card's entry script and stylesheet under another build's names. */
+const STALE_ENTRY_PATHS = ["/assets/workspace-app-AAAAAAAA.js", "/assets/workspace-app-AAAAAAAA.css"];
+/** Paths that only resemble an entry asset; none of them may be answered with the entry. */
+const FOREIGN_ASSET_PATHS = [
+  "/assets/other-app-AAAAAAAA.js",
+  "/assets/workspace-app-AAAAAAAA.js.map",
+  "/assets/workspace-app-AAAA.js",
+  "/assets/workspace-app-AAAAAAAAA.js",
+  "/assets/workspace-app-AAAAAAAA.mjs",
+  "/assets/nested/workspace-app-AAAAAAAA.js",
+  "/workspace-app-AAAAAAAA.js",
+];
+
 interface WireLists {
   tools: WireTool[];
   /** The resources/list result, or the JSON-RPC error when the server has no resources capability. */
   resources: { resources?: WireResource[]; error?: { code: number } };
   templates: { resourceTemplates?: unknown[]; error?: { code: number } };
+  /** GET results for paths under /mcp-app-assets, by path (widgets on only). */
+  assets: Record<string, { status: number; cacheControl: string | null; body: string }>;
   /** resources/read results or errors, by requested address (widgets on only). */
   reads: Record<string, { result?: unknown; error?: { code: number; message?: string } }>;
   /** tools/call errors for an unknown name and for a real tool this session does not register. */
@@ -182,7 +197,15 @@ async function listWire(widgets: WidgetMode): Promise<WireLists> {
         reads[uri] = { result: read.result, error: read.error };
       }
     }
+    const assets: WireLists["assets"] = {};
+    const cardHtml = listed ? (reads[listed]?.result as { contents?: Array<{ text?: string }> } | undefined)?.contents?.[0]?.text ?? "" : "";
+    const entryPaths = [...cardHtml.matchAll(/\/mcp-app-assets(\/assets\/[^"]+)"/g)].map((match) => match[1]);
+    for (const path of [...entryPaths, ...STALE_ENTRY_PATHS, ...FOREIGN_ASSET_PATHS]) {
+      const response = await fetch(`${endpoint.replace(/\/mcp$/, "")}/mcp-app-assets${path}`);
+      assets[path] = { status: response.status, cacheControl: response.headers.get("cache-control"), body: await response.text() };
+    }
     return {
+      assets,
       reads,
       unregisteredCalls,
       tools: (tools.result as { tools: WireTool[] }).tools,
@@ -274,6 +297,35 @@ try {
     assert.match(full.reads[uri]?.error?.message ?? "", /^Resource not found: /, `${uri}: the SDK's not-found message`);
   }
   process.stdout.write("ok - an earlier build's card address reads the current bundle; foreign addresses are not found\n");
+
+  // A host can paint its cached copy of the card before re-reading it, and that copy names the
+  // previous build's entry script and stylesheet: those names are answered with the current entry
+  // files, uncached. Nothing else under /mcp-app-assets changes.
+  const scriptPath = Object.keys(full.assets).find((path) => path.endsWith(".js") && !STALE_ENTRY_PATHS.includes(path) && !FOREIGN_ASSET_PATHS.includes(path));
+  const stylePath = Object.keys(full.assets).find((path) => path.endsWith(".css") && !STALE_ENTRY_PATHS.includes(path) && !FOREIGN_ASSET_PATHS.includes(path));
+  assert.ok(scriptPath, "the card HTML names its entry script");
+  assert.equal(full.assets[scriptPath]?.status, 200);
+  assert.match(full.assets[scriptPath]?.cacheControl ?? "", /immutable/, "the current entry is cached immutably");
+  const staleScript = full.assets["/assets/workspace-app-AAAAAAAA.js"];
+  assert.equal(staleScript?.status, 200, "another build's entry script name is answered");
+  assert.equal(staleScript?.body, full.assets[scriptPath]?.body, "with the current entry script");
+  assert.equal(staleScript?.cacheControl, "no-cache", "and is not cached under the other build's name");
+  const staleStyle = full.assets["/assets/workspace-app-AAAAAAAA.css"];
+  if (stylePath) {
+    assert.equal(staleStyle?.status, 200, "another build's stylesheet name is answered");
+    assert.equal(staleStyle?.body, full.assets[stylePath]?.body, "with the current stylesheet");
+    assert.equal(staleStyle?.cacheControl, "no-cache");
+  } else {
+    assert.equal(staleStyle?.status, 404, "a build without a stylesheet has none to answer with");
+  }
+  for (const path of FOREIGN_ASSET_PATHS) assert.equal(full.assets[path]?.status, 404, `${path}: not found`);
+  const entry = { file: "assets/workspace-app-BBBBBBBB.js", css: ["assets/workspace-app-CCCCCCCC.css"] };
+  assert.equal(currentEntryAssetFor("/assets/workspace-app-AAAAAAAA.js", entry), entry.file);
+  assert.equal(currentEntryAssetFor("/assets/workspace-app-AAAAAAAA.css", entry), entry.css[0]);
+  assert.equal(currentEntryAssetFor(`/${entry.file}`, entry), undefined, "the current name is served as a normal asset");
+  assert.equal(currentEntryAssetFor("/assets/workspace-app-AAAAAAAA.css", { file: entry.file }), undefined);
+  assert.equal(currentEntryAssetFor("/assets/react-vendor-AAAAAAAA.js", entry), undefined);
+  process.stdout.write("ok - another build's entry script and stylesheet names load the current entry; nothing else is aliased\n");
 
   // SDK v2 / MCP specification behavior: tools/call for a tool the session does not register is a
   // JSON-RPC -32602 error, not a tool result with isError (SDK v1 answered isError: true).

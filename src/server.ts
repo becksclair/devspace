@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import {
@@ -817,6 +818,26 @@ function getWorkspaceAppManifestEntry(): WorkspaceAppManifestEntry {
   }
 
   return entry;
+}
+
+const WORKSPACE_APP_ENTRY_ASSET_PATTERN = /^\/assets\/workspace-app-[A-Za-z0-9_-]{8}\.(js|css)$/;
+
+/**
+ * The current build's entry file for an entry asset requested under another build's name.
+ *
+ * A host can paint its cached copy of the card before it re-reads the resource, and that copy
+ * names the previous build's entry script and stylesheet, which this build does not have. Answering
+ * those two names with the current entry files lets a stale copy load the current card. Only the
+ * entry's own name family matches; `undefined` means the request is served (or not found) as usual.
+ */
+export function currentEntryAssetFor(
+  requestPath: string,
+  entry: Pick<WorkspaceAppManifestEntry, "file" | "css">,
+): string | undefined {
+  const kind = WORKSPACE_APP_ENTRY_ASSET_PATTERN.exec(requestPath)?.[1];
+  if (!kind) return undefined;
+  const current = kind === "js" ? entry.file : entry.css?.[0];
+  return current && `/${current}` !== requestPath ? current : undefined;
 }
 
 function assetUrl(baseUrl: string, assetPath: string): string {
@@ -2026,6 +2047,24 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   app.options("/mcp-app-assets/{*asset}", (_req, res) => {
     setAssetHeaders(config, res);
     res.sendStatus(204);
+  });
+
+  app.use("/mcp-app-assets", (req, res, next) => {
+    if (config.widgets === "off" || (req.method !== "GET" && req.method !== "HEAD")) return next();
+    if (!WORKSPACE_APP_ENTRY_ASSET_PATTERN.test(req.path)) return next();
+    let current: string | undefined;
+    try {
+      current = currentEntryAssetFor(req.path, getWorkspaceAppManifestEntry());
+    } catch {
+      // No UI build: the static handler below answers as it always has.
+    }
+    if (!current) return next();
+    setAssetHeaders(config, res);
+    // The name is another build's, so this response must not be cached under it.
+    res.setHeader("Cache-Control", "no-cache");
+    res.sendFile(join(uiBuildDirectory(), current), { cacheControl: false }, (error) => {
+      if (error) next(error);
+    });
   });
 
   app.use(

@@ -112,9 +112,14 @@ curl -fsS https://devspace-saga.heliasar.com/healthz
 
 After a deploy that adds, removes or renames tools, or changes their descriptions or schemas, refresh the connector in ChatGPT: Settings, Plugins, DevSpace Gateway, **Refresh tools**. ChatGPT caches the tool list from its last scan and does not see such changes until then.
 
-A deploy that only changes the widget needs no refresh. The cached tool list still names the previous build's card address (the address carries a content hash), and the server answers any address of the card with the current bundle. Before that was added, the card showed "Couldn't open Open workspace" after a deploy until the connector was refreshed.
+A deploy that only changes the widget needs no refresh. Two things keep the card opening:
 
-One limit remains. A release serves only its own widget assets. A card that was already open in a browser tab when the deploy happened keeps the scripts it had loaded, but anything it loads afterwards (the code and diff renderers, which load when a card is expanded) is requested under the previous build's file names and is not found. The card then shows the content as plain text with an error line; reopening the conversation loads the current build.
+- The cached tool list still names the previous build's card address (the address carries a content hash), and the server answers any address of the card with the current bundle.
+- ChatGPT paints its cached copy of the card first and re-reads the resource in the background. That copy names the previous build's entry script and stylesheet, which a release does not have, so the server answers those two names with the current entry files, uncached. The card a user sees right after a deploy is therefore the current one.
+
+Before these were added, the card showed "Couldn't open Open workspace" after a deploy until the connector was refreshed, and a cached copy could load only on a device that still had the previous build's files in its browser cache.
+
+One limit remains. A card that was already open in a browser tab when the deploy happened keeps the scripts it had loaded, but anything it loads afterwards (the code and diff renderers, which load when a card is expanded) is requested under the previous build's file names and is not found. The card then shows the content as plain text with an error line; reopening the conversation loads the current build.
 
 A failed health check rolls back automatically. To return to the previous release by hand, activate it:
 
