@@ -12,9 +12,9 @@ import type { OAuthServerProvider } from "./provider.js";
 export function revocationEndpoint(provider: OAuthServerProvider): RequestHandler {
   const router = express.Router();
   router.use(allowAnyOrigin());
+  router.use(endpointRateLimit(15 * 60 * 1000, 50, "You have exceeded the rate limit for token revocation requests"));
   router.use(allowedMethods(["POST"]));
   router.use(express.urlencoded({ extended: false }));
-  router.use(endpointRateLimit(15 * 60 * 1000, 50, "You have exceeded the rate limit for token revocation requests"));
   router.use(authenticateClient(provider.clientsStore));
 
   router.post("/", async (req, res) => {

@@ -31,9 +31,9 @@ const RefreshTokenGrantSchema = z.object({
 export function tokenEndpoint(provider: OAuthServerProvider): RequestHandler {
   const router = express.Router();
   router.use(allowAnyOrigin());
+  router.use(endpointRateLimit(60 * 1000, 30, "You have exceeded the rate limit for token requests"));
   router.use(allowedMethods(["POST"]));
   router.use(express.urlencoded({ extended: false }));
-  router.use(endpointRateLimit(15 * 60 * 1000, 50, "You have exceeded the rate limit for token requests"));
   router.use(authenticateClient(provider.clientsStore));
 
   router.post("/", async (req, res) => {

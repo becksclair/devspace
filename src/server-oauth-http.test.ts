@@ -647,7 +647,7 @@ try {
   assert.equal(page.headers.get("content-type"), HTML_CONTENT_TYPE);
   assert.equal(page.headers.get("cache-control"), "no-store");
   assertSecurityHeaders(page, "approval page");
-  assertRateLimitHeaders(page, 100, 900, "approval page");
+  assertRateLimitHeaders(page, 10, 60, "approval page");
   // The CSRF cookie is HttpOnly, SameSite=Lax, Path=/, 600 s, and has no Secure attribute over http.
   assertSecretMatches(
     page.headers.get("set-cookie"),
@@ -800,7 +800,7 @@ try {
   const approved = await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf }, csrf);
   assert.equal(approved.status, 302);
   assert.equal(approved.headers.get("cache-control"), "no-store");
-  assertRateLimitHeaders(approved, 100, 900, "approval");
+  assertRateLimitHeaders(approved, 10, 60, "approval");
   assertSecretMatches(
     approved.headers.get("set-cookie"),
     new RegExp(`^${CSRF_COOKIE}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax$`),
@@ -865,7 +865,7 @@ try {
 
   const exchanged = await tokenRequest(codeGrant);
   const tokens = assertTokenResponse(exchanged, "devspace audit", "authorization_code exchange");
-  assertRateLimitHeaders(exchanged, 50, 900, "token");
+  assertRateLimitHeaders(exchanged, 30, 60, "token");
   assertOAuthError(await tokenRequest(codeGrant), 400, "invalid_grant", "Invalid authorization code", "token reused code");
 
   // Intended: redirect_uri is optional at /token; OAuth 2.1 drops it from the token request because PKCE binds the code.
@@ -1150,17 +1150,20 @@ try {
   assert.equal(authorizePreflight.headers.get("access-control-allow-origin"), null);
 
   // 8. Rate-limit headers -----------------------------------------------------------------------
-  // KNOWN DEFECT: two layers of limiters, whose headers overwrite each other as described below.
-  // /authorize and /token each pass through DevSpace's own limiter (10/60 s and 30/60 s) and then the
-  // SDK's (100/900 s and 50/900 s). Responses that reach the SDK limiter carry its headers, which
-  // overwrite DevSpace's; only responses produced before it (405s, /token preflight) show
-  // DevSpace's. Exhaustion is covered by src/server-rate-limit.test.ts.
-  assertRateLimitHeaders(await authorizeGet(baseParams), 100, 900, "GET /authorize");
+  // One limiter per endpoint, keyed on the client address: /authorize 10/60 s, /token 30/60 s,
+  // /register 20/3600 s, /revoke 50/900 s. It counts every request, wrong methods included, except
+  // CORS preflights, which are answered before it. Exhaustion is covered by
+  // src/server-rate-limit.test.ts.
+  assertRateLimitHeaders(await authorizeGet(baseParams), 10, 60, "GET /authorize");
   assertRateLimitHeaders(putAuthorize, 10, 60, "PUT /authorize");
-  assertRateLimitHeaders(await tokenRequest({ grant_type: "client_credentials", client_id: client.client_id }), 50, 900, "POST /token");
+  assertRateLimitHeaders(authorizePreflight, 10, 60, "OPTIONS /authorize");
+  assertRateLimitHeaders(await tokenRequest({ grant_type: "client_credentials", client_id: client.client_id }), 30, 60, "POST /token");
   assertRateLimitHeaders(getToken, 30, 60, "GET /token");
-  assertRateLimitHeaders(await preflight("/token"), 30, 60, "OPTIONS /token");
-  assertNoRateLimitHeaders(await preflight("/revoke"), "OPTIONS /revoke");
+  assertRateLimitHeaders(getRegister, 20, 3600, "GET /register");
+  assertRateLimitHeaders(await http("/revoke", { method: "GET" }), 50, 900, "GET /revoke");
+  for (const path of ["/token", "/register", "/revoke"]) {
+    assertNoRateLimitHeaders(await preflight(path), `OPTIONS ${path}`);
+  }
   assertNoRateLimitHeaders(await mcpInitialize(), "POST /mcp");
 
   // 9. The CSRF cookie on an https deployment ---------------------------------------------------

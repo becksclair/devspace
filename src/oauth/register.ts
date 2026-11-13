@@ -19,9 +19,9 @@ const CLIENT_SECRET_TTL_SECONDS = 30 * 24 * 60 * 60;
 export function registrationEndpoint(clientsStore: OAuthRegisteredClientsStore): RequestHandler {
   const router = express.Router();
   router.use(allowAnyOrigin());
+  router.use(endpointRateLimit(60 * 60 * 1000, 20, "You have exceeded the rate limit for client registration requests"));
   router.use(allowedMethods(["POST"]));
   router.use(express.json());
-  router.use(endpointRateLimit(60 * 60 * 1000, 20, "You have exceeded the rate limit for client registration requests"));
 
   router.post("/", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");

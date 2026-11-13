@@ -43,9 +43,12 @@ export function allowedMethods(allowed: string[]): RequestHandler {
 }
 
 /**
- * The per-endpoint limiter each OAuth endpoint installs after its body parser. These run inside
- * the endpoint, after DevSpace's own app-level `/authorize` and `/token` limiters, so on responses
- * that reach them their `RateLimit-*` headers replace the outer limiter's.
+ * The one rate limiter of an OAuth endpoint, keyed on the client address (`req.ip`, which honors
+ * the app's `trust proxy` setting). Each endpoint installs it first, right after its CORS handling:
+ * a preflight is answered before it and never counted, and every other request is counted before
+ * the method check or body parsing. A request over the limit is answered 429 with a
+ * `too_many_requests` OAuth error body and `Retry-After`; every counted response carries the
+ * `RateLimit-*` headers of this limit.
  */
 export function endpointRateLimit(windowMs: number, limit: number, description: string): RequestHandler {
   return rateLimit({
