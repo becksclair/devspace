@@ -74,7 +74,7 @@ Package manager is Bun; runtime is Node `>=24 <27`.
 - Never log tokens or secret values.
 - DevSpace owns its OAuth authorization-server endpoint code in `src/oauth/` (`/authorize`, `/token`, `/register`, `/revoke`, client authentication, CORS, the `OAuthHttpError` type). No upstream package maintains or patches it, so treat changes there as security review, not dependency bumps. The discovery documents and `/mcp` bearer authentication come from the maintained `@modelcontextprotocol/express` (`mcpAuthMetadataRouter`, `requireBearerAuth`).
 - Token verifiers must throw `OAuthHttpError` with `invalid_token`; anything else makes `/mcp` answer 500 instead of a 401 challenge.
-- `src/server-oauth-http.test.ts` pins the OAuth wire output, including its `KNOWN DEFECT` cases; RFC 9207 `iss` is deliberately not sent (see the comment in `src/oauth/authorize.ts`).
+- `src/server-oauth-http.test.ts` pins the OAuth wire output; RFC 9207 `iss` is deliberately not sent (see the comment in `src/oauth/authorize.ts`).
 
 ## Environment notes
 

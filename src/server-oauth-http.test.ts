@@ -6,10 +6,9 @@
 // it must not import anything from `@modelcontextprotocol/*` and must not reach into the OAuth
 // provider or its stores. Static API keys are minted and revoked through the public CLI.
 //
-// Cases marked "KNOWN DEFECT" pin current behavior that deviates from the relevant RFC or is
-// otherwise questionable. They are recorded, not endorsed; a later change may fix them
-// deliberately and update the assertion in the same change. Cases marked "Intended" were reviewed
-// and kept on purpose; each says why.
+// Cases marked "Intended" were reviewed and kept on purpose; each says why. A case that pins
+// behavior deviating from the relevant RFC without such a decision would be marked "KNOWN DEFECT"
+// and fixed deliberately, updating its assertion in the same change; none remains.
 //
 // Never print tokens, authorization codes, client secrets, CSRF tokens, or the owner token.
 
@@ -813,7 +812,9 @@ try {
   );
   const approvedLocation = new URL(approved.headers.get("location") ?? "");
   assert.equal(`${approvedLocation.origin}${approvedLocation.pathname}`, loopbackRedirect);
-  // Exactly `code` and `state`; KNOWN DEFECT (RFC 9207): no `iss` parameter.
+  // Exactly `code` and `state`. Intended, for now: no RFC 9207 `iss` parameter. Sending it changes
+  // which redirect URI ChatGPT uses, so it waits for an experiment with a second connector; it is a
+  // deliberate decision, not a defect to fix here.
   assert.deepEqual([...approvedLocation.searchParams.keys()], ["code", "state"]);
   assert.equal(approvedLocation.searchParams.get("state"), "oracle-state");
   const code = approvedLocation.searchParams.get("code") ?? "";
