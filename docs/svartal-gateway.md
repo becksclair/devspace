@@ -119,6 +119,8 @@ A deploy that only changes the widget needs no refresh. Two things keep the card
 
 Before these were added, the card showed "Couldn't open Open workspace" after a deploy until the connector was refreshed, and a cached copy could load only on a device that still had the previous build's files in its browser cache.
 
+The public origin is behind Cloudflare, which caches the hashed asset files it has served (they are sent as `immutable`). After a deploy the edge may therefore still answer a previous build's entry file itself, while the gateway no longer has it; whether it does depends on what the edge happens to hold. Check `cf-cache-status` before reading anything into a public `curl` of an old asset name, and test the gateway directly (`curl -H "Host: <public host>" http://127.0.0.1:7679/...`) to see what the server does. A stale copy of the card can so load one entry file from the edge's copy of the previous build and the other from the current build; the next paint uses the re-read HTML and is consistent.
+
 One limit remains. A card that was already open in a browser tab when the deploy happened keeps the scripts it had loaded, but anything it loads afterwards (the code and diff renderers, which load when a card is expanded) is requested under the previous build's file names and is not found. The card then shows the content as plain text with an error line; reopening the conversation loads the current build.
 
 A failed health check rolls back automatically. To return to the previous release by hand, activate it:
