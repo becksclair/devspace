@@ -104,7 +104,13 @@ function getCsrfCookie(req: Request, secure: boolean): string | undefined {
     if (eq === -1) continue;
     const name = trimmed.slice(0, eq).trim();
     const value = trimmed.slice(eq + 1).trim();
-    if (name === cookieName) return decodeURIComponent(value);
+    if (name !== cookieName) continue;
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      // Malformed percent-encoding is no cookie: the approval is rejected like any CSRF mismatch.
+      return undefined;
+    }
   }
   return undefined;
 }
@@ -310,7 +316,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Invalid or missing OAuth resource");
     }
     if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
-      throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Requested scope is not supported");
+      throw new OAuthHttpError(OAuthErrorCode.InvalidScope, "Requested scope is not supported");
     }
 
     const secure = isSecureRequest(this.resourceServerUrl);

@@ -758,9 +758,10 @@ try {
   await assertErrorRedirect({ ...baseParams, resource: "https://evil.example/mcp" }, resourceError, "authorize foreign-origin resource");
   await assertErrorRedirect({ ...baseParams, resource: `${origin}/` }, resourceError, "authorize root resource");
   await assertErrorRedirect({ ...baseParams, resource: `${origin}/mcpx` }, resourceError, "authorize sibling-path resource");
+  // An unsupported scope is invalid_scope (RFC 6749 section 4.1.2.1).
   await assertErrorRedirect(
     { ...baseParams, scope: "devspace admin" },
-    { error: "invalid_request", error_description: "Requested scope is not supported", state: "oracle-state" },
+    { error: "invalid_scope", error_description: "Requested scope is not supported", state: "oracle-state" },
     "authorize unsupported scope",
   );
   // Resource indicators below the /mcp path are accepted.
@@ -777,6 +778,10 @@ try {
   assert.equal((await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf })).status, 400, "csrf field without cookie");
   assert.equal((await approve(baseParams, { owner_token: ownerToken }, csrf)).status, 400, "csrf cookie without field");
   assert.equal((await approve(baseParams, { owner_token: ownerToken, csrf_token: "0".repeat(64) }, csrf)).status, 400, "csrf mismatch");
+  // A cookie whose percent-encoding cannot be decoded is no cookie; it never redirects with server_error.
+  const malformedCookie = await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf }, "%E0%A4%A");
+  assert.equal(malformedCookie.status, 400, "malformed csrf cookie");
+  assert.equal(malformedCookie.headers.get("location"), null, "malformed csrf cookie: no redirect");
   // Over http only the http name is read: the right token under the https name is no cookie at all.
   assert.equal(
     (await postForm("/authorize", { ...baseParams, owner_token: ownerToken, csrf_token: csrf }, { cookie: `${SECURE_CSRF_COOKIE}=${csrf}` })).status,
@@ -922,9 +927,14 @@ try {
     400, "invalid_scope", "Refresh token cannot grant requested scopes", "refresh re-widen narrowed token",
   );
   // The rejected widening did not consume the narrowed refresh token.
-  assertTokenResponse(
+  const afterRejectedWidening = assertTokenResponse(
     await tokenRequest({ grant_type: "refresh_token", refresh_token: narrowed.refresh_token, client_id: client.client_id }),
     "audit", "refresh after a rejected widening",
+  );
+  // An empty `scope` is an omitted one, as at /authorize: the refresh keeps the granted scope.
+  assertTokenResponse(
+    await tokenRequest({ grant_type: "refresh_token", refresh_token: afterRejectedWidening.refresh_token, client_id: client.client_id, scope: "" }),
+    "audit", "refresh with an empty scope",
   );
 
   // 6 (OAuth half). /mcp with OAuth tokens ----------------------------------------------------
