@@ -29,7 +29,7 @@ import {
 } from "./logger.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createOAuthStateStore } from "./oauth-store.js";
-import { StaticKeyStore, StaticKeyVerifier } from "./static-key-provider.js";
+import { StaticKeyStore, StaticKeyVerifier, staticKeyFirstVerifier } from "./static-key-provider.js";
 import { DEVSPACE_VERSION } from "./version.js";
 import { GatewayExecutionRouter, type ExecutionTarget, type RoutedExecution } from "./gateway-router.js";
 import type { ToolName as CanonicalToolName } from "./tool-contract.js";
@@ -1946,17 +1946,8 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
   const staticKeyStore = new StaticKeyStore(config.stateDir);
   staticKeyStore.cleanupExpired();
   const staticKeyVerifier = new StaticKeyVerifier(staticKeyStore, resourceServerUrl.href);
-  const compositeVerifier = {
-    async verifyAccessToken(token: string) {
-      try {
-        return await staticKeyVerifier.verifyAccessToken(token);
-      } catch {
-        return oauthProvider.verifyAccessToken(token);
-      }
-    },
-  };
   const bearerAuth = requireBearerAuth({
-    verifier: compositeVerifier,
+    verifier: staticKeyFirstVerifier(staticKeyVerifier, oauthProvider),
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
