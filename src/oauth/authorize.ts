@@ -91,7 +91,14 @@ async function verifyClient(provider: OAuthServerProvider, input: unknown): Prom
     }
     return { client, redirectUri: requested };
   }
-  if (client.redirect_uris.length === 1) return { client, redirectUri: client.redirect_uris[0] };
+  if (client.redirect_uris.length === 1) {
+    // The same rule as for a requested URI: one with a fragment or userinfo is never a target.
+    const [registered] = client.redirect_uris;
+    if (!redirectUriMatches(registered, registered)) {
+      throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "Registered redirect_uri is not usable");
+    }
+    return { client, redirectUri: registered };
+  }
   throw new OAuthHttpError(OAuthErrorCode.InvalidRequest, "redirect_uri must be specified when client has multiple registered URIs");
 }
 

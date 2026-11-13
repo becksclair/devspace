@@ -703,6 +703,14 @@ try {
     assert.equal(rejected.headers.get("location"), null, `authorize redirect_uri ${redirectUri}: no redirect`);
   }
 
+  // The same holds when redirect_uri is omitted and the only registered URI is such a URI.
+  for (const registered of ["http://127.0.0.1:43127/cb#frag", "http://user@127.0.0.1:43128/cb"]) {
+    const sole = await registerPublicClient([registered]);
+    const rejected = await authorizeGet(authorizeParams(sole, pair.challenge, { redirect_uri: undefined }));
+    assertOAuthError(rejected, 400, "invalid_request", "Registered redirect_uri is not usable", `authorize with the sole registered URI ${registered}`);
+    assert.equal(rejected.headers.get("location"), null, `authorize with the sole registered URI ${registered}: no redirect`);
+  }
+
   // Post-redirect failures are 302s to the redirect URI with error parameters.
   async function assertErrorRedirect(params: AuthorizeParams, expected: Record<string, string | RegExp>, label: string, repeated = ""): Promise<void> {
     const result = await authorizeGet(params, repeated);
