@@ -7,8 +7,9 @@
 // provider or its stores. Static API keys are minted and revoked through the public CLI.
 //
 // Cases marked "KNOWN DEFECT" pin current behavior that deviates from the relevant RFC or is
-// otherwise questionable. They are recorded, not endorsed; a reimplementation may fix them
-// deliberately and update the assertion in the same change.
+// otherwise questionable. They are recorded, not endorsed; a later change may fix them
+// deliberately and update the assertion in the same change. Cases marked "Intended" were reviewed
+// and kept on purpose; each says why.
 //
 // Never print tokens, authorization codes, client secrets, CSRF tokens, or the owner token.
 
@@ -375,7 +376,7 @@ function assertTokenResponse(result: HttpResult, scope: string, label: string): 
   assert.equal(result.status, 200, `${label}: status (body ${bodyHint(result)})`);
   assert.equal(result.headers.get("content-type"), JSON_CONTENT_TYPE, `${label}: content-type`);
   assert.equal(result.headers.get("cache-control"), "no-store", `${label}: Cache-Control`);
-  // KNOWN DEFECT: RFC 6749 section 5.1 also requires `Pragma: no-cache`; it is not sent today.
+  // Intended: no `Pragma: no-cache`; OAuth 2.1 requires only `Cache-Control: no-store`.
   assert.equal(result.headers.get("pragma"), null, `${label}: Pragma`);
   assert.equal(result.headers.get("access-control-allow-origin"), "*", `${label}: ACAO`);
   const body = result.json() as TokenResponse;
@@ -512,6 +513,7 @@ try {
     token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     scopes_supported: ["devspace", "audit"],
+    // KNOWN DEFECT: /revoke also accepts public clients ("none"), which this list omits.
     revocation_endpoint_auth_methods_supported: ["client_secret_post"],
   });
 
@@ -776,7 +778,7 @@ try {
   assertSecurityHeaders(wrongOwner, "wrong owner token");
   assertSecretMatches(wrongOwner.headers.get("set-cookie"), new RegExp(`^${CSRF_COOKIE}=[0-9a-f]{64};`), "wrong owner Set-Cookie");
 
-  // The CSRF token is not single-use: the same cookie/field pair still approves after a failure.
+  // Intended: the CSRF pair stays usable after a failed approval; approval needs the owner password in the same request.
   const approved = await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf }, csrf);
   assert.equal(approved.status, 302);
   assert.equal(approved.headers.get("cache-control"), "no-store");
@@ -822,7 +824,8 @@ try {
   };
   const otherClient = await registerPublicClient([loopbackRedirect]);
 
-  // Failed exchanges do not consume the code: each case below is followed by a successful exchange.
+  // Intended: a failed exchange does not consume the code; mandatory PKCE S256 makes a retry worthless, and consuming would let an interceptor burn codes.
+  // Each case below is followed by a successful exchange.
   const wrongVerifier = await tokenRequest({ ...codeGrant, code_verifier: pkcePair().verifier });
   assertOAuthError(wrongVerifier, 400, "invalid_grant", "code_verifier does not match the challenge", "token wrong verifier");
   assert.equal(wrongVerifier.headers.get("cache-control"), "no-store");
@@ -847,8 +850,7 @@ try {
   assertRateLimitHeaders(exchanged, 50, 900, "token");
   assertOAuthError(await tokenRequest(codeGrant), 400, "invalid_grant", "Invalid authorization code", "token reused code");
 
-  // KNOWN DEFECT: redirect_uri may be omitted at the token endpoint even though the authorization
-  // request carried one (RFC 6749 section 4.1.3 requires it).
+  // Intended: redirect_uri is optional at /token; OAuth 2.1 drops it from the token request because PKCE binds the code.
   {
     const omittedPair = pkcePair();
     const omitted = await authorizationCode(authorizeParams(client, omittedPair.challenge));
@@ -915,8 +917,7 @@ try {
   // 6 (OAuth half). /mcp with OAuth tokens ----------------------------------------------------
 
   await assertMcpAccepted(refreshed.access_token, "OAuth access token");
-  // KNOWN DEFECT (or at least undocumented): rotating the refresh token leaves the previous
-  // access token valid until it expires.
+  // Intended: rotation leaves the previous access token valid (one-hour lifetime); no specification requires revoking it, and that would fail in-flight requests.
   await assertMcpAccepted(tokens.access_token, "access token from before refresh rotation");
   await assertMcpRejected(`Bearer ${narrowed.access_token}`, 403, "insufficient_scope", "Insufficient scope", "token without the devspace scope");
   await assertMcpRejected(undefined, 401, "invalid_token", "Missing Authorization header", "no Authorization header");
@@ -980,7 +981,8 @@ try {
   await assertMcpRejected(`Bearer ${refreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "revoked access token");
 
   // Revoking a refresh token kills it for refresh. KNOWN DEFECT: the access token issued with it
-  // stays valid, and token_type_hint is ignored.
+  // stays valid (no cascade).
+  // Intended: token_type_hint is ignored; RFC 7009 permits that, and lookup is by hash whatever the type.
   const pairForRevocation = await issueTokens(client);
   const revokeRefresh = await postForm("/revoke", { token: pairForRevocation.refresh_token, client_id: client.client_id, token_type_hint: "access_token" });
   assert.equal(revokeRefresh.status, 200);
@@ -1101,6 +1103,7 @@ try {
   assert.equal(authorizePreflight.headers.get("access-control-allow-origin"), null);
 
   // 8. Rate-limit headers -----------------------------------------------------------------------
+  // KNOWN DEFECT: two layers of limiters, whose headers overwrite each other as described below.
   // /authorize and /token each pass through DevSpace's own limiter (10/60 s and 30/60 s) and then the
   // SDK's (100/900 s and 50/900 s). Responses that reach the SDK limiter carry its headers, which
   // overwrite DevSpace's; only responses produced before it (405s, /token preflight) show

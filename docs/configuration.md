@@ -96,6 +96,10 @@ DevSpace uses a single-user OAuth approval flow.
 | `DEVSPACE_OAUTH_SCOPES` | `devspace` |
 | `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` | `chatgpt.com,localhost,127.0.0.1` |
 
+The first `DEVSPACE_OAUTH_SCOPES` entry is the scope `/mcp` requires, and it is what an authorization request that omits `scope` (or sends it empty) is granted. A redirect host outside `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` is rejected at registration with `invalid_redirect_uri`; loopback hosts are always allowed.
+
+On a plain-http `DEVSPACE_PUBLIC_BASE_URL` (local testing), the approval page's CSRF cookie is named `devspace-csrf` instead of `__Host-devspace-csrf`, because browsers accept the `__Host-` prefix only on a `Secure` cookie. See [Security](security.md#oauth-and-network-exposure).
+
 MCP clients discover metadata from:
 
 ```text
