@@ -278,8 +278,9 @@ function authorizeParams(client: RegisteredClient, challenge: string, overrides:
   };
 }
 
-function authorizeGet(params: AuthorizeParams): Promise<HttpResult> {
-  return http(`/authorize?${new URLSearchParams(definedEntries(params)).toString()}`);
+/** `repeated` is appended verbatim, to send a parameter a second time. */
+function authorizeGet(params: AuthorizeParams, repeated = ""): Promise<HttpResult> {
+  return http(`/authorize?${new URLSearchParams(definedEntries(params)).toString()}${repeated}`);
 }
 
 // The public base URL is plain http, where a `__Host-` cookie (which requires `Secure`) would be
@@ -703,8 +704,8 @@ try {
   }
 
   // Post-redirect failures are 302s to the redirect URI with error parameters.
-  async function assertErrorRedirect(params: AuthorizeParams, expected: Record<string, string | RegExp>, label: string): Promise<void> {
-    const result = await authorizeGet(params);
+  async function assertErrorRedirect(params: AuthorizeParams, expected: Record<string, string | RegExp>, label: string, repeated = ""): Promise<void> {
+    const result = await authorizeGet(params, repeated);
     assert.equal(result.status, 302, `${label}: status (body ${bodyHint(result)})`);
     assert.equal(result.headers.get("cache-control"), "no-store", `${label}: Cache-Control`);
     const location = new URL(result.headers.get("location") ?? "");
@@ -732,6 +733,10 @@ try {
   const unsupportedResponseType = { error: "unsupported_response_type", error_description: 'Only response_type "code" is supported', state: "oracle-state" };
   await assertErrorRedirect({ ...baseParams, response_type: "token" }, unsupportedResponseType, "authorize response_type=token");
   await assertErrorRedirect({ ...baseParams, response_type: "code token" }, unsupportedResponseType, "authorize response_type=code token");
+  // A repeated parameter (RFC 6749 section 3.1) is invalid_request, also for response_type, and a
+  // repeated `state` is not a usable state, so it is not echoed.
+  await assertErrorRedirect(baseParams, { error: "invalid_request", error_description: /response_type/, state: "oracle-state" }, "authorize repeated response_type", "&response_type=code");
+  await assertErrorRedirect({ ...baseParams, code_challenge: undefined }, { error: "invalid_request", error_description: /code_challenge/ }, "authorize repeated state", "&state=second");
   await assertErrorRedirect({ ...baseParams, response_type: "token", code_challenge: undefined }, unsupportedResponseType, "authorize response_type=token without code_challenge");
   // Client and redirect URI failures still answer 400 JSON and never redirect, whatever else is wrong.
   const unregisteredWithBadType = await authorizeGet({ ...baseParams, response_type: "token", redirect_uri: "http://127.0.0.1:43123/other" });

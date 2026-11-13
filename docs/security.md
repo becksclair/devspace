@@ -128,7 +128,7 @@ DevSpace is its own OAuth 2.1 authorization server, and it owns that code. The o
 
 Registration and approval rules that clients observe:
 
-- A client that registers `token_endpoint_auth_method: "none"`, or omits the method, is a public client and is issued no secret; it authenticates at `/token` and `/revoke` by `client_id` alone, and PKCE S256 is mandatory for every client. Only `client_secret_post` registrations receive a secret, which expires after 30 days.
+- A client that registers `token_endpoint_auth_method: "none"`, or omits the method, is a public client and is issued no secret; it authenticates at `/token` and `/revoke` by `client_id` alone, and PKCE S256 is mandatory for every client. A registration with any other method receives a secret, which expires after 30 days; `client_secret_post` is the only secret-based method the endpoints accept.
 - A requested `redirect_uri` must match a registered one exactly; for a loopback host (`localhost`, `127.0.0.1`, `[::1]`) only the port may differ (RFC 8252). A requested URI with a fragment or userinfo never matches. A mismatch is answered `400` and never redirects.
 - The approval page's CSRF double-submit cookie is `__Host-devspace-csrf` with `Secure` when the public base URL is https, and `devspace-csrf` without `Secure` on a plain-http base URL, where browsers would refuse the `__Host-` form. The server reads only the name for its scheme.
 - A bearer token with the static-key prefix (`obsk_`) that matches no usable static key is still tried as an OAuth access token; if both reject it, the `401` reports the static-key reason (unknown or revoked, expired, or minted for another resource).

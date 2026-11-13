@@ -143,7 +143,8 @@ export function authorizationEndpoint(provider: OAuthServerProvider, defaultScop
     const errorState = requestState(input);
     try {
       const responseType = requestParam(input, "response_type");
-      if (responseType !== undefined && responseType !== "" && responseType !== "code") {
+      // A repeated parameter arrives as an array and is left to the schema (invalid_request).
+      if (typeof responseType === "string" && responseType !== "" && responseType !== "code") {
         throw new OAuthHttpError(OAuthErrorCode.UnsupportedResponseType, "Only response_type \"code\" is supported");
       }
       const parsed = RequestParamsSchema.safeParse(input);
