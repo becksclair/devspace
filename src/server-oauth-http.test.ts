@@ -514,8 +514,8 @@ try {
     token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     scopes_supported: ["devspace", "audit"],
-    // KNOWN DEFECT: /revoke also accepts public clients ("none"), which this list omits.
-    revocation_endpoint_auth_methods_supported: ["client_secret_post"],
+    // Public clients revoke with their client_id alone, as at /token.
+    revocation_endpoint_auth_methods_supported: ["client_secret_post", "none"],
   });
 
   // Only the two documents above are served. Every other well-known variant is Express's

@@ -44,7 +44,7 @@ export function authorizationServerMetadata(options: Pick<OAuthRoutesOptions, "i
     grant_types_supported: ["authorization_code", "refresh_token"],
     scopes_supported: options.scopesSupported,
     revocation_endpoint: endpoint("/revoke"),
-    revocation_endpoint_auth_methods_supported: ["client_secret_post"],
+    revocation_endpoint_auth_methods_supported: ["client_secret_post", "none"],
     registration_endpoint: endpoint("/register"),
   };
 }
