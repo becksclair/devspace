@@ -18,7 +18,6 @@ import {
 } from "@modelcontextprotocol/ext-apps/server";
 import express from "express";
 import type { Request, Response } from "express";
-import rateLimit from "express-rate-limit";
 import * as z from "zod/v4";
 import { isCapabilityDisabled, loadConfig, parseDisabledCapabilities, type ServerConfig, type WidgetMode } from "./config.js";
 import {
@@ -1999,9 +1998,11 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
     const requestId = randomUUID();
     const startedAt = performance.now();
     res.locals.requestId = requestId;
+    // Read before routing: a mounted router (the OAuth endpoints, the discovery documents, the
+    // asset handlers) rewrites req.url to its own remainder, and "finish" can fire before it is restored.
+    const path = requestPath(req);
 
     res.on("finish", () => {
-      const path = requestPath(req);
       if (!config.logging.requests) return;
       if (!config.logging.assets && path.startsWith("/mcp-app-assets")) return;
 
@@ -2017,22 +2018,6 @@ export function createServer(config = loadConfig(), options: CreateServerOptions
 
     next();
   });
-
-  const authorizeLimiter = rateLimit({
-    windowMs: 60_000,
-    limit: 10,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "too_many_requests", error_description: "Too many authorization attempts" },
-  });
-  const tokenLimiter = rateLimit({
-    windowMs: 60_000,
-    limit: 30,
-    standardHeaders: true,
-    legacyHeaders: false,
-  });
-  app.use("/authorize", authorizeLimiter);
-  app.use("/token", tokenLimiter);
 
   app.use(
     oauthRoutes({

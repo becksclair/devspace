@@ -6,10 +6,9 @@
 // it must not import anything from `@modelcontextprotocol/*` and must not reach into the OAuth
 // provider or its stores. Static API keys are minted and revoked through the public CLI.
 //
-// Cases marked "KNOWN DEFECT" pin current behavior that deviates from the relevant RFC or is
-// otherwise questionable. They are recorded, not endorsed; a later change may fix them
-// deliberately and update the assertion in the same change. Cases marked "Intended" were reviewed
-// and kept on purpose; each says why.
+// Cases marked "Intended" were reviewed and kept on purpose; each says why. A case that pins
+// behavior deviating from the relevant RFC without such a decision would be marked "KNOWN DEFECT"
+// and fixed deliberately, updating its assertion in the same change; none remains.
 //
 // Never print tokens, authorization codes, client secrets, CSRF tokens, or the owner token.
 
@@ -514,8 +513,8 @@ try {
     token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     scopes_supported: ["devspace", "audit"],
-    // KNOWN DEFECT: /revoke also accepts public clients ("none"), which this list omits.
-    revocation_endpoint_auth_methods_supported: ["client_secret_post"],
+    // Public clients revoke with their client_id alone, as at /token.
+    revocation_endpoint_auth_methods_supported: ["client_secret_post", "none"],
   });
 
   // Only the two documents above are served. Every other well-known variant is Express's
@@ -617,6 +616,20 @@ try {
     await postJson("/register", { redirect_uris: [loopbackRedirect, "http://chatgpt.example/cb"], token_endpoint_auth_method: "none" }),
     400, "invalid_redirect_uri", "Client redirect_uri is not allowed for this DevSpace server", "register mixed redirects",
   );
+  // A redirect URI with a fragment (RFC 6749 section 3.1.2) or userinfo, which /authorize would
+  // never redirect to, is invalid_redirect_uri; one such URI rejects the whole registration.
+  for (const redirectUris of [
+    ["http://127.0.0.1:43125/cb#frag"],
+    ["http://127.0.0.1:43125/cb#"],
+    ["http://user@127.0.0.1:43126/cb"],
+    ["http://@127.0.0.1:43126/cb"],
+    ["https://user:pw@chatgpt.com/connector_platform_oauth_redirect"],
+    [loopbackRedirect, "http://127.0.0.1:43125/cb#frag"],
+  ]) {
+    const refused = await postJson("/register", { redirect_uris: redirectUris, token_endpoint_auth_method: "none" });
+    assertOAuthError(refused, 400, "invalid_redirect_uri", "Client redirect_uri must not contain a fragment or userinfo", `register ${redirectUris.join(" ")}`);
+    assert.equal(refused.headers.get("cache-control"), "no-store");
+  }
   assertOAuthError(
     await postJson("/register", { redirect_uris: ["javascript:alert(1)"] }),
     400, "invalid_client_metadata", /redirect_uris[\s\S]*javascript:, data:, or vbscript:/, "register javascript: redirect",
@@ -647,7 +660,7 @@ try {
   assert.equal(page.headers.get("content-type"), HTML_CONTENT_TYPE);
   assert.equal(page.headers.get("cache-control"), "no-store");
   assertSecurityHeaders(page, "approval page");
-  assertRateLimitHeaders(page, 100, 900, "approval page");
+  assertRateLimitHeaders(page, 10, 60, "approval page");
   // The CSRF cookie is HttpOnly, SameSite=Lax, Path=/, 600 s, and has no Secure attribute over http.
   assertSecretMatches(
     page.headers.get("set-cookie"),
@@ -687,28 +700,19 @@ try {
   assert.equal((await authorizeGet({ ...baseParams, redirect_uri: "http://127.0.0.1:50001/callback" })).status, 200);
   assert.equal((await authorizeGet({ ...baseParams, redirect_uri: undefined })).status, 200);
 
-  // Only the port is relaxed. A requested redirect_uri with a fragment or userinfo never matches,
-  // not even when it was registered verbatim: a 400 that never redirects.
-  const oddlyRegistered = await registerPublicClient(["http://127.0.0.1:43125/cb#frag", "http://user@127.0.0.1:43126/cb"]);
-  for (const [redirectUri, target] of [
-    ["http://127.0.0.1:50003/callback#frag", client],
-    ["http://127.0.0.1:43123/callback#", client],
-    ["http://user@127.0.0.1:50003/callback", client],
-    ["http://@127.0.0.1:50003/callback", client],
-    ["http://127.0.0.1:43125/cb#frag", oddlyRegistered],
-    ["http://user@127.0.0.1:43126/cb", oddlyRegistered],
-  ] as const) {
-    const rejected = await authorizeGet(authorizeParams(target, pair.challenge, { redirect_uri: redirectUri }));
+  // Only the port is relaxed. A requested redirect_uri with a fragment or userinfo never matches:
+  // a 400 that never redirects. (Registrations stored before /register refused such URIs are still
+  // refused here, verbatim or as the sole registered URI; src/oauth-endpoints.test.ts covers that,
+  // since this oracle can no longer register one.)
+  for (const redirectUri of [
+    "http://127.0.0.1:50003/callback#frag",
+    "http://127.0.0.1:43123/callback#",
+    "http://user@127.0.0.1:50003/callback",
+    "http://@127.0.0.1:50003/callback",
+  ]) {
+    const rejected = await authorizeGet(authorizeParams(client, pair.challenge, { redirect_uri: redirectUri }));
     assertOAuthError(rejected, 400, "invalid_request", "Unregistered redirect_uri", `authorize redirect_uri ${redirectUri}`);
     assert.equal(rejected.headers.get("location"), null, `authorize redirect_uri ${redirectUri}: no redirect`);
-  }
-
-  // The same holds when redirect_uri is omitted and the only registered URI is such a URI.
-  for (const registered of ["http://127.0.0.1:43127/cb#frag", "http://user@127.0.0.1:43128/cb"]) {
-    const sole = await registerPublicClient([registered]);
-    const rejected = await authorizeGet(authorizeParams(sole, pair.challenge, { redirect_uri: undefined }));
-    assertOAuthError(rejected, 400, "invalid_request", "Registered redirect_uri is not usable", `authorize with the sole registered URI ${registered}`);
-    assert.equal(rejected.headers.get("location"), null, `authorize with the sole registered URI ${registered}: no redirect`);
   }
 
   // Post-redirect failures are 302s to the redirect URI with error parameters.
@@ -800,7 +804,7 @@ try {
   const approved = await approve(baseParams, { owner_token: ownerToken, csrf_token: csrf }, csrf);
   assert.equal(approved.status, 302);
   assert.equal(approved.headers.get("cache-control"), "no-store");
-  assertRateLimitHeaders(approved, 100, 900, "approval");
+  assertRateLimitHeaders(approved, 10, 60, "approval");
   assertSecretMatches(
     approved.headers.get("set-cookie"),
     new RegExp(`^${CSRF_COOKIE}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax$`),
@@ -808,7 +812,9 @@ try {
   );
   const approvedLocation = new URL(approved.headers.get("location") ?? "");
   assert.equal(`${approvedLocation.origin}${approvedLocation.pathname}`, loopbackRedirect);
-  // Exactly `code` and `state`; KNOWN DEFECT (RFC 9207): no `iss` parameter.
+  // Exactly `code` and `state`. Intended, for now: no RFC 9207 `iss` parameter. Sending it changes
+  // which redirect URI ChatGPT uses, so it waits for an experiment with a second connector; it is a
+  // deliberate decision, not a defect to fix here.
   assert.deepEqual([...approvedLocation.searchParams.keys()], ["code", "state"]);
   assert.equal(approvedLocation.searchParams.get("state"), "oracle-state");
   const code = approvedLocation.searchParams.get("code") ?? "";
@@ -865,7 +871,7 @@ try {
 
   const exchanged = await tokenRequest(codeGrant);
   const tokens = assertTokenResponse(exchanged, "devspace audit", "authorization_code exchange");
-  assertRateLimitHeaders(exchanged, 50, 900, "token");
+  assertRateLimitHeaders(exchanged, 30, 60, "token");
   assertOAuthError(await tokenRequest(codeGrant), 400, "invalid_grant", "Invalid authorization code", "token reused code");
 
   // Intended: redirect_uri is optional at /token; OAuth 2.1 drops it from the token request because PKCE binds the code.
@@ -1003,23 +1009,47 @@ try {
   assert.deepEqual(revokeAccess.json(), {});
   await assertMcpRejected(`Bearer ${refreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "revoked access token");
 
-  // Revoking a refresh token kills it for refresh. KNOWN DEFECT: the access token issued with it
-  // stays valid (no cascade).
   // Intended: token_type_hint is ignored; RFC 7009 permits that, and lookup is by hash whatever the type.
-  const pairForRevocation = await issueTokens(client);
-  const revokeRefresh = await postForm("/revoke", { token: pairForRevocation.refresh_token, client_id: client.client_id, token_type_hint: "access_token" });
+  const refreshGrantFor = (refreshToken: string, owner: RegisteredClient) =>
+    tokenRequest({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: owner.client_id });
+
+  // Revoking an access token deletes only that token: the refresh token issued with it still refreshes.
+  {
+    const accessOnly = await issueTokens(client);
+    const revoked = await postForm("/revoke", { token: accessOnly.access_token, client_id: client.client_id, token_type_hint: "refresh_token" });
+    assert.equal(revoked.status, 200);
+    assert.deepEqual(revoked.json(), {});
+    await assertMcpRejected(`Bearer ${accessOnly.access_token}`, 401, "invalid_token", "Invalid or expired access token", "revoked access token (with a wrong hint)");
+    const recovered = assertTokenResponse(await refreshGrantFor(accessOnly.refresh_token, client), "devspace audit", "refresh after its access token was revoked");
+    await assertMcpAccepted(recovered.access_token, "access token refreshed after a revoked one");
+  }
+
+  // Another client cannot revoke this client's tokens. The answer is the same 200 `{}` as for an
+  // unknown token (RFC 7009 section 2.2), and nothing is deleted.
+  const victim = await issueTokens(client);
+  for (const [kind, token] of [["access", victim.access_token], ["refresh", victim.refresh_token]] as const) {
+    const foreign = await postForm("/revoke", { token, client_id: otherClient.client_id });
+    assert.equal(foreign.status, 200, `revoke another client's ${kind} token: status`);
+    assert.deepEqual(foreign.json(), {}, `revoke another client's ${kind} token: body`);
+  }
+  await assertMcpAccepted(victim.access_token, "access token another client tried to revoke");
+  const victimRefreshed = assertTokenResponse(await refreshGrantFor(victim.refresh_token, client), "devspace audit", "refresh token another client tried to revoke");
+
+  // Revoking a refresh token deletes it and every access token of the same client, including those
+  // of the client's other grants (tokens are not linked to their grant). The client's other refresh
+  // tokens survive and recover; other clients' tokens are untouched.
+  const otherClientTokens = await issueTokens(otherClient);
+  const secondGrant = await issueTokens(client);
+  const revokeRefresh = await postForm("/revoke", { token: victimRefreshed.refresh_token, client_id: client.client_id, token_type_hint: "access_token" });
   assert.equal(revokeRefresh.status, 200);
   assert.deepEqual(revokeRefresh.json(), {});
-  assertOAuthError(
-    await tokenRequest({ grant_type: "refresh_token", refresh_token: pairForRevocation.refresh_token, client_id: client.client_id }),
-    400, "invalid_grant", "Invalid refresh token", "refresh with revoked refresh token",
-  );
-  await assertMcpAccepted(pairForRevocation.access_token, "access token whose refresh token was revoked");
-
-  // KNOWN DEFECT: revocation does not check that the token belongs to the requesting client.
-  const revokeOtherClients = await postForm("/revoke", { token: pairForRevocation.access_token, client_id: otherClient.client_id });
-  assert.equal(revokeOtherClients.status, 200);
-  await assertMcpRejected(`Bearer ${pairForRevocation.access_token}`, 401, "invalid_token", "Invalid or expired access token", "token revoked by another client");
+  assertOAuthError(await refreshGrantFor(victimRefreshed.refresh_token, client), 400, "invalid_grant", "Invalid refresh token", "refresh with revoked refresh token");
+  await assertMcpRejected(`Bearer ${victimRefreshed.access_token}`, 401, "invalid_token", "Invalid or expired access token", "access token whose refresh token was revoked");
+  await assertMcpRejected(`Bearer ${secondGrant.access_token}`, 401, "invalid_token", "Invalid or expired access token", "access token of the same client's other grant");
+  const secondRefreshed = assertTokenResponse(await refreshGrantFor(secondGrant.refresh_token, client), "devspace audit", "the same client's other refresh token");
+  await assertMcpAccepted(secondRefreshed.access_token, "access token refreshed from the surviving grant");
+  await assertMcpAccepted(otherClientTokens.access_token, "another client's access token");
+  assertTokenResponse(await refreshGrantFor(otherClientTokens.refresh_token, otherClient), "devspace audit", "another client's refresh token");
 
   // RFC 7009: unknown tokens are not an error.
   const revokeUnknown = await postForm("/revoke", { token: "not-a-token", client_id: client.client_id });
@@ -1126,17 +1156,20 @@ try {
   assert.equal(authorizePreflight.headers.get("access-control-allow-origin"), null);
 
   // 8. Rate-limit headers -----------------------------------------------------------------------
-  // KNOWN DEFECT: two layers of limiters, whose headers overwrite each other as described below.
-  // /authorize and /token each pass through DevSpace's own limiter (10/60 s and 30/60 s) and then the
-  // SDK's (100/900 s and 50/900 s). Responses that reach the SDK limiter carry its headers, which
-  // overwrite DevSpace's; only responses produced before it (405s, /token preflight) show
-  // DevSpace's. Exhaustion is covered by src/server-rate-limit.test.ts.
-  assertRateLimitHeaders(await authorizeGet(baseParams), 100, 900, "GET /authorize");
+  // One limiter per endpoint, keyed on the client address: /authorize 10/60 s, /token 30/60 s,
+  // /register 20/3600 s, /revoke 50/900 s. It counts every request, wrong methods included, except
+  // CORS preflights, which are answered before it. Exhaustion is covered by
+  // src/server-rate-limit.test.ts.
+  assertRateLimitHeaders(await authorizeGet(baseParams), 10, 60, "GET /authorize");
   assertRateLimitHeaders(putAuthorize, 10, 60, "PUT /authorize");
-  assertRateLimitHeaders(await tokenRequest({ grant_type: "client_credentials", client_id: client.client_id }), 50, 900, "POST /token");
+  assertRateLimitHeaders(authorizePreflight, 10, 60, "OPTIONS /authorize");
+  assertRateLimitHeaders(await tokenRequest({ grant_type: "client_credentials", client_id: client.client_id }), 30, 60, "POST /token");
   assertRateLimitHeaders(getToken, 30, 60, "GET /token");
-  assertRateLimitHeaders(await preflight("/token"), 30, 60, "OPTIONS /token");
-  assertNoRateLimitHeaders(await preflight("/revoke"), "OPTIONS /revoke");
+  assertRateLimitHeaders(getRegister, 20, 3600, "GET /register");
+  assertRateLimitHeaders(await http("/revoke", { method: "GET" }), 50, 900, "GET /revoke");
+  for (const path of ["/token", "/register", "/revoke"]) {
+    assertNoRateLimitHeaders(await preflight(path), `OPTIONS ${path}`);
+  }
   assertNoRateLimitHeaders(await mcpInitialize(), "POST /mcp");
 
   // 9. The CSRF cookie on an https deployment ---------------------------------------------------

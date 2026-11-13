@@ -9,9 +9,10 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
  * Whether a redirect URI carries a fragment (RFC 6749 section 3.1.2) or userinfo, including an
- * empty one such as `http://@host/`, which the URL parser would otherwise drop silently.
+ * empty one such as `http://@host/`, which the URL parser would otherwise drop silently. Such a URI
+ * is never a redirect target, and `/register` refuses to register one.
  */
-function hasFragmentOrUserinfo(uri: string, url: URL): boolean {
+export function hasFragmentOrUserinfo(uri: string, url: URL): boolean {
   if (uri.includes("#")) return true;
   if (url.username !== "" || url.password !== "") return true;
   if (url.host === "") return false;
@@ -129,9 +130,9 @@ function errorRedirect(redirectUri: string, error: OAuthError, state: string | u
  */
 export function authorizationEndpoint(provider: OAuthServerProvider, defaultScopes: string[]): RequestHandler {
   const router = express.Router();
+  router.use(endpointRateLimit(60 * 1000, 10, "You have exceeded the rate limit for authorization requests"));
   router.use(allowedMethods(["GET", "POST"]));
   router.use(express.urlencoded({ extended: false }));
-  router.use(endpointRateLimit(15 * 60 * 1000, 100, "You have exceeded the rate limit for authorization requests"));
 
   router.all("/", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");

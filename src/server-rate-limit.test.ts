@@ -64,6 +64,25 @@ const config = {
   },
 } satisfies ServerConfig;
 
+async function assertLimited(
+  result: Response,
+  limit: number,
+  windowSeconds: number,
+  description: string,
+  cors: boolean,
+  label: string,
+): Promise<void> {
+  assert.equal(result.status, 429, `${label}: status`);
+  assert.equal(result.headers.get("content-type"), "application/json; charset=utf-8", `${label}: content-type`);
+  const retryAfter = Number(result.headers.get("retry-after"));
+  assert.ok(Number.isInteger(retryAfter) && retryAfter > 0 && retryAfter <= windowSeconds, `${label}: Retry-After ${retryAfter}`);
+  assert.equal(result.headers.get("ratelimit-policy"), `${limit};w=${windowSeconds}`, `${label}: RateLimit-Policy`);
+  assert.equal(result.headers.get("ratelimit-limit"), String(limit), `${label}: RateLimit-Limit`);
+  assert.equal(result.headers.get("ratelimit-remaining"), "0", `${label}: RateLimit-Remaining`);
+  assert.equal(result.headers.get("access-control-allow-origin"), cors ? "*" : null, `${label}: CORS`);
+  assert.deepEqual(await result.json(), { error: "too_many_requests", error_description: description }, `${label}: body`);
+}
+
 const { app } = createServer(config);
 const httpServer = app.listen(0, config.host);
 
@@ -81,7 +100,8 @@ try {
   for (let i = 0; i < 10; i++) {
     assert.notEqual((await authorize("203.0.113.1")).status, 429, `request ${i + 1} from client A must not be limited`);
   }
-  assert.equal((await authorize("203.0.113.1")).status, 429, "11th request from client A is limited");
+  const limited = await authorize("203.0.113.1");
+  await assertLimited(limited, 10, 60, "You have exceeded the rate limit for authorization requests", false, "11th request to /authorize from client A");
   assert.notEqual((await authorize("203.0.113.2")).status, 429, "client B has its own bucket");
   assert.equal(
     (await authorize("198.51.100.9, 203.0.113.1")).status,
@@ -93,6 +113,39 @@ try {
     429,
     "a trailing loopback hop is skipped: still client A's bucket (fails under trust proxy = 1)",
   );
+
+  // Every OAuth endpoint has exactly one limiter, keyed on the client address. Wrong methods are
+  // counted; CORS preflights are answered before the limiter and never counted.
+  const send = (path: string, xff: string, init: RequestInit = {}) =>
+    fetch(`${baseUrl}${path}`, { ...init, headers: { ...init.headers, "x-forwarded-for": xff }, redirect: "manual" });
+  const preflight = (path: string, xff: string) =>
+    send(path, xff, { method: "OPTIONS", headers: { origin: "https://client.example", "access-control-request-method": "POST" } });
+  for (const endpoint of [
+    { path: "/token", limit: 30, windowSeconds: 60, description: "You have exceeded the rate limit for token requests", xff: "203.0.113.11" },
+    { path: "/register", limit: 20, windowSeconds: 3600, description: "You have exceeded the rate limit for client registration requests", xff: "203.0.113.12" },
+    { path: "/revoke", limit: 50, windowSeconds: 900, description: "You have exceeded the rate limit for token revocation requests", xff: "203.0.113.13" },
+  ]) {
+    for (let i = 0; i < 3; i++) {
+      const answered = await preflight(endpoint.path, endpoint.xff);
+      assert.equal(answered.status, 204, `${endpoint.path} preflight ${i + 1}`);
+      assert.equal(answered.headers.get("ratelimit-policy"), null, `${endpoint.path} preflight ${i + 1}: not counted`);
+    }
+    for (let i = 0; i < endpoint.limit; i++) {
+      // Alternate a wrong method with an empty POST: both are counted.
+      const result = await send(endpoint.path, endpoint.xff, i % 2 === 0 ? { method: "GET" } : { method: "POST" });
+      assert.notEqual(result.status, 429, `${endpoint.path} request ${i + 1} must not be limited`);
+      assert.equal(result.headers.get("ratelimit-remaining"), String(endpoint.limit - i - 1), `${endpoint.path} request ${i + 1}: RateLimit-Remaining`);
+    }
+    await assertLimited(await send(endpoint.path, endpoint.xff, { method: "POST" }), endpoint.limit, endpoint.windowSeconds, endpoint.description, true, `${endpoint.path} over the limit`);
+    await assertLimited(await send(endpoint.path, endpoint.xff, { method: "GET" }), endpoint.limit, endpoint.windowSeconds, endpoint.description, true, `${endpoint.path} wrong method over the limit`);
+    assert.equal((await preflight(endpoint.path, endpoint.xff)).status, 204, `${endpoint.path} preflight over the limit is still answered`);
+    assert.notEqual((await send(endpoint.path, "203.0.113.99", { method: "POST" })).status, 429, `${endpoint.path}: another client has its own bucket`);
+  }
+  // /authorize has no CORS handling, so OPTIONS is a wrong method there and is counted.
+  for (let i = 0; i < 10; i++) {
+    assert.notEqual((await send("/authorize", "203.0.113.14", { method: i % 2 === 0 ? "OPTIONS" : "PUT" })).status, 429, `/authorize wrong method ${i + 1}`);
+  }
+  await assertLimited(await send("/authorize", "203.0.113.14", { method: "OPTIONS" }), 10, 60, "You have exceeded the rate limit for authorization requests", false, "/authorize wrong methods over the limit");
 
   // Failed owner approvals are capped process-wide, so rotating X-Forwarded-For
   // (a fresh per-IP bucket for every request) cannot extend password guessing.

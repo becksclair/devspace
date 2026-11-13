@@ -43,9 +43,14 @@ export function allowedMethods(allowed: string[]): RequestHandler {
 }
 
 /**
- * The per-endpoint limiter each OAuth endpoint installs after its body parser. These run inside
- * the endpoint, after DevSpace's own app-level `/authorize` and `/token` limiters, so on responses
- * that reach them their `RateLimit-*` headers replace the outer limiter's.
+ * The one rate limiter of an OAuth endpoint, keyed on the client address (`req.ip`, which honors
+ * the app's `trust proxy` setting). Each endpoint installs it first, right after its CORS handling:
+ * a preflight is answered before it and never counted, and every other request that reaches the
+ * endpoint is counted before the endpoint's own method check and body parser. The app-wide JSON
+ * parser in `createMcpApp` runs earlier still: a body it rejects (malformed or over its size limit)
+ * is answered 400 or 413 there, never reaches the endpoint and is not counted. A request over the
+ * limit that does reach the endpoint is answered 429 with a `too_many_requests` OAuth error body
+ * and `Retry-After`; every counted response carries the `RateLimit-*` headers of this limit.
  */
 export function endpointRateLimit(windowMs: number, limit: number, description: string): RequestHandler {
   return rateLimit({

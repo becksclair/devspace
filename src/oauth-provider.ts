@@ -451,9 +451,23 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     };
   }
 
-  async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
+  /**
+   * Token revocation (RFC 7009). The token is looked up by hash whatever `token_type_hint` says.
+   * An unknown token, or one issued to another client, is left alone and the caller still answers
+   * 200, so the response does not reveal whether the token exists. Revoking an access token deletes
+   * only that token. Revoking a refresh token also deletes every access token of the same client:
+   * tokens record no link to the grant they came from, so this also ends the access tokens of the
+   * client's other grants, whose refresh tokens survive and recover them.
+   */
+  async revokeToken(client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
     const hashed = hashToken(request.token);
-    this.stateStore.deleteToken(hashed);
+    const record = this.stateStore.findToken(hashed);
+    if (!record || record.clientId !== client.client_id) return;
+    if (record.tokenType === "refresh") {
+      this.stateStore.deleteRefreshTokenAndClientAccessTokens(hashed, client.client_id);
+    } else {
+      this.stateStore.deleteToken(hashed, "access");
+    }
   }
 
   private validCodeRecord(

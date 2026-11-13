@@ -96,7 +96,7 @@ DevSpace uses a single-user OAuth approval flow.
 | `DEVSPACE_OAUTH_SCOPES` | `devspace` |
 | `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` | `chatgpt.com,localhost,127.0.0.1` |
 
-The first `DEVSPACE_OAUTH_SCOPES` entry is the scope `/mcp` requires, and it is what an authorization request that omits `scope` (or sends it empty) is granted. A redirect host outside `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` is rejected at registration with `invalid_redirect_uri`; loopback hosts are always allowed.
+The first `DEVSPACE_OAUTH_SCOPES` entry is the scope `/mcp` requires, and it is what an authorization request that omits `scope` (or sends it empty) is granted. A redirect host outside `DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS` is rejected at registration with `invalid_redirect_uri`; loopback hosts are always allowed. A redirect URI with a fragment or userinfo is rejected the same way, whatever its host.
 
 On a plain-http `DEVSPACE_PUBLIC_BASE_URL` (local testing), the approval page's CSRF cookie is named `devspace-csrf` instead of `__Host-devspace-csrf`, because browsers accept the `__Host-` prefix only on a `Secure` cookie. See [Security](security.md#oauth-and-network-exposure).
 
@@ -221,7 +221,9 @@ The capability name is `t3`. Hide the tools for an instance with `DISABLED_CAPAB
 (cloudflared, Tailscale serve, a local Caddy), so the client address is the
 right-most non-loopback `X-Forwarded-For` hop. `1` trusts exactly one proxy hop
 of any address; use it when the proxy runs on another host. `0` disables proxy
-trust. Per-IP OAuth rate limits and logged client IPs follow this setting. The
+trust. Per-IP OAuth rate limits (`/authorize` 10 per minute, `/token` 30 per
+minute, `/register` 20 per hour, `/revoke` 50 per 15 minutes) and logged client
+IPs follow this setting. The
 separate process-wide cap on failed owner-password approvals (20 per 15
 minutes) does not depend on client IPs and is not configurable; see
 [Security](security.md#oauth-and-network-exposure).

@@ -368,6 +368,37 @@ try {
   assert.equal(requests[1].protocolVersionHeader, answered);
   assert.doesNotMatch(JSON.stringify(logLines), new RegExp(accessToken));
 
+  // OAuth endpoints and discovery documents are mounted routers; the request log records the path
+  // the client requested, never its query string, and the same fields as any other request.
+  const origin = new URL(endpoint).origin;
+  const oauthRequests: Array<[string, string, string]> = [
+    ["POST", "/token?code=query-value-not-logged", "/token"],
+    ["GET", "/authorize?client_id=query-value-not-logged", "/authorize"],
+    ["POST", "/register", "/register"],
+    ["POST", "/revoke", "/revoke"],
+    ["GET", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server"],
+    ["GET", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource/mcp"],
+  ];
+  for (const [method, path] of oauthRequests) {
+    const response = await fetch(`${origin}${path}`, {
+      method,
+      redirect: "manual",
+      ...(method === "POST" ? { headers: { "content-type": "application/x-www-form-urlencoded" }, body: "client_id=body-value-not-logged" } : {}),
+    });
+    await response.text();
+  }
+  const oauthLines = logLines.filter((line) => line.event === "http_request").slice(-oauthRequests.length);
+  assert.deepEqual(oauthLines.map((line) => [line.method, line.path]), oauthRequests.map(([method, , logged]) => [method, logged]));
+  for (const line of oauthLines) {
+    const expected = ["durationMs", "event", "host", "ip", "level", "method", "path", "requestId", "status", "ts", "userAgent"];
+    if (line.method === "POST") expected.push("contentLength");
+    assert.deepEqual(Object.keys(line).sort(), expected.sort(), `${line.method} ${line.path}: fields`);
+    assert.equal(line.level, "info");
+    assert.equal(line.ip, "127.0.0.1");
+    assert.equal(typeof line.status, "number");
+  }
+  assert.doesNotMatch(JSON.stringify(logLines), /value-not-logged/);
+
   await fetch(endpoint, {
     method: "DELETE",
     headers: { authorization: `Bearer ${accessToken}`, "mcp-session-id": sessionId, "mcp-protocol-version": answered },

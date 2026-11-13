@@ -3,8 +3,8 @@
 // DevSpace owns this code. The endpoint behavior was ported from the OAuth authorization-server
 // helpers of the MCP TypeScript SDK (`@modelcontextprotocol/sdk` 1.x, frozen as
 // `@modelcontextprotocol/server-legacy` 2.4.0; Copyright Anthropic, PBC; MIT, being relicensed
-// to Apache-2.0), which is no longer maintained. The wire behavior, including its known defects,
-// is pinned by `src/server-oauth-http.test.ts`.
+// to Apache-2.0), which is no longer maintained. The wire behavior is pinned by
+// `src/server-oauth-http.test.ts`.
 //
 // The resource-server half is not here: the discovery documents are served by the SDK's
 // maintained `mcpAuthMetadataRouter`, and `/mcp` uses its `requireBearerAuth` (see server.ts).
@@ -44,7 +44,7 @@ export function authorizationServerMetadata(options: Pick<OAuthRoutesOptions, "i
     grant_types_supported: ["authorization_code", "refresh_token"],
     scopes_supported: options.scopesSupported,
     revocation_endpoint: endpoint("/revoke"),
-    revocation_endpoint_auth_methods_supported: ["client_secret_post"],
+    revocation_endpoint_auth_methods_supported: ["client_secret_post", "none"],
     registration_endpoint: endpoint("/register"),
   };
 }
