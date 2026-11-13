@@ -36,9 +36,13 @@ body {
   padding: 1px;
 }
 
+/* The card clips its content to its rounded padding edge. Without that, a square body background
+   (`.tool-body`, `.review-summary`) or the header's hover background paints over the border's
+   corner arcs and out to the frame's clip. */
 .empty,
 .tool-card {
   width: 100%;
+  overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--color-border-primary, #3a3a40) 86%, transparent);
   border-radius: calc(var(--border-radius-lg, 8px) - 1px);
   background: color-mix(in srgb, var(--color-background-secondary, #28282d) 92%, transparent);
@@ -481,10 +485,6 @@ body {
 
 .review-header.has-machine > .machine-badge {
   justify-self: end;
-}
-
-.activity-card {
-  overflow: hidden;
 }
 
 .activity-feed {
