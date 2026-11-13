@@ -15,6 +15,7 @@ import type { AuthorizationParams, OAuthServerProvider } from "./oauth/provider.
 import { oauthRoutes } from "./oauth/routes.js";
 import { constantTimeEqual, pkceS256Matches } from "./oauth/secrets.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
+import { staticKeyFirstVerifier } from "./static-key-provider.js";
 
 // --- Pure helpers -------------------------------------------------------------------------------
 
@@ -332,8 +333,82 @@ try {
   }), (_req, res) => {
     res.json({ ok: true });
   });
+  // The static-key-first verifier used by /mcp, over fake verifiers.
+  const verified = (clientId: string) => ({ token: "t", clientId, scopes: ["devspace"], expiresAt: nowSeconds + 3600 });
+  const invalid = (description: string) => async (): Promise<never> => {
+    throw new OAuthHttpError(OAuthErrorCode.InvalidToken, description);
+  };
+  const crash = (message: string) => async (): Promise<never> => {
+    throw new Error(message);
+  };
+  const oauthCalls: string[] = [];
+  const staticKeys = {
+    rejecting: { verifyAccessToken: invalid("Invalid or expired static API key") },
+    crashing: { verifyAccessToken: crash("static key store unavailable") },
+    failingOtherwise: { verifyAccessToken: async (): Promise<never> => { throw new OAuthHttpError(OAuthErrorCode.ServerError, "static key store unavailable"); } },
+  };
+  const oauthVerifiers = {
+    rejecting: { verifyAccessToken: async (token: string) => { oauthCalls.push(token); return invalid("Invalid or expired access token")(); } },
+    accepting: { verifyAccessToken: async (token: string) => { oauthCalls.push(token); return verified("oauth-client"); } },
+    crashing: { verifyAccessToken: async (token: string) => { oauthCalls.push(token); return crash("oauth store unavailable")(); } },
+  };
+  const composite = (path: string, staticVerifier: { verifyAccessToken(token: string): Promise<never> }, oauthVerifier: { verifyAccessToken(token: string): Promise<ReturnType<typeof verified>> }) => {
+    bearerApp.get(path, requireBearerAuth({
+      verifier: staticKeyFirstVerifier(staticVerifier, oauthVerifier),
+      requiredScopes: ["devspace"],
+      resourceMetadataUrl: metadataUrl,
+    }), (req, res) => {
+      res.json({ clientId: req.auth?.clientId });
+    });
+  };
+  composite("/both-reject", staticKeys.rejecting, oauthVerifiers.rejecting);
+  composite("/oauth-accepts", staticKeys.rejecting, oauthVerifiers.accepting);
+  composite("/static-crashes", staticKeys.crashing, oauthVerifiers.accepting);
+  composite("/static-fails-otherwise", staticKeys.failingOtherwise, oauthVerifiers.accepting);
+  composite("/oauth-crashes", staticKeys.rejecting, oauthVerifiers.crashing);
+  composite("/unprefixed", staticKeys.crashing, oauthVerifiers.rejecting);
+
   const bearer = await listen(bearerApp);
   try {
+    const get = (path: string, token: string) => fetch(`${bearer.origin}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    const staticToken = "obsk_fake";
+
+    // Both reject: a 401 that reports the static-key reason, after the OAuth verifier was tried.
+    oauthCalls.length = 0;
+    const bothReject = await get("/both-reject", staticToken);
+    assert.equal(bothReject.status, 401);
+    assert.equal(
+      bothReject.headers.get("www-authenticate"),
+      `Bearer error="invalid_token", error_description="Invalid or expired static API key", scope="devspace", resource_metadata="${metadataUrl}"`,
+    );
+    assert.deepEqual(await bothReject.json(), { error: "invalid_token", error_description: "Invalid or expired static API key" });
+    assert.equal(oauthCalls.length, 1, "the OAuth verifier is still tried");
+
+    // A prefixed token the OAuth verifier accepts is accepted.
+    assert.deepEqual(await (await get("/oauth-accepts", staticToken)).json(), { clientId: "oauth-client" });
+
+    // A static-key failure that is not invalid_token propagates as a 500 without trying OAuth.
+    oauthCalls.length = 0;
+    const staticCrash = await get("/static-crashes", staticToken);
+    assert.equal(staticCrash.status, 500);
+    assert.equal(staticCrash.headers.get("www-authenticate"), null);
+    const staticServerError = await get("/static-fails-otherwise", staticToken);
+    assert.equal(staticServerError.status, 500);
+    assert.equal(staticServerError.headers.get("www-authenticate"), null);
+    assert.equal(oauthCalls.length, 0, "OAuth is not consulted after a non-invalid_token failure");
+
+    // An OAuth failure that is not invalid_token propagates as a 500.
+    const oauthCrash = await get("/oauth-crashes", staticToken);
+    assert.equal(oauthCrash.status, 500);
+    assert.equal(oauthCrash.headers.get("www-authenticate"), null);
+
+    // A token without the prefix goes to the OAuth verifier alone, and reports its message.
+    oauthCalls.length = 0;
+    const unprefixed = await get("/unprefixed", "not-a-static-key");
+    assert.equal(unprefixed.status, 401);
+    assert.deepEqual(await unprefixed.json(), { error: "invalid_token", error_description: "Invalid or expired access token" });
+    assert.equal(oauthCalls.length, 1);
+
     const rejected = await fetch(`${bearer.origin}/provider`, { headers: { authorization: "Bearer unknown" } });
     assert.equal(rejected.status, 401);
     assert.equal(

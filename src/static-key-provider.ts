@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { OAuthErrorCode, OAuthHttpError } from "./oauth/errors.js";
 import type { OAuthTokenVerifier } from "./oauth/provider.js";
-import type { AuthInfo } from "@modelcontextprotocol/server";
+import { OAuthError, type AuthInfo } from "@modelcontextprotocol/server";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 
-const KEY_PREFIX = "obsk_";
+/** Every raw static API key starts with this prefix. */
+export const STATIC_KEY_PREFIX = "obsk_";
 const KEY_RANDOM_BYTES = 32;
 export const DEFAULT_KEY_TTL_SECONDS = 365 * 24 * 60 * 60;
 
@@ -66,8 +67,8 @@ export class StaticKeyStore {
     subject: string,
     options: MintApiKeyOptions & { scopes: string[] },
   ): MintedApiKey {
-    const keyId = options.keyId ?? `${KEY_PREFIX}${randomBytes(16).toString("hex")}`;
-    const rawKey = `${KEY_PREFIX}${randomBytes(KEY_RANDOM_BYTES).toString("base64url")}`;
+    const keyId = options.keyId ?? `${STATIC_KEY_PREFIX}${randomBytes(16).toString("hex")}`;
+    const rawKey = `${STATIC_KEY_PREFIX}${randomBytes(KEY_RANDOM_BYTES).toString("base64url")}`;
     const keyHash = hashKey(rawKey);
     const now = Math.floor(Date.now() / 1000);
     const expiresAt = now + (options.ttlSeconds ?? DEFAULT_KEY_TTL_SECONDS);
@@ -163,6 +164,36 @@ export class StaticKeyVerifier implements OAuthTokenVerifier {
       extra: { subject: record.subject, authMethod: "static-key" },
     };
   }
+}
+
+function isInvalidTokenError(error: unknown): boolean {
+  return error instanceof OAuthError && error.code === OAuthErrorCode.InvalidToken;
+}
+
+/**
+ * The `/mcp` bearer verifier. A token with the static-key prefix is checked as a static key first
+ * and then as an OAuth access token; when both reject it as `invalid_token`, the static-key
+ * verifier's message is reported, since that is what the caller presented. Any other failure
+ * propagates unchanged (the bearer middleware answers it with a 500). Tokens without the prefix go
+ * to the OAuth verifier alone: no static key can have that hash.
+ */
+export function staticKeyFirstVerifier(staticKeys: OAuthTokenVerifier, oauth: OAuthTokenVerifier): OAuthTokenVerifier {
+  return {
+    async verifyAccessToken(token: string): Promise<AuthInfo> {
+      if (!token.startsWith(STATIC_KEY_PREFIX)) return oauth.verifyAccessToken(token);
+      try {
+        return await staticKeys.verifyAccessToken(token);
+      } catch (staticError) {
+        if (!isInvalidTokenError(staticError)) throw staticError;
+        try {
+          return await oauth.verifyAccessToken(token);
+        } catch (oauthError) {
+          if (!isInvalidTokenError(oauthError)) throw oauthError;
+          throw staticError;
+        }
+      }
+    },
+  };
 }
 
 export async function mintApiKey(

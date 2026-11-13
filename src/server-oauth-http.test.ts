@@ -1009,20 +1009,21 @@ try {
   const auditOnlyKey = mintStaticKey({ scope: "audit" });
   await assertMcpRejected(`Bearer ${auditOnlyKey.raw_key}`, 403, "insufficient_scope", "Insufficient scope", "static key without the devspace scope");
 
-  // Every static-key failure falls through to the OAuth verifier, so it reports the OAuth message.
+  // A rejected static key is still tried as an OAuth access token, but the challenge reports the
+  // static-key verifier's reason.
   const foreignKey = mintStaticKey({ publicBaseUrl: "https://other.example" });
   assert.equal(foreignKey.resource, "https://other.example/mcp");
-  await assertMcpRejected(`Bearer ${foreignKey.raw_key}`, 401, "invalid_token", "Invalid or expired access token", "static key for another resource");
-  await assertMcpRejected(`Bearer obsk_${randomBytes(32).toString("base64url")}`, 401, "invalid_token", "Invalid or expired access token", "unknown static key");
+  await assertMcpRejected(`Bearer ${foreignKey.raw_key}`, 401, "invalid_token", "Static API key is not valid for this resource", "static key for another resource");
+  await assertMcpRejected(`Bearer obsk_${randomBytes(32).toString("base64url")}`, 401, "invalid_token", "Invalid or expired static API key", "unknown static key");
 
   const revokedKey = mintStaticKey();
   await assertMcpAccepted(revokedKey.raw_key, "static key before revocation");
   runCli(["revoke-key", "--key-id", revokedKey.key_id]);
-  await assertMcpRejected(`Bearer ${revokedKey.raw_key}`, 401, "invalid_token", "Invalid or expired access token", "revoked static key");
+  await assertMcpRejected(`Bearer ${revokedKey.raw_key}`, 401, "invalid_token", "Invalid or expired static API key", "revoked static key");
 
   const waitMs = (shortLivedKey.expires_at + 1) * 1000 - Date.now();
   if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs + 50));
-  await assertMcpRejected(`Bearer ${shortLivedKey.raw_key}`, 401, "invalid_token", "Invalid or expired access token", "expired static key");
+  await assertMcpRejected(`Bearer ${shortLivedKey.raw_key}`, 401, "invalid_token", "Static API key has expired", "expired static key");
 
   // 7. Method handling and CORS preflight -----------------------------------------------------
 
