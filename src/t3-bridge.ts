@@ -108,18 +108,30 @@ const IDEMPOTENT_READ_TOOLS = new Set([
   "t3_environment_links",
 ]);
 /**
- * Writes that set a thread or project to the given values, so repeating one leaves the same state.
- * `unlink_pull_requests` is left out: its result is the only record of which pull requests matched
- * the states, and a repeat would report none.
+ * Writes that set a thread or project to the given values, so repeating one leaves the same state
+ * unless another session changed it between the two attempts. Left out:
+ * - `unlink_pull_requests`: its result is the only record of which pull requests matched the
+ *   states, and a repeat would report none.
+ * - `watch_pull_request` and `unwatch_pull_request`: a watch is a trigger that starts agent turns,
+ *   and a repeat could restore one that another session removed in between (or remove one it set).
  */
-const REPEATABLE_WRITE_TOOLS = new Set([
-  "t3_project_update",
-  "t3_thread_configure",
-  "link_pull_requests",
-  "unlink_pull_request",
-  "watch_pull_request",
-  "unwatch_pull_request",
-]);
+const REPEATABLE_WRITE_TOOLS = new Set(["t3_project_update", "t3_thread_configure", "link_pull_requests", "unlink_pull_request"]);
+/** T3's hint for a thread it cannot find: it tells the caller to pass `environmentId`, which is refused here. */
+const T3_OTHER_ENVIRONMENT_HINT = /\s*Thread ids belong to one environment:[^.]*\./g;
+/** What replaces it. It sits inside T3's failure JSON as well, so it must stay free of quotes and backslashes. */
+const LOCAL_THREAD_HINT =
+  " These tools reach only the T3 Code of the machine DevSpace runs on; find the thread with t3_thread_search or t3_thread_list.";
+/**
+ * A repository key the watch scope can use: `host/owner/name`. When T3 cannot parse a remote, its
+ * key is the remote URL itself, credentials and all; such a key matches no pull request and must
+ * not be printed.
+ */
+const REPOSITORY_KEY = /^[a-z0-9.-]+(?::\d+)?(?:\/[^\s/@:?#]+)+$/;
+/**
+ * Path of a pull request below its repository on GitHub, GitLab, Bitbucket, Forgejo, and Azure
+ * DevOps. Only GitLab puts `/-/` before it; T3 reads `/o/r/-/pulls/1` as repository `o/r/-`.
+ */
+const PULL_REQUEST_PATH = /^\/(?:pull|pulls|-\/merge_requests|pull-requests|pullrequest)\/\d+\/?$/;
 const WORKTREE_LIST_DEFAULT_LIMIT = 50;
 /**
  * Fields the project create and update tools forward. T3's other project settings cannot be
@@ -280,7 +292,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Watch a pull request for a T3 thread",
     readOnly: false,
     summary:
-      "Have a T3 Code thread (`threadId`) watch an open pull request, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. A merged PR is refused. The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, or merge conflicts, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
+      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other); a merged PR is refused. The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, or merge conflicts, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
     ownDescription: true,
   },
   unwatch_pull_request: {
@@ -838,6 +850,8 @@ export class T3Bridge {
   /** When the last blocking catalog load failed or timed out. */
   private catalogFailedAt?: number;
   private projectTitles = new Map<string, string>();
+  /** Counts writes to `projectTitles`, so a slow project read does not overwrite a newer title. */
+  private projectTitlesRevision = 0;
   private projectLoad?: Promise<void>;
   /** Project ids a reload did not find, with the reload time (negative cache). */
   private projectMisses = new Map<string, number>();
@@ -880,7 +894,10 @@ export class T3Bridge {
     return T3_TOOL_NAMES.map((name) => this.definition(name));
   }
 
-  /** Never throws: failures are `isError` results; T3's own `isError` results pass through unchanged. */
+  /**
+   * Never throws: failures are `isError` results. T3's own `isError` results pass through, except
+   * that its advice to reach a thread through `environmentId` is replaced (`withLocalThreadHint`).
+   */
   async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
     try {
       const input = isRecord(args) ? args : {};
@@ -888,52 +905,67 @@ export class T3Bridge {
       // The bridge acts on its own machine only. Dropping the field would run the call here while
       // the caller believes it ran on the machine it named.
       if (input.environmentId !== undefined && input.environmentId !== null) return errorResult(T3_ENVIRONMENT_REJECTED_MESSAGE);
-      if (name === T3_INBOX_TOOL) return await this.inbox(input, signal);
-      const shaped = shapeArguments(name, input);
-      if (typeof shaped === "string") return errorResult(shaped);
-      switch (name) {
-        case "t3_thread_read":
-          return await this.readThread(shaped, signal);
-        case "t3_project_list":
-        case "t3_thread_list":
-        case "t3_thread_search":
-          return jsonResult(await this.compactListing(name, await this.invokeData(name, name, shaped, signal)));
-        case "orchestrator_capabilities":
-          return jsonResult(compactCapabilities(await this.invokeData(name, name, shaped, signal)));
-        case "schedule_task":
-        case "list_scheduled_tasks":
-          return withoutWebhookSecrets(await this.invoke(name, name, shaped, signal));
-        case "t3_environment_links": {
-          // T3 also returns `notListed`, which tells an agent inside a thread to call a linking tool
-          // that is not exposed here.
-          const data = await this.invokeData(name, name, shaped, signal);
-          return jsonResult({ environmentId: data.environmentId ?? null, links: records(data.links) });
-        }
-        case "t3_project_create":
-        case "t3_project_update":
-        case "t3_project_read": {
-          // Keep the project titles shown in thread rows current after a create, rename, or read.
-          const result = await this.invoke(name, name, shaped, signal);
-          if (result.isError) return result;
-          const project = resultRecord(result);
-          rememberProject(this.projectTitles, project);
-          if (typeof project.id === "string") this.projectMisses.delete(project.id);
-          return isRecord(project.repositoryIdentity) ? jsonResult(withoutRemoteCredentials(project)) : result;
-        }
-        case "link_pull_requests": {
-          // For a subagent thread T3 adds `next`, an instruction to the agent inside that thread.
-          const result = await this.invoke(name, name, shaped, signal);
-          const data = result.isError ? {} : resultRecord(result);
-          return "next" in data ? jsonResult(omit(data, ["next"])) : result;
-        }
-        default:
-          return await this.invoke(name, name, shaped, signal);
-      }
+      return withLocalThreadHint(await this.route(name, input, signal));
     } catch (error) {
-      if (error instanceof T3ToolError) return error.result;
+      if (error instanceof T3ToolError) return withLocalThreadHint(error.result);
       if (error instanceof T3CallError) return errorResult(error.message);
       this.log("warn", "t3_bridge_call_failed", { tool: name, error: error instanceof Error ? error.name : "unknown" });
       return errorResult(sentFailureMessage(name));
+    }
+  }
+
+  private async route(name: string, input: Args, signal?: AbortSignal): Promise<CallToolResult> {
+    if (name === T3_INBOX_TOOL) return await this.inbox(input, signal);
+    const shaped = shapeArguments(name, input);
+    if (typeof shaped === "string") return errorResult(shaped);
+    switch (name) {
+      case "t3_thread_read":
+        return await this.readThread(shaped, signal);
+      case "t3_project_list":
+      case "t3_thread_list":
+      case "t3_thread_search":
+        return jsonResult(await this.compactListing(name, await this.invokeData(name, name, shaped, signal)));
+      case "orchestrator_capabilities":
+        return jsonResult(compactCapabilities(await this.invokeData(name, name, shaped, signal)));
+      case "schedule_task":
+      case "list_scheduled_tasks":
+        return withoutWebhookSecrets(await this.invoke(name, name, shaped, signal));
+      case "t3_environment_links": {
+        // T3 also returns `notListed`, which tells an agent inside a thread to call a linking tool
+        // that is not exposed here.
+        const data = await this.invokeData(name, name, shaped, signal);
+        return jsonResult({ environmentId: data.environmentId ?? null, links: records(data.links) });
+      }
+      case "t3_project_create":
+      case "t3_project_update":
+      case "t3_project_read": {
+        // Keep the project titles shown in thread rows current after a create, rename, or read.
+        const revision = this.projectTitlesRevision;
+        const result = await this.invoke(name, name, shaped, signal);
+        if (result.isError) return result;
+        const project = resultRecord(result);
+        // A read answers with the title it saw when it ran. If the cache was written while the
+        // read was in flight (a rename finished first), its title may be the older one.
+        const stale = name === "t3_project_read" && revision !== this.projectTitlesRevision && this.projectTitles.has(String(project.id));
+        if (!stale) {
+          rememberProject(this.projectTitles, project);
+          this.projectTitlesRevision += 1;
+        }
+        if (typeof project.id === "string") this.projectMisses.delete(project.id);
+        return isRecord(project.repositoryIdentity) ? jsonResult(withoutRemoteCredentials(project)) : result;
+      }
+      case "watch_pull_request": {
+        const refusal = await this.watchRefusal(shaped, signal);
+        return refusal === undefined ? await this.invoke(name, name, watchArguments(shaped), signal) : errorResult(refusal);
+      }
+      case "link_pull_requests": {
+        // For a subagent thread T3 adds `next`, an instruction to the agent inside that thread.
+        const result = await this.invoke(name, name, shaped, signal);
+        const data = result.isError ? {} : resultRecord(result);
+        return "next" in data ? jsonResult(omit(data, ["next"])) : result;
+      }
+      default:
+        return await this.invoke(name, name, shaped, signal);
     }
   }
 
@@ -1286,27 +1318,33 @@ export class T3Bridge {
   private loadProjects(): Promise<void> {
     this.projectLoad ??= (async () => {
       const titles = new Map<string, string>();
-      let cursor: unknown;
-      for (let page = 0; page < PROJECT_MAX_PAGES; page++) {
-        const data = await this.invokeData("t3_project_list", "t3_project_list", {
-          limit: 100,
-          ...(typeof cursor === "number" ? { cursor } : {}),
-        });
-        for (const row of records(data.projects)) rememberProject(titles, row);
-        cursor = data.nextCursor;
-        if (typeof cursor !== "number") break;
+      for await (const rows of this.projectPages("t3_project_list")) {
+        for (const row of rows) rememberProject(titles, row);
       }
       this.projectTitles = titles;
+      this.projectTitlesRevision += 1;
     })().finally(() => {
       this.projectLoad = undefined;
     });
     return this.projectLoad;
   }
 
+  /** T3's project rows, 100 to a page, for at most `PROJECT_MAX_PAGES` pages. */
+  private async *projectPages(label: string, signal?: AbortSignal): AsyncGenerator<Args[]> {
+    let cursor: unknown;
+    for (let page = 0; page < PROJECT_MAX_PAGES; page++) {
+      const data = await this.invokeData(label, "t3_project_list", { limit: 100, ...(typeof cursor === "number" ? { cursor } : {}) }, signal);
+      yield records(data.projects);
+      cursor = data.nextCursor;
+      if (typeof cursor !== "number") return;
+    }
+  }
+
   private async compactListing(name: string, data: Args): Promise<Record<string, unknown>> {
     if (name === "t3_project_list") {
       const rows = records(data.projects);
       for (const row of rows) rememberProject(this.projectTitles, row);
+      this.projectTitlesRevision += 1;
       return {
         projects: rows.map((row) => ({ projectId: row.id ?? row.projectId, title: row.title, workspaceRoot: row.workspaceRoot })),
         nextCursor: data.nextCursor ?? null,
@@ -1340,6 +1378,51 @@ export class T3Bridge {
         link: row.link,
       })),
     };
+  }
+
+  // -- pull-request watches --------------------------------------------------------------------
+
+  /**
+   * Why a watch is refused, or undefined when the pull request is in the repository of the thread's
+   * project. A watch has T3 start turns for the thread's agent on pull-request activity, comments
+   * included, so this tool arms one only for the repository the thread already works in. That
+   * keeps a client from subscribing a thread to an unrelated pull request directly or by mistake.
+   * It is a guardrail on this tool, not a boundary: a client can still ask the thread's agent to
+   * watch anything with T3's own tool (see docs/security.md).
+   */
+  private async watchRefusal(args: Args, signal?: AbortSignal): Promise<string | undefined> {
+    const label = "watch_pull_request";
+    const detail = await this.invokeData(label, "t3_thread_read", { threadId: args.threadId, limit: 1, maxCharsPerItem: 1 }, signal);
+    const projectId = isRecord(detail.thread) ? detail.thread.projectId : undefined;
+    const keys = nonEmptyString(projectId) ? await this.repositoryKeys(label, projectId, signal) : [];
+    if (keys.length === 0) {
+      return "watch_pull_request watches only pull requests of the thread's own repository, and this thread's project has no recognised git remote. Use link_pull_requests to track a pull request without a watch.";
+    }
+    const target = watchedRepository(args, keys[0]!);
+    // Without a target T3 answers with its own message and watches nothing.
+    if (target === null || (target !== undefined && keys.includes(target))) return undefined;
+    return `watch_pull_request watches only pull requests of the thread's own repository (${keys.join(" or ")}), and this one is not in it. A watch lets anyone who can comment on the pull request start turns for the thread's agent. Use link_pull_requests to track it without a watch.`;
+  }
+
+  /**
+   * `host/owner/name` keys of a project's repository, lower-cased: its primary remote and, for a
+   * fork, its origin. T3 resolves the identity when it lists projects, so a project read that has
+   * none yet falls back to the list.
+   */
+  private async repositoryKeys(label: string, projectId: string, signal?: AbortSignal): Promise<string[]> {
+    let identity = (await this.invokeData(label, "t3_project_read", { projectId }, signal)).repositoryIdentity;
+    if (!isRecord(identity)) {
+      for await (const rows of this.projectPages(label, signal)) {
+        const row = rows.find((project) => project.id === projectId);
+        if (!row) continue;
+        identity = row.repositoryIdentity;
+        break;
+      }
+    }
+    if (!isRecord(identity)) return [];
+    const origin = isRecord(identity.origin) ? identity.origin.canonicalKey : undefined;
+    const keys = [identity.canonicalKey, origin].filter(nonEmptyString).map((key) => key.toLowerCase());
+    return [...new Set(keys.filter((key) => REPOSITORY_KEY.test(key)))];
   }
 
   // -- reading ---------------------------------------------------------------------------------
@@ -1975,6 +2058,49 @@ function definedOnly(value: Args): Args {
   return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined));
 }
 
+/** T3's failure with its advice to pass `environmentId` replaced by what an outside caller can do. */
+function withLocalThreadHint(result: CallToolResult): CallToolResult {
+  if (!result.isError) return result;
+  let changed = false;
+  const content = result.content.map((block) => {
+    if (block.type !== "text") return block;
+    const text = block.text.replace(T3_OTHER_ENVIRONMENT_HINT, LOCAL_THREAD_HINT);
+    changed ||= text !== block.text;
+    return { ...block, text };
+  });
+  return changed ? { ...result, content } : result;
+}
+
+/**
+ * The `host/owner/name` key of the repository a watch names, lower-cased; null when the call names
+ * no pull request, and undefined when its `url` is not a plain pull-request URL. `defaultKey`
+ * supplies the host when `repository` comes without one, as T3 takes it from the thread's project.
+ */
+function watchedRepository(args: Args, defaultKey: string): string | null | undefined {
+  if (nonEmptyString(args.url)) {
+    const raw = args.url.trim();
+    const url = URL.parse(raw);
+    // T3 parses the URL itself, so it must be one both parsers read the same way: no credentials,
+    // query, fragment, encoded separator, or dot segment, and nothing after the pull-request path.
+    if (!url || url.protocol !== "https:" || /%2f|%5c|\\/i.test(raw)) return undefined;
+    if (raw.toLowerCase() !== `https://${url.host}${url.pathname}`.toLowerCase()) return undefined;
+    const segments = url.pathname.split("/");
+    // The first split that leaves a pull-request path, so GitLab's `/-/merge_requests/1` is taken whole.
+    for (let split = 2; split < segments.length; split++) {
+      if (PULL_REQUEST_PATH.test(`/${segments.slice(split).join("/")}`)) return `${url.host}${segments.slice(0, split).join("/")}`.toLowerCase();
+    }
+    return undefined;
+  }
+  if (!nonEmptyString(args.repository) || args.number === undefined) return null;
+  const host = nonEmptyString(args.host) ? args.host.trim() : defaultKey.slice(0, defaultKey.indexOf("/"));
+  return `${host}/${args.repository.trim()}`.toLowerCase();
+}
+
+/** Only the thread and one way of naming the pull request, so T3 cannot read a second target. */
+function watchArguments(args: Args): Args {
+  return pick(args, nonEmptyString(args.url) ? ["threadId", "url"] : ["threadId", "repository", "number", "host"]);
+}
+
 /**
  * A project record whose git remote URLs carry no credential. T3 stores `git remote -v` output as
  * `repositoryIdentity…remoteUrl`, so a remote such as `https://user:token@host/o/r.git` would
@@ -1982,7 +2108,8 @@ function definedOnly(value: Args): Args {
  */
 function withoutRemoteCredentials(project: Args): Args {
   const scrub = (value: unknown, key?: string): unknown => {
-    if (typeof value === "string") return key === "remoteUrl" ? urlWithoutCredentials(value) : value;
+    // T3's key for a remote it cannot parse is the remote URL itself.
+    if (typeof value === "string") return key === "remoteUrl" || key === "canonicalKey" ? urlWithoutCredentials(value) : value;
     if (Array.isArray(value)) return value.map((entry) => scrub(entry));
     if (!isRecord(value)) return value;
     return Object.fromEntries(Object.entries(value).map(([field, entry]) => [field, scrub(entry, field)]));

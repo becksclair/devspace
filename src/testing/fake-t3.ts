@@ -81,8 +81,13 @@ interface ProjectRecord {
   updatedAt: string;
   /** Local branches besides `main`, for `t3_worktree_list` in a project that is a repository. */
   branches: string[];
-  /** `git remote -v` URL of `origin`, exactly as T3 stores it (credentials included). */
+  /** `git remote -v` URL of the primary remote, exactly as T3 stores it (credentials included). */
   remoteUrl: string | null;
+  /** The fork's own remote when the primary remote is its upstream. */
+  originUrl: string | null;
+  /** T3 resolves a project's repository identity when it lists projects; a read before that has none. */
+  identityResolved: boolean;
+  unparsedRemote: boolean;
 }
 
 type PullRequestState = "open" | "closed" | "merged";
@@ -639,17 +644,24 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** T3's identity of a GitHub checkout: the remote URL is stored as `git remote -v` prints it. */
-function repositoryIdentity(remoteUrl: string, rootPath: string): JsonObject {
-  const [owner = "owner", name = "repository"] = remoteUrl.replace(/\.git$/, "").split(/[/:]/).slice(-2);
+/**
+ * T3's identity of a GitHub checkout: the remote URL is stored as `git remote -v` prints it and
+ * the key is lower-cased. With `originUrl` the primary remote is the upstream of a fork.
+ */
+function repositoryIdentity(remoteUrl: string, rootPath: string, originUrl: string | null = null): JsonObject {
+  const ownerAndName = (url: string): string => url.replace(/\.git$/, "").split(/[/:]/).slice(-2).join("/");
+  const [owner = "owner", name = "repository"] = ownerAndName(remoteUrl).split("/");
   return {
-    canonicalKey: `github.com/${owner}/${name}`,
-    locator: { source: "git-remote", remoteName: "origin", remoteUrl },
+    canonicalKey: `github.com/${owner}/${name}`.toLowerCase(),
+    locator: { source: "git-remote", remoteName: originUrl === null ? "origin" : "upstream", remoteUrl },
     rootPath,
     displayName: `${owner}/${name}`,
     provider: "github",
     owner,
     name,
+    ...(originUrl === null
+      ? {}
+      : { origin: { canonicalKey: `github.com/${ownerAndName(originUrl)}`.toLowerCase(), remoteUrl: originUrl, displayName: ownerAndName(originUrl) } }),
   };
 }
 
@@ -757,6 +769,9 @@ export class FakeT3 {
   private readonly mcpSessions = new Map<string, McpSessionEntry>();
   private readonly requestSockets = new Map<string, Socket>();
   private readonly drops = new Map<string, number>();
+  private readonly delays = new Map<string, number>();
+  /** Folders `t3_project_clone` filled, with the remote each was cloned from. */
+  private readonly clones = new Map<string, string>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly threads = new Map<string, ThreadRecord>();
   /** Threads removed with their project; reading one is `thread_not_found`. */
@@ -860,14 +875,21 @@ export class FakeT3 {
     git?: boolean;
     /** Local branches besides `main`; only listed when the project is a repository. */
     branches?: string[];
-    /** Origin URL for `repositoryIdentity`; T3 keeps it as git prints it, credentials included. */
+    /** Primary remote URL for `repositoryIdentity`; T3 keeps it as git prints it, credentials included. */
     remoteUrl?: string;
+    /** With `remoteUrl` as the upstream: the fork's own remote (`repositoryIdentity.origin`). */
+    originUrl?: string;
+    /** A remote T3 cannot parse: its `canonicalKey` is then the lower-cased remote URL itself. */
+    unparsedRemote?: boolean;
   }): { projectId: string } {
     const id = randomUUID();
     const project = this.newProject(id, input.title, input.workspaceRoot ?? join(this.tempDir, "projects", slug(input.title)));
     project.defaultModelSelection = input.defaultModelSelection ? { ...input.defaultModelSelection } : null;
     project.branches = [...(input.branches ?? [])];
     project.remoteUrl = input.remoteUrl ?? null;
+    project.originUrl = input.originUrl ?? null;
+    project.unparsedRemote = input.unparsedRemote === true;
+    project.identityResolved = true;
     if (input.git) mkdirSync(join(project.workspaceRoot, ".git"), { recursive: true });
     this.projects.set(id, project);
     return { projectId: id };
@@ -881,7 +903,7 @@ export class FakeT3 {
   /** The project row exactly as `t3_project_list` shows it, or `undefined` once removed or deleted. */
   project(projectId: string): Record<string, unknown> | undefined {
     const project = this.projects.get(projectId);
-    return project ? this.projectRow(project) : undefined;
+    return project ? this.projectRow(project, null, true) : undefined;
   }
 
   /** Every scheduled task, newest first, as `schedule_task` returned it on creation (`webhookUrl` included). */
@@ -1078,6 +1100,11 @@ export class FakeT3 {
   /** The next call to `tool` is processed, then its socket is destroyed before the response is written. */
   dropNextResponse(tool: string): void {
     this.drops.set(tool, (this.drops.get(tool) ?? 0) + 1);
+  }
+
+  /** Holds the next response of `tool` back for `ms` after the tool has run. */
+  delayNextResponse(tool: string, ms: number): void {
+    this.delays.set(tool, ms);
   }
 
   async stop(): Promise<void> {
@@ -1504,6 +1531,11 @@ export class FakeT3 {
         ctx.mcpReq.signal.removeEventListener("abort", onCancelled);
       }
 
+      const delayMs = this.delays.get(name);
+      if (delayMs !== undefined) {
+        this.delays.delete(name);
+        await new Promise((resume) => setTimeout(resume, delayMs));
+      }
       const pendingDrops = this.drops.get(name) ?? 0;
       const socket = this.requestSockets.get(`${ctx.sessionId}:${String(ctx.mcpReq.id)}`);
       if (pendingDrops > 0 && socket) {
@@ -1594,8 +1626,10 @@ export class FakeT3 {
     const projects = [...this.projects.values()];
     const cursor = optInt(args.cursor) ?? 0;
     const limit = clamp(optInt(args.limit) ?? 50, 1, 100);
+    const page = projects.slice(cursor, cursor + limit);
+    for (const project of page) project.identityResolved = true;
     return {
-      projects: projects.slice(cursor, cursor + limit).map((project) => this.projectRow(project)),
+      projects: page.map((project) => this.projectRow(project, null, true)),
       nextCursor: cursor + limit < projects.length ? cursor + limit : null,
     };
   }
@@ -1629,6 +1663,7 @@ export class FakeT3 {
       }
     }
     const project = this.newProject(id, title, root);
+    project.remoteUrl = this.clones.get(root) ?? null;
     if (Array.isArray(args.scripts)) project.scripts = structuredClone(args.scripts) as JsonObject[];
     this.projects.set(id, project);
     return this.projectRow(project);
@@ -1692,6 +1727,7 @@ export class FakeT3 {
     }
     mkdirSync(join(cwd, ".git"), { recursive: true });
     writeFileSync(join(cwd, "README"), `Cloned from ${String(result.remoteUrl)}\n`);
+    this.clones.set(cwd, String(result.remoteUrl));
     return result;
   }
 
@@ -2323,8 +2359,8 @@ export class FakeT3 {
     return thread;
   }
 
-  /** A pull request named by `url`, or by `repository`, `number`, and `host` (fake projects have no remote). */
-  private pullRequestTarget(args: JsonObject): PullRequestTarget {
+  /** A pull request named by `url`, or by `repository` and `number` with `host` or the host of the project's remote. */
+  private pullRequestTarget(args: JsonObject, thread?: ThreadRecord): PullRequestTarget {
     const url = optString(args.url);
     if (url !== undefined) {
       const target = parsePullRequestUrl(url);
@@ -2334,7 +2370,8 @@ export class FakeT3 {
     const repository = optString(args.repository);
     const number = optInt(args.number);
     if (repository === undefined || number === undefined) throw new TextFailure("Pass either url, or both repository and number.");
-    const host = optString(args.host);
+    const remote = thread ? this.projects.get(thread.projectId)?.remoteUrl : null;
+    const host = optString(args.host) ?? (remote ? "github.com" : undefined);
     if (host === undefined) throw new TextFailure("This thread's project has no recognised remote. Pass host or url.");
     return { host, repository: repository.toLowerCase(), number, url: `https://${host}/${repository}/pull/${number}` };
   }
@@ -2433,7 +2470,7 @@ export class FakeT3 {
   /** Unlinks one pull request whatever its state; its watch goes with the link. */
   private unlinkPullRequest(args: JsonObject): JsonObject {
     const thread = this.pullRequestThread(args.threadId);
-    const target = this.pullRequestTarget(args);
+    const target = this.pullRequestTarget(args, thread);
     const remaining = thread.pullRequests.filter((link) => pullRequestKey(link) !== pullRequestKey(target));
     const wasLinked = remaining.length < thread.pullRequests.length;
     thread.pullRequests = remaining;
@@ -2443,7 +2480,7 @@ export class FakeT3 {
   /** Watching links the pull request first; a merged one is refused. Unwatching never links. */
   private setWatching(args: JsonObject, watching: boolean): JsonObject {
     const thread = this.pullRequestThread(args.threadId);
-    const target = this.pullRequestTarget(args);
+    const target = this.pullRequestTarget(args, thread);
     if (watching && thread.relationshipToParent === "subagent") {
       throw new TextFailure(
         "This thread is a subagent, so it cannot watch pull requests. Its parent thread owns the pull request: finish your task and report back instead.",
@@ -2603,15 +2640,25 @@ export class FakeT3 {
       updatedAt: at,
       branches: [],
       remoteUrl: null,
+      originUrl: null,
+      identityResolved: false,
+      unparsedRemote: false,
     };
   }
 
-  private projectRow(project: ProjectRecord, deletedAt: string | null = null): JsonObject {
+  /** `listed`: the row of a project listing, which carries the resolved repository identity. */
+  private projectRow(project: ProjectRecord, deletedAt: string | null = null, listed = false): JsonObject {
+    const identified = project.remoteUrl !== null && (listed || project.identityResolved);
     return {
       id: project.id,
       title: project.title,
       workspaceRoot: project.workspaceRoot,
-      repositoryIdentity: project.remoteUrl === null ? null : repositoryIdentity(project.remoteUrl, project.workspaceRoot),
+      repositoryIdentity: identified
+        ? {
+            ...repositoryIdentity(project.remoteUrl!, project.workspaceRoot, project.originUrl),
+            ...(project.unparsedRemote ? { canonicalKey: project.remoteUrl!.toLowerCase().replace(/\.git$/, ""), provider: "unknown" } : {}),
+          }
+        : null,
       faviconPath: project.faviconPath,
       projectIcon: project.projectIcon ? { ...project.projectIcon } : null,
       defaultModelSelection: project.defaultModelSelection ? structuredClone(project.defaultModelSelection) : null,

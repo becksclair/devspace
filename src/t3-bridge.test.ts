@@ -63,6 +63,7 @@ import {
   checkShaping,
   checkStaleDescriptionRewrites,
   checkUnavailable,
+  checkWatchScope,
   checkWorkspaceReads,
   EXPANSION_T3_TOOLS,
   fails,
@@ -799,6 +800,8 @@ try {
   progress("ok - project read, branches and worktrees, linked environments (B36)");
   await checkEnvironmentRejected(call, fake);
   progress("ok - every tool refuses a call that names another machine (B38)");
+  await checkWatchScope(call, fake);
+  progress("ok - a thread watches only pull requests of its own repository (B39)");
   await checkFullAccessMint(fake, label, [SECRET_NAME]);
 
   // -----------------------------------------------------------------------------------------

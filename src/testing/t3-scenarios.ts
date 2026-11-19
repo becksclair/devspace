@@ -163,6 +163,7 @@ const STEER_MESSAGE = "No change; keep waiting for the command to finish.";
 const SCENARIO_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/1";
 // Linked and unlinked by URL straight away, before T3 can have read its state.
 const SCENARIO_SECOND_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/2";
+const PULL_REQUEST_STATES = ["open", "closed", "merged"] as const;
 const INTERRUPT_REASON = "DevSpace bridge check";
 /** A tiny public repository for the clone scenarios (the fake never fetches it). */
 const CLONE_URL = "https://github.com/octocat/Hello-World.git";
@@ -203,6 +204,13 @@ async function callTool<T>(ctx: ScenarioContext, name: T3ToolName, args: Record<
   }
   if (!isRecord(parsed)) throw new Error(`${name} returned JSON that is not an object`);
   return parsed as T;
+}
+
+/** Calls a tool that must fail and returns its error text. */
+async function callToolError(ctx: ScenarioContext, name: T3ToolName, args: Record<string, unknown>): Promise<string> {
+  const result: Record<string, unknown> = await ctx.client.callTool({ name, arguments: args }, { timeout: REQUEST_TIMEOUT_MS });
+  assert.equal(result.isError, true, `${name} ${JSON.stringify(Object.keys(args))} must be refused`);
+  return firstText(result.content) ?? "";
 }
 
 function assertIsoTimestamp(value: unknown, label: string): void {
@@ -704,7 +712,8 @@ async function scheduledTask(run: ScenarioRun): Promise<Record<string, unknown>>
   }
 }
 
-// S11: read a thread's model, fork it, and link, watch, and unlink pull requests on it.
+// S11: read a thread's model, fork it, link and unlink pull requests on it, and watch a pull
+// request from a thread that works in that pull request's repository.
 async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
   const { ctx } = run;
   const launched = await launch(run, SCENARIO_PROMPTS.reply("OK"));
@@ -740,7 +749,7 @@ async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
   }
 
   // Link two pull requests and unlink one by URL at once; then wait for T3 to read the other's
-  // state, watch and unwatch it, and unlink it by state.
+  // state and unlink it with the batch tool.
   const linked = await callTool<LinkResult>(ctx, "link_pull_requests", {
     threadId,
     urls: [SCENARIO_PULL_REQUEST, SCENARIO_SECOND_PULL_REQUEST, "https://example.com/not-a-pull-request"],
@@ -759,17 +768,36 @@ async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
   });
   const state = String(entry.state);
   assert.equal(entry.watching, false, "linking does not start a watch");
-  // Unwatch before checking the watch result, so a failed check cannot leave a full-access thread
-  // watching a public pull request.
-  const watched = await callTool<WatchResult>(ctx, "watch_pull_request", { threadId, url: SCENARIO_PULL_REQUEST });
-  const unwatched = await callTool<WatchResult>(ctx, "unwatch_pull_request", { threadId, url: SCENARIO_PULL_REQUEST });
-  assert.deepEqual([watched.number, watched.watching, watched.wasWatching], [1, true, false]);
-  assert.equal(unwatched.watching, false, "unwatching stops the watch");
-  const stillLinked = await callTool<PullRequestList>(ctx, "list_thread_pull_requests", { threadId, states: [state] });
+  // A scratch thread has no repository of its own, so it cannot arm a watch on a linked pull request.
+  assert.match(
+    await callToolError(ctx, "watch_pull_request", { threadId, url: SCENARIO_PULL_REQUEST }),
+    /watches only pull requests of the thread's own repository/,
+  );
+  const stillLinked = await callTool<PullRequestList>(ctx, "list_thread_pull_requests", { threadId });
   assert.deepEqual(stillLinked.pullRequests.map((pullRequest) => [pullRequest.url, pullRequest.watching]), [[SCENARIO_PULL_REQUEST, false]]);
-  const unlinked = await callTool<UnlinkResult>(ctx, "unlink_pull_requests", { threadId, states: [state] });
+  // Every state: the pull request may have changed state since the listing above.
+  const unlinked = await callTool<UnlinkResult>(ctx, "unlink_pull_requests", { threadId, states: [...PULL_REQUEST_STATES] });
   assert.deepEqual([unlinked.unlinkedCount, unlinked.remaining], [1, 0]);
   assert.deepEqual((await callTool<PullRequestList>(ctx, "list_thread_pull_requests", { threadId })).pullRequests, []);
+
+  // A thread that works in a clone of the pull request's repository can watch it. The watch is
+  // removed whatever happens next, so no failed step leaves a full-access thread watching a public
+  // pull request; a failed removal fails the scenario.
+  const repository = await clonedProject(run, await pickModel(ctx));
+  const inRepository = await launch(run, SCENARIO_PROMPTS.reply("OK"), { projectId: repository.id });
+  await waitForRun(run, inRepository.threadId);
+  const watchTarget = { threadId: inRepository.threadId, url: SCENARIO_PULL_REQUEST };
+  let watched: WatchResult;
+  let unwatched: WatchResult;
+  try {
+    watched = await callTool<WatchResult>(ctx, "watch_pull_request", watchTarget);
+  } finally {
+    unwatched = await callTool<WatchResult>(ctx, "unwatch_pull_request", watchTarget);
+  }
+  assert.deepEqual([watched.number, watched.watching, watched.wasWatching], [1, true, false]);
+  assert.equal(unwatched.watching, false, "unwatching stops the watch");
+  const afterWatch = await callTool<UnlinkOneResult>(ctx, "unlink_pull_request", watchTarget);
+  assert.equal(afterWatch.wasLinked, true, "watching linked the pull request to the thread");
 
   // The thread's branches and worktrees (a scratch thread has no repository), its project, and linked machines.
   const refs = await callTool<WorktreeList>(ctx, "t3_worktree_list", { threadId });
@@ -805,7 +833,7 @@ export const SCENARIOS: Scenario[] = [
   { id: "S8", title: "Rename a thread and regenerate its title", targets: [...ALL_TARGETS], run: tracked("S8", renameThread) },
   { id: "S9", title: "Clone and register a project, pick a model, set it as the default", targets: [...ALL_TARGETS], run: tracked("S9", projectSetup) },
   { id: "S10", title: "Schedule a task, run it now as a full-access thread, delete it", targets: [...ALL_TARGETS], run: tracked("S10", scheduledTask) },
-  { id: "S11", title: "Read a thread's model, fork it, and link, watch, and unlink pull requests", targets: [...ALL_TARGETS], run: tracked("S11", threadTools) },
+  { id: "S11", title: "Read a thread's model, fork it, link and unlink pull requests, and watch one from its own repository", targets: [...ALL_TARGETS], run: tracked("S11", threadTools) },
 ];
 
 function selectScenarios(kind: ScenarioTargetKind, ids?: string[]): Scenario[] {

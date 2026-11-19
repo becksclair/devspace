@@ -45,6 +45,7 @@ import {
   checkRewordedCatalog,
   checkShaping,
   checkUnavailable,
+  checkWatchScope,
   checkWorkspaceReads,
   ok,
   REWORDED_SCHEDULE_TASK,
@@ -194,7 +195,8 @@ async function exerciseChain(
   await checkThreadConfigureAndTransfer(call, fake);
   await checkWorkspaceReads(call, fake);
   await checkEnvironmentRejected(call, fake);
-  progress(`ok - ${mode}: pull requests, thread model and context transfer, project read, worktrees, linked environments, this machine only (B33–B36, B38)`);
+  await checkWatchScope(call, fake);
+  progress(`ok - ${mode}: pull requests, thread model and context transfer, project read, worktrees, linked environments, this machine only, watch scope (B33–B36, B38, B39)`);
 
   const ctx: ScenarioContext = {
     kind: "fake",

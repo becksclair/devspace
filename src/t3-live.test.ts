@@ -596,6 +596,7 @@ async function sampleExpansionShapes(call: T3Call, title: string, modelSelection
   });
   const threadId = String(launch.threadId);
   const threadIds = [threadId];
+  let watchAttempted = false;
   try {
     await waitDone(call, threadId, SCENARIO_TIMEOUT_MS);
     const configuration = await ok(call, "t3_thread_configure", { threadId });
@@ -617,18 +618,29 @@ async function sampleExpansionShapes(call: T3Call, title: string, modelSelection
       },
       60_000,
     );
+    watchAttempted = true;
     const watched = await ok(call, "watch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST });
     const unwatched = await ok(call, "unwatch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST });
-    const unlinked = await ok(call, "unlink_pull_requests", { threadId, states: [records(listing.pullRequests)[0]!.state] });
+    watchAttempted = false;
+    // Every state: the pull request may have changed state since the listing above.
+    const unlinked = await ok(call, "unlink_pull_requests", { threadId, states: ["open", "closed", "merged"] });
     const refs = await ok(call, "t3_worktree_list", { threadId });
     const project = await ok(call, "t3_project_read", { projectId: launch.projectId });
     const links = await ok(call, "t3_environment_links", {});
     return { configuration, configured, fork, transfers, linked, listing, watched, unwatched, unlinkedOne, unlinked, refs, project, links };
   } finally {
+    // Archiving does not end a watch, so one that may be on is removed first (two attempts); a
+    // watch that could not be removed fails the check instead of staying behind unnoticed.
+    let watchLeft = watchAttempted;
+    for (let attempt = 0; watchLeft && attempt < 2; attempt += 1) {
+      const removed = await call("unwatch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST }).catch(() => undefined);
+      watchLeft = removed === undefined || removed.isError === true;
+    }
     for (const id of threadIds) {
       await call("t3_thread_organize", { threadId: id, action: "settle" });
       await call("t3_thread_organize", { threadId: id, action: "archive" });
     }
+    if (watchLeft) fail(`the watch on ${CONTRACT_PULL_REQUEST} could not be removed from thread ${threadId}`);
   }
 }
 

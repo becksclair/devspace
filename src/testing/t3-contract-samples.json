@@ -27,7 +27,9 @@
     "unlink_pull_requests unlinks by last known state; unwatch_pull_request on a pull request that was never linked succeeds and links nothing.",
     "t3_thread_configure rejects an unknown provider instance and accepts an unknown model id.",
     "A fork is idle, carries relationshipToParent 'fork' and its source as parentThreadId, and keeps the source's model and modes; its transfer stays 'pending' and is listed for source and target. merge_back from a thread without a finished run fails.",
-    "unlink_pull_request (captured 2026-11-19, same T3 Code version) unlinks one pull request by url, or by repository, number, and host, whatever its state and before T3 has read it; it ends a watch on that pull request and returns wasLinked false when it was not linked."
+    "unlink_pull_request (captured 2026-11-19, same T3 Code version) unlinks one pull request by url, or by repository, number, and host, whatever its state and before T3 has read it; it ends a watch on that pull request and returns wasLinked false when it was not linked.",
+    "A project's repositoryIdentity (probed 2026-11-19, same T3 Code version) has a lower-cased canonicalKey of the form host/owner/name; for a fork whose primary remote is its upstream it also has origin { canonicalKey, remoteUrl, displayName }. A project registered a moment ago has repositoryIdentity null in t3_project_create and t3_project_read results, while its t3_project_list row already carries the resolved identity.",
+    "T3's failure for a thread it cannot find ends with ' Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.', in the plain-text failures of the pull-request tools and inside the message of the thread_not_found failure JSON."
   ],
   "results": {
     "t3_thread_launch": {

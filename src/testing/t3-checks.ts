@@ -307,6 +307,7 @@ export function checkExpansionDescription(name: string, description: string): vo
     assert.match(description, /`threadId`/, `${name} description must name threadId`);
   }
   if (name === "watch_pull_request") {
+    assert.match(description, /Only a PR in the repository of the thread's project can be watched/, "watch_pull_request must state its scope");
     assert.match(description, /wakes that thread's agent, not you/, "watch_pull_request must say who is woken");
     assert.match(description, /untrusted text/, "watch_pull_request must say that PR comments are untrusted input to the agent");
   }
@@ -1149,6 +1150,10 @@ const PR_OPEN = "https://github.com/octocat/Hello-World/pull/11";
 const PR_CLOSED = "https://github.com/octocat/Hello-World/pull/12";
 const PR_MERGED = "https://github.com/becksclair/devspace/pull/13";
 const PR_UNREAD = "https://github.com/octocat/Hello-World/pull/14";
+const PR_MERGED_HERE = "https://github.com/octocat/Hello-World/pull/16";
+const PR_REPOSITORY = "https://github.com/octocat/Hello-World.git";
+/** T3's not-found text with its advice to pass `environmentId` replaced by the bridge. */
+const LOCAL_THREAD_HINT = "These tools reach only the T3 Code of the machine DevSpace runs on; find the thread with t3_thread_search or t3_thread_list.";
 const PR_ENTRY_KEYS = ["baseBranch", "headBranch", "host", "isDraft", "number", "repository", "source", "stack", "state", "title", "url", "watching"];
 
 /** Valid arguments for every expansion tool; the thread and project need not exist. */
@@ -1168,7 +1173,10 @@ const EXPANSION_SAMPLE_ARGS: Record<string, Json> = {
 
 /** B34: link, list, watch, unwatch, and unlink a thread's pull requests; T3's results pass through. */
 export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<void> {
-  const { threadId } = fake.addThread({ title: "Pull request thread", messages: [{ role: "user", text: "open the PRs" }] });
+  // The thread works in a checkout of octocat/Hello-World, so that repository's PRs can be watched.
+  const { projectId } = fake.addProject({ title: "pull-request-fixture", git: true, remoteUrl: PR_REPOSITORY });
+  const { threadId } = fake.addThread({ projectId, title: "Pull request thread", messages: [{ role: "user", text: "open the PRs" }] });
+  fake.setPullRequest(PR_MERGED_HERE, { state: "merged", title: "Merged here" });
   fake.setPullRequest(PR_CLOSED, { state: "closed", title: "Closed one" });
   fake.setPullRequest(PR_MERGED, { state: "merged", title: "Merged one" });
   fake.setPullRequest(PR_UNREAD, { state: null });
@@ -1196,7 +1204,7 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   assert.deepEqual(again, { linked: [], alreadyLinked: [{ host: "github.com", repository: "becksclair/devspace", numbers: [13] }], linkedCount: 1 });
 
   // For a subagent thread T3 adds `next`, an instruction to the agent inside it; it is removed.
-  const child = fake.addThread({ title: "Pull request subagent thread", subagent: true });
+  const child = fake.addThread({ projectId, title: "Pull request subagent thread", subagent: true });
   assert.deepEqual(await ok(call, "link_pull_requests", { threadId: child.threadId, urls: [PR_OPEN] }), {
     linked: [{ host: "github.com", repository: "octocat/hello-world", numbers: [11] }],
     alreadyLinked: [],
@@ -1233,9 +1241,10 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
     { url: fresh, watching: true, wasWatching: false },
     "watching by repository, number, and host links the PR",
   );
-  assert.equal(await fails(call, "watch_pull_request", { threadId, url: PR_MERGED }), "The pull request is merged, so there is nothing to watch.");
+  assert.equal(await fails(call, "watch_pull_request", { threadId, url: PR_MERGED_HERE }), "The pull request is merged, so there is nothing to watch.");
   assert.equal(await fails(call, "watch_pull_request", { threadId }), "Pass either url, or both repository and number.");
-  assert.match(await fails(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15 }), /Pass host or url/);
+  // Without `host` T3 takes it from the project's remote.
+  assert.equal((await ok(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15 })).wasWatching, true);
   assert.deepEqual(
     fake.pullRequests(threadId).filter((entry) => entry.watching).map((entry) => entry.number),
     [11, 15],
@@ -1283,11 +1292,19 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   assert.deepEqual(fake.pullRequests(threadId).map((entry) => [entry.number, entry.state]), [[11, "open"]], "the other open PR stays linked");
   assert.equal((await ok(call, "unwatch_pull_request", { threadId, url: fresh })).wasWatching, false, "unlinking ended the watch");
   assert.equal(await fails(call, "unlink_pull_request", { threadId }), "Pass either url, or both repository and number.");
-  assert.match(await fails(call, "unlink_pull_request", { threadId: "missing-thread", url: PR_OPEN }), /^Thread missing-thread was not found\./);
+  const scratch = fake.addThread({ title: "Pull request thread without a remote" });
+  assert.match(await fails(call, "unlink_pull_request", { threadId: scratch.threadId, repository: "octocat/Hello-World", number: 15 }), /Pass host or url/);
 
   // T3's plain-text failures pass through unchanged.
-  assert.match(await fails(call, "list_thread_pull_requests", { threadId: "missing-thread" }), /^Thread missing-thread was not found\./);
-  assert.match(await fails(call, "link_pull_requests", { threadId: "missing-thread", urls: [PR_OPEN] }), /^Thread missing-thread was not found\./);
+  // T3's failures pass through, except that its advice to reach the thread through `environmentId`
+  // (which every tool here refuses) is replaced by what an outside caller can do.
+  for (const [tool, toolArgs] of [
+    ["list_thread_pull_requests", {}],
+    ["link_pull_requests", { urls: [PR_OPEN] }],
+    ["unlink_pull_request", { url: PR_OPEN }],
+  ] as const) {
+    assert.equal(await fails(call, tool, { ...toolArgs, threadId: "missing-thread" }), `Thread missing-thread was not found. ${LOCAL_THREAD_HINT}`, tool);
+  }
 
   // A page holds 50 pull requests; `nextCursor` reaches the rest.
   const many = fake.addThread({ title: "Pull request paging thread" });
@@ -1364,7 +1381,11 @@ export async function checkThreadConfigureAndTransfer(call: T3Call, fake: FakeT3
   const idleSource = JSON.parse(await fails(call, "t3_thread_transfer", { threadId: forkId, action: "merge_back", targetThreadId: threadId })) as Json;
   assert.equal(idleSource.code, "orchestration_error", "an idle fork has no run to merge back");
   const missing = JSON.parse(await fails(call, "t3_thread_transfer", { threadId, action: "merge_back", targetThreadId: "missing-thread" })) as Json;
-  assert.equal(missing.code, "thread_not_found");
+  assert.deepEqual(
+    [missing._tag, missing.code, missing.message],
+    ["OrchestratorMcpFailure", "thread_not_found", `The thread was not found. ${LOCAL_THREAD_HINT}`],
+    "T3's failure JSON keeps its shape; only the advice to pass environmentId is replaced",
+  );
   const merged = await ok(call, "t3_thread_transfer", { threadId, action: "merge_back", targetThreadId: forkId });
   assert.equal(merged.targetThreadId, forkId);
   assert.equal(records((await ok(call, "t3_thread_transfer", { threadId, action: "status" })).transfers).length, 2);
@@ -1391,6 +1412,16 @@ export async function checkWorkspaceReads(call: T3Call, fake: FakeT3): Promise<v
   assert.equal(forwarded(fake, "t3_project_list", mark).length, 0, "the title came from the project read, not a project-list reload");
   const missing = JSON.parse(await fails(call, "t3_project_read", { projectId: "missing-project" })) as Json;
   assert.deepEqual([missing.code, missing.message], ["invalid_request", "The project was not found."]);
+
+  // A read that ran before a rename but answers after it must not put the old title back.
+  mark = fake.calls.length;
+  fake.delayNextResponse("t3_project_read", 200);
+  const slowRead = call("t3_project_read", { projectId: read.projectId });
+  await waitFor("the slow project read to reach T3", () => forwarded(fake, "t3_project_read", mark).length === 1);
+  await ok(call, "t3_project_update", { projectId: read.projectId, title: "read-fixture renamed" });
+  assert.equal(resultData(await slowRead).title, "read-fixture", "the slow read still returns what T3 answered");
+  const renamedRow = records((await ok(call, "t3_thread_list", { projectId: read.projectId })).threads).find((entry) => entry.threadId === inRead.threadId);
+  assert.equal(renamedRow?.project, "read-fixture renamed", "thread rows keep the newer title");
 
   // T3 stores a remote URL as git prints it; a credential in it never reaches the caller.
   const token = "ghp_remoteCredentialThatMustNotLeak";
@@ -1466,7 +1497,7 @@ export async function checkWorkspaceReads(call: T3Call, fake: FakeT3): Promise<v
  */
 export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise<void> {
   const stamp = Date.now();
-  const { projectId } = fake.addProject({ title: `Expansion retry ${stamp}`, git: true });
+  const { projectId } = fake.addProject({ title: `Expansion retry ${stamp}`, git: true, remoteUrl: PR_REPOSITORY });
   const { threadId } = fake.addThread({
     projectId,
     title: `Expansion retry ${stamp}`,
@@ -1478,8 +1509,6 @@ export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise
   const retried: Array<[string, Json]> = [
     ["link_pull_requests", { threadId, urls: [url, other] }],
     ["list_thread_pull_requests", { threadId }],
-    ["watch_pull_request", { threadId, url }],
-    ["unwatch_pull_request", { threadId, url }],
     ["unlink_pull_request", { threadId, url: other }],
     ["t3_thread_configure", { threadId }],
     ["t3_thread_configure", { threadId, modelSelection: HAIKU }],
@@ -1500,7 +1529,10 @@ export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise
     "the retried link linked each pull request once, and the retried unlink removed only the one it named",
   );
 
+  // A watch is a trigger: a repeat could restore one that another session removed in between.
   const reported: Array<[string, Json]> = [
+    ["watch_pull_request", { threadId, url }],
+    ["unwatch_pull_request", { threadId, url }],
     ["unlink_pull_requests", { threadId, states: ["open"] }],
     ["t3_thread_transfer", { threadId, action: "fork", title: `Expansion retry ${stamp} fork` }],
   ];
@@ -1521,6 +1553,126 @@ export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise
   );
   assert.equal(forwarded(fake, "t3_thread_transfer", mergeMark).length, 1, "merge_back was sent exactly once");
   for (const id of [threadId, forkId]) await ok(call, "t3_thread_organize", { threadId: id, action: "archive" });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Watch scope: B39
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * B39: a thread can watch only pull requests of its own project's repository (its primary remote
+ * or, for a fork, its origin). Every other watch is refused before `watch_pull_request` reaches T3,
+ * including one whose URL two parsers could read differently. Unwatching is never restricted.
+ */
+export async function checkWatchScope(call: T3Call, fake: FakeT3): Promise<void> {
+  const own = "https://github.com/octocat/Hello-World/pull/21";
+  const foreign = "https://github.com/becksclair/devspace/pull/21";
+  const watches = (mark: number): Json[] => forwarded(fake, "watch_pull_request", mark);
+  const ownScope = /^watch_pull_request watches only pull requests of the thread's own repository \(github\.com\/octocat\/hello-world\), and this one is not in it\. /;
+
+  const { projectId } = fake.addProject({ title: "watch-scope-fixture", git: true, remoteUrl: PR_REPOSITORY });
+  const { threadId } = fake.addThread({ projectId, title: "Watch scope thread" });
+  let mark = fake.calls.length;
+  const refused: Json[] = [
+    { url: foreign },
+    { url: "https://github.com/octocat/Hello-World-fork/pull/21" },
+    { url: "https://gitlab.com/octocat/Hello-World/pull/21" },
+    { url: `${own}?next=${foreign}` },
+    { url: `${own}#${foreign}` },
+    { url: `${own}/files` },
+    { url: "https://github.com/becksclair/devspace/../../octocat/Hello-World/pull/21" },
+    { url: `${own}/../../../../becksclair/devspace/pull/21` },
+    { url: "https://token@github.com/octocat/Hello-World/pull/21" },
+    { url: "http://github.com/octocat/Hello-World/pull/21" },
+    { url: "https://github.com/octocat%2fHello-World/pull/21" },
+    // T3 reads this one as a pull request of the repository `octocat/hello-world/-`.
+    { url: "https://github.com/octocat/Hello-World/-/pulls/21" },
+    { url: "octocat/Hello-World#21" },
+    { repository: "becksclair/devspace", number: 21, host: "github.com" },
+    { repository: "becksclair/devspace", number: 21 },
+    { repository: "octocat/Hello-World", number: 21, host: "gitlab.com" },
+    // A URL names the pull request on its own; the other fields are not a second chance.
+    { url: foreign, repository: "octocat/Hello-World", number: 21, host: "github.com" },
+  ];
+  for (const target of refused) {
+    const text = await fails(call, "watch_pull_request", { threadId, ...target });
+    assert.match(text, ownScope, `watch ${JSON.stringify(target)}`);
+    assert.match(text, /anyone who can comment on the pull request start turns for the thread's agent/);
+    assert.match(text, /Use link_pull_requests to track it without a watch\.$/);
+  }
+  assert.deepEqual(watches(mark), [], "no refused watch reached T3");
+  assert.deepEqual(fake.pullRequests(threadId), [], "a refused watch links nothing");
+
+  // Its own repository: by URL (only the URL is forwarded) and by repository and number.
+  mark = fake.calls.length;
+  const watched = await ok(call, "watch_pull_request", { threadId, url: own, repository: "becksclair/devspace", number: 7, host: "example.com" });
+  assert.deepEqual(watches(mark), [{ threadId, url: own }]);
+  assert.deepEqual([watched.repository, watched.number, watched.watching], ["octocat/hello-world", 21, true]);
+  mark = fake.calls.length;
+  await ok(call, "watch_pull_request", { threadId, repository: "Octocat/Hello-World", number: 22, host: "GitHub.com", url: "" });
+  assert.deepEqual(watches(mark), [{ threadId, repository: "Octocat/Hello-World", number: 22, host: "GitHub.com" }]);
+  await ok(call, "watch_pull_request", { threadId, url: "https://GitHub.com/octocat/hello-world/pull/23/" });
+
+  // A foreign pull request can still be linked and unwatched; only arming the trigger is scoped.
+  await ok(call, "link_pull_requests", { threadId, urls: [foreign] });
+  assert.equal((await ok(call, "unwatch_pull_request", { threadId, url: foreign })).watching, false);
+  assert.deepEqual(
+    fake.pullRequests(threadId).map((entry) => [entry.repository, entry.number, entry.watching]),
+    [["octocat/hello-world", 21, true], ["octocat/hello-world", 22, true], ["octocat/hello-world", 23, true], ["becksclair/devspace", 21, false]],
+  );
+
+  // A fork: the primary remote is the upstream, and pull requests of either repository qualify.
+  const fork = fake.addProject({ title: "watch-scope-fork", git: true, remoteUrl: "https://github.com/upstream/tool.git", originUrl: "git@github.com:bex/tool.git" });
+  const inFork = fake.addThread({ projectId: fork.projectId, title: "Watch scope fork thread" });
+  await ok(call, "watch_pull_request", { threadId: inFork.threadId, url: "https://github.com/upstream/tool/pull/3" });
+  await ok(call, "watch_pull_request", { threadId: inFork.threadId, url: "https://github.com/bex/tool/pull/4" });
+  assert.match(
+    await fails(call, "watch_pull_request", { threadId: inFork.threadId, url: own }),
+    /own repository \(github\.com\/upstream\/tool or github\.com\/bex\/tool\)/,
+  );
+
+  // A project with no remote (a scratch thread) has no pull requests of its own.
+  const scratch = fake.addThread({ title: "Watch scope scratch thread" });
+  mark = fake.calls.length;
+  assert.equal(
+    await fails(call, "watch_pull_request", { threadId: scratch.threadId, url: own }),
+    "watch_pull_request watches only pull requests of the thread's own repository, and this thread's project has no recognised git remote. Use link_pull_requests to track a pull request without a watch.",
+  );
+  assert.deepEqual(watches(mark), []);
+
+  // T3 resolves a project's repository when it lists projects: a project registered a moment ago
+  // has no identity on a read yet, and the bridge then takes it from the listing.
+  const destination = join(fake.home, "clones", `watch-scope-${Date.now()}`);
+  await ok(call, "t3_project_clone", { remoteUrl: PR_REPOSITORY, destinationPath: destination });
+  const cloned = await ok(call, "t3_project_create", { title: `Watch scope clone ${Date.now()}`, workspaceRoot: destination });
+  assert.equal(cloned.repositoryIdentity, null, "a project read before any listing carries no identity");
+  const inClone = fake.addThread({ projectId: String(cloned.id), title: "Watch scope clone thread" });
+  mark = fake.calls.length;
+  await ok(call, "watch_pull_request", { threadId: inClone.threadId, url: own });
+  assert.ok(forwarded(fake, "t3_project_list", mark).length >= 1, "the identity came from the project listing");
+  assert.equal(watches(mark).length, 1);
+
+  // An unknown thread is T3's failure, not a refusal.
+  const unknown = await fails(call, "watch_pull_request", { threadId: "missing-thread", url: own });
+  assert.doesNotMatch(unknown, /own repository/);
+  assert.match(unknown, /missing-thread|not_found/);
+
+  // A remote T3 cannot parse: its key is the remote URL, credentials included. It names no
+  // repository a pull request could be in, and neither the refusal nor a project read repeats it.
+  const secret = "watchScopeCredentialThatMustNotLeak";
+  const odd = fake.addProject({ title: "watch-scope-unparsed", git: true, remoteUrl: `https://user:${secret}@github.com:99999/octocat/Hello-World.git`, unparsedRemote: true });
+  const inOdd = fake.addThread({ projectId: odd.projectId, title: "Watch scope unparsed thread" });
+  const oddRefusal = await call("watch_pull_request", { threadId: inOdd.threadId, url: own });
+  assert.equal(oddRefusal.isError, true);
+  assert.match(resultText(oddRefusal), /has no recognised git remote/);
+  const oddRead = await call("t3_project_read", { projectId: odd.projectId });
+  for (const result of [oddRefusal, oddRead]) assert.ok(!JSON.stringify(result).toLowerCase().includes(secret.toLowerCase()), "the remote's credential must not reach the caller");
+  assert.equal((resultData(oddRead).repositoryIdentity as Json).canonicalKey, "https://github.com:99999/octocat/hello-world");
+  await ok(call, "t3_thread_organize", { threadId: inOdd.threadId, action: "archive" });
+
+  for (const id of [threadId, inFork.threadId, scratch.threadId, inClone.threadId]) {
+    await ok(call, "t3_thread_organize", { threadId: id, action: "archive" });
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
