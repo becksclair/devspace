@@ -1287,7 +1287,8 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   // It leaves the other PRs in the same state alone, and a watch ends with its link.
   await ok(call, "link_pull_requests", { threadId, urls: [PR_OPEN, fresh] });
   await ok(call, "watch_pull_request", { threadId, url: fresh });
-  const byNumber = await ok(call, "unlink_pull_request", { threadId, repository: "octocat/Hello-World", number: 15, host: "github.com" });
+  // Linked by URL, unlinked by repository, number, and a host in another case: T3 keys the link by the lower-cased host.
+  const byNumber = await ok(call, "unlink_pull_request", { threadId, repository: "octocat/Hello-World", number: 15, host: "GitHub.com" });
   assert.deepEqual(byNumber, { host: "github.com", repository: "octocat/hello-world", number: 15, wasLinked: true });
   assert.deepEqual(fake.pullRequests(threadId).map((entry) => [entry.number, entry.state]), [[11, "open"]], "the other open PR stays linked");
   assert.equal((await ok(call, "unwatch_pull_request", { threadId, url: fresh })).wasWatching, false, "unlinking ended the watch");
@@ -1415,13 +1416,38 @@ export async function checkWorkspaceReads(call: T3Call, fake: FakeT3): Promise<v
 
   // A read that ran before a rename but answers after it must not put the old title back.
   mark = fake.calls.length;
-  fake.delayNextResponse("t3_project_read", 200);
+  // The fake has run the read and holds its answer until the rename has finished.
+  const release = fake.holdNextResponse("t3_project_read");
   const slowRead = call("t3_project_read", { projectId: read.projectId });
-  await waitFor("the slow project read to reach T3", () => forwarded(fake, "t3_project_read", mark).length === 1);
-  await ok(call, "t3_project_update", { projectId: read.projectId, title: "read-fixture renamed" });
+  try {
+    await waitFor("the slow project read to reach T3", () => forwarded(fake, "t3_project_read", mark).length === 1);
+    await ok(call, "t3_project_update", { projectId: read.projectId, title: "read-fixture renamed" });
+  } finally {
+    release();
+  }
   assert.equal(resultData(await slowRead).title, "read-fixture", "the slow read still returns what T3 answered");
   const renamedRow = records((await ok(call, "t3_thread_list", { projectId: read.projectId })).threads).find((entry) => entry.threadId === inRead.threadId);
   assert.equal(renamedRow?.project, "read-fixture renamed", "thread rows keep the newer title");
+
+  // The guard is per project: a title T3 changed without the bridge (renamed in the T3 app) is
+  // picked up by a read of that project even while another project's title is cached meanwhile.
+  const outside = fake.addProject({ title: "outside-before" });
+  const inOutside = fake.addThread({ projectId: outside.projectId, title: "Outside rename thread", messages: [{ role: "user", text: "hi" }] });
+  await ok(call, "t3_project_read", { projectId: outside.projectId });
+  fake.renameProject(outside.projectId, "outside-after");
+  mark = fake.calls.length;
+  const releaseOutside = fake.holdNextResponse("t3_project_read");
+  const outsideRead = call("t3_project_read", { projectId: outside.projectId });
+  try {
+    await waitFor("the held project read to reach T3", () => forwarded(fake, "t3_project_read", mark).length === 1);
+    await ok(call, "t3_project_update", { projectId: read.projectId, title: "read-fixture renamed again" });
+  } finally {
+    releaseOutside();
+  }
+  await outsideRead;
+  const outsideRow = records((await ok(call, "t3_thread_list", { projectId: outside.projectId })).threads).find((entry) => entry.threadId === inOutside.threadId);
+  assert.equal(outsideRow?.project, "outside-after", "another project's cached title does not discard this one");
+  await ok(call, "t3_thread_organize", { threadId: inOutside.threadId, action: "archive" });
 
   // T3 stores a remote URL as git prints it; a credential in it never reaches the caller.
   const token = "ghp_remoteCredentialThatMustNotLeak";
@@ -1506,10 +1532,9 @@ export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise
   const url = `https://github.com/octocat/Hello-World/pull/${stamp % 100_000}`;
   // A second linked pull request, in another repository so its number cannot collide with `url`.
   const other = url.replace("Hello-World", "Spoon-Knife");
+  await ok(call, "link_pull_requests", { threadId, urls: [url] });
   const retried: Array<[string, Json]> = [
-    ["link_pull_requests", { threadId, urls: [url, other] }],
     ["list_thread_pull_requests", { threadId }],
-    ["unlink_pull_request", { threadId, url: other }],
     ["t3_thread_configure", { threadId }],
     ["t3_thread_configure", { threadId, modelSelection: HAIKU }],
     ["t3_thread_transfer", { threadId, action: "status" }],
@@ -1523,14 +1548,13 @@ export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise
     await ok(call, tool, args);
     assert.equal(forwarded(fake, tool, mark).length, 2, `${tool} ${JSON.stringify(Object.keys(args))} was retried once`);
   }
-  assert.deepEqual(
-    fake.pullRequests(threadId).map((entry) => entry.url),
-    [url],
-    "the retried link linked each pull request once, and the retried unlink removed only the one it named",
-  );
 
-  // A watch is a trigger: a repeat could restore one that another session removed in between.
+  // Not repeated, because a repeat would misreport or undo: a link or unlink would answer that
+  // nothing changed although the first attempt did it, and a watch is a trigger that a repeat could
+  // restore after another session removed it.
   const reported: Array<[string, Json]> = [
+    ["link_pull_requests", { threadId, urls: [other] }],
+    ["unlink_pull_request", { threadId, url: other }],
     ["watch_pull_request", { threadId, url }],
     ["unwatch_pull_request", { threadId, url }],
     ["unlink_pull_requests", { threadId, states: ["open"] }],
@@ -1542,8 +1566,20 @@ export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise
     assert.equal(await fails(call, tool, args), `T3 Code connection failed during ${tool}; it may or may not have run.`);
     assert.equal(forwarded(fake, tool, mark).length, 1, `${tool} was sent exactly once`);
   }
+  assert.deepEqual(fake.pullRequests(threadId), [], "each link and unlink whose response was lost ran exactly once");
   const transfers = records((await ok(call, "t3_thread_transfer", { threadId, action: "status" })).transfers);
   assert.equal(transfers.length, 1, "the fork whose response was lost ran exactly once");
+
+  // A lost lookup before a watch is not a lost watch: nothing was sent, and the answer says so.
+  const lookupMark = fake.calls.length;
+  fake.dropNextResponse("t3_thread_read");
+  fake.dropNextResponse("t3_thread_read");
+  assert.equal(
+    await fails(call, "watch_pull_request", { threadId, url }),
+    "T3 Code connection failed while DevSpace looked up the thread's repository for watch_pull_request; the watch was not sent.",
+  );
+  assert.equal(forwarded(fake, "t3_thread_read", lookupMark).length, 2, "the lookup was retried once");
+  assert.deepEqual(forwarded(fake, "watch_pull_request", lookupMark), []);
   const forkId = String(transfers[0]!.targetThreadId);
   const mergeMark = fake.calls.length;
   fake.dropNextResponse("t3_thread_transfer");

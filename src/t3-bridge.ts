@@ -108,14 +108,18 @@ const IDEMPOTENT_READ_TOOLS = new Set([
   "t3_environment_links",
 ]);
 /**
- * Writes that set a thread or project to the given values, so repeating one leaves the same state
- * unless another session changed it between the two attempts. Left out:
- * - `unlink_pull_requests`: its result is the only record of which pull requests matched the
- *   states, and a repeat would report none.
+ * Writes that set a thread or project to the given values and answer a repeat as they answered
+ * the first attempt, so a retry is invisible unless another session changed the value between
+ * the two attempts. Left out although they also set a value:
+ * - `link_pull_requests`, `unlink_pull_request`, `unlink_pull_requests`: the result says what the
+ *   call changed (`linked` or `alreadyLinked`, `wasLinked`, `unlinked`), and a repeat would report
+ *   that nothing changed when the first attempt did it.
  * - `watch_pull_request` and `unwatch_pull_request`: a watch is a trigger that starts agent turns,
  *   and a repeat could restore one that another session removed in between (or remove one it set).
  */
-const REPEATABLE_WRITE_TOOLS = new Set(["t3_project_update", "t3_thread_configure", "link_pull_requests", "unlink_pull_request"]);
+const REPEATABLE_WRITE_TOOLS = new Set(["t3_project_update", "t3_thread_configure"]);
+const WATCH_NOT_SENT_MESSAGE =
+  "T3 Code connection failed while DevSpace looked up the thread's repository for watch_pull_request; the watch was not sent.";
 /** T3's hint for a thread it cannot find: it tells the caller to pass `environmentId`, which is refused here. */
 const T3_OTHER_ENVIRONMENT_HINT = /\s*Thread ids belong to one environment:[^.]*\./g;
 /** What replaces it. It sits inside T3's failure JSON as well, so it must stay free of quotes and backslashes. */
@@ -850,8 +854,8 @@ export class T3Bridge {
   /** When the last blocking catalog load failed or timed out. */
   private catalogFailedAt?: number;
   private projectTitles = new Map<string, string>();
-  /** Counts writes to `projectTitles`, so a slow project read does not overwrite a newer title. */
-  private projectTitlesRevision = 0;
+  /** Counts the writes to each project's title, so a slow project read does not overwrite a newer one. */
+  private projectTitleRevisions = new Map<string, number>();
   private projectLoad?: Promise<void>;
   /** Project ids a reload did not find, with the reload time (negative cache). */
   private projectMisses = new Map<string, number>();
@@ -940,17 +944,14 @@ export class T3Bridge {
       case "t3_project_update":
       case "t3_project_read": {
         // Keep the project titles shown in thread rows current after a create, rename, or read.
-        const revision = this.projectTitlesRevision;
+        const revision = this.projectTitleRevisions.get(String(shaped.projectId));
         const result = await this.invoke(name, name, shaped, signal);
         if (result.isError) return result;
         const project = resultRecord(result);
-        // A read answers with the title it saw when it ran. If the cache was written while the
-        // read was in flight (a rename finished first), its title may be the older one.
-        const stale = name === "t3_project_read" && revision !== this.projectTitlesRevision && this.projectTitles.has(String(project.id));
-        if (!stale) {
-          rememberProject(this.projectTitles, project);
-          this.projectTitlesRevision += 1;
-        }
+        // A read answers with the title it saw when it ran. If this project's title was cached
+        // while the read was in flight (a rename finished first), the read's may be the older one.
+        const stale = name === "t3_project_read" && revision !== this.projectTitleRevisions.get(String(project.id));
+        if (!stale) this.rememberTitle(project);
         if (typeof project.id === "string") this.projectMisses.delete(project.id);
         return isRecord(project.repositoryIdentity) ? jsonResult(withoutRemoteCredentials(project)) : result;
       }
@@ -1290,6 +1291,13 @@ export class T3Bridge {
 
   // -- projects --------------------------------------------------------------------------------
 
+  /** Caches a project row's title and counts the write (see `projectTitleRevisions`). */
+  private rememberTitle(row: Args): void {
+    rememberProject(this.projectTitles, row);
+    const id = row.id ?? row.projectId;
+    if (typeof id === "string") this.projectTitleRevisions.set(id, (this.projectTitleRevisions.get(id) ?? 0) + 1);
+  }
+
   private projectTitle(projectId: unknown): string | null {
     return typeof projectId === "string" ? (this.projectTitles.get(projectId) ?? null) : null;
   }
@@ -1322,7 +1330,7 @@ export class T3Bridge {
         for (const row of rows) rememberProject(titles, row);
       }
       this.projectTitles = titles;
-      this.projectTitlesRevision += 1;
+      for (const id of titles.keys()) this.projectTitleRevisions.set(id, (this.projectTitleRevisions.get(id) ?? 0) + 1);
     })().finally(() => {
       this.projectLoad = undefined;
     });
@@ -1343,8 +1351,7 @@ export class T3Bridge {
   private async compactListing(name: string, data: Args): Promise<Record<string, unknown>> {
     if (name === "t3_project_list") {
       const rows = records(data.projects);
-      for (const row of rows) rememberProject(this.projectTitles, row);
-      this.projectTitlesRevision += 1;
+      for (const row of rows) this.rememberTitle(row);
       return {
         projects: rows.map((row) => ({ projectId: row.id ?? row.projectId, title: row.title, workspaceRoot: row.workspaceRoot })),
         nextCursor: data.nextCursor ?? null,
@@ -1392,9 +1399,16 @@ export class T3Bridge {
    */
   private async watchRefusal(args: Args, signal?: AbortSignal): Promise<string | undefined> {
     const label = "watch_pull_request";
-    const detail = await this.invokeData(label, "t3_thread_read", { threadId: args.threadId, limit: 1, maxCharsPerItem: 1 }, signal);
-    const projectId = isRecord(detail.thread) ? detail.thread.projectId : undefined;
-    const keys = nonEmptyString(projectId) ? await this.repositoryKeys(label, projectId, signal) : [];
+    let keys: string[];
+    try {
+      const detail = await this.invokeData(label, "t3_thread_read", { threadId: args.threadId, limit: 1, maxCharsPerItem: 1 }, signal);
+      const projectId = isRecord(detail.thread) ? detail.thread.projectId : undefined;
+      keys = nonEmptyString(projectId) ? await this.repositoryKeys(label, projectId, signal) : [];
+    } catch (error) {
+      // These are reads that come before the watch: when one is lost, the watch has not run.
+      if (error instanceof T3CallError && error.message === sentFailureMessage(label)) throw new T3CallError(WATCH_NOT_SENT_MESSAGE);
+      throw error;
+    }
     if (keys.length === 0) {
       return "watch_pull_request watches only pull requests of the thread's own repository, and this thread's project has no recognised git remote. Use link_pull_requests to track a pull request without a watch.";
     }

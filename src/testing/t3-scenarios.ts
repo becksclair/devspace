@@ -769,10 +769,19 @@ async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
   const state = String(entry.state);
   assert.equal(entry.watching, false, "linking does not start a watch");
   // A scratch thread has no repository of its own, so it cannot arm a watch on a linked pull request.
-  assert.match(
-    await callToolError(ctx, "watch_pull_request", { threadId, url: SCENARIO_PULL_REQUEST }),
-    /watches only pull requests of the thread's own repository/,
-  );
+  const scratchWatch = { threadId, url: SCENARIO_PULL_REQUEST };
+  let refusal: string;
+  try {
+    refusal = await callToolError(ctx, "watch_pull_request", scratchWatch);
+  } catch (error) {
+    // The watch went through, or its answer was lost: it must not outlive the scenario.
+    const removed = await callTool<WatchResult>(ctx, "unwatch_pull_request", scratchWatch).then(
+      () => "the watch was removed",
+      (cleanupError) => `the watch could NOT be removed: ${describeError(cleanupError)}`,
+    );
+    throw new Error(`${describeError(error)} (${removed})`);
+  }
+  assert.match(refusal, /watches only pull requests of the thread's own repository/);
   const stillLinked = await callTool<PullRequestList>(ctx, "list_thread_pull_requests", { threadId });
   assert.deepEqual(stillLinked.pullRequests.map((pullRequest) => [pullRequest.url, pullRequest.watching]), [[SCENARIO_PULL_REQUEST, false]]);
   // Every state: the pull request may have changed state since the listing above.

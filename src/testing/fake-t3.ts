@@ -769,7 +769,7 @@ export class FakeT3 {
   private readonly mcpSessions = new Map<string, McpSessionEntry>();
   private readonly requestSockets = new Map<string, Socket>();
   private readonly drops = new Map<string, number>();
-  private readonly delays = new Map<string, number>();
+  private readonly holds = new Map<string, Promise<void>>();
   /** Folders `t3_project_clone` filled, with the remote each was cloned from. */
   private readonly clones = new Map<string, string>();
   private readonly projects = new Map<string, ProjectRecord>();
@@ -898,6 +898,13 @@ export class FakeT3 {
   /** Drops a project from `t3_project_list`; its threads keep the now-unknown `projectId`. */
   removeProject(projectId: string): void {
     if (!this.projects.delete(projectId)) throw new Error(`FakeT3.removeProject: unknown project ${projectId}`);
+  }
+
+  /** Renames a project the way the T3 app would, without a call the bridge could see. */
+  renameProject(projectId: string, title: string): void {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`FakeT3.renameProject: unknown project ${projectId}`);
+    project.title = title;
   }
 
   /** The project row exactly as `t3_project_list` shows it, or `undefined` once removed or deleted. */
@@ -1102,9 +1109,11 @@ export class FakeT3 {
     this.drops.set(tool, (this.drops.get(tool) ?? 0) + 1);
   }
 
-  /** Holds the next response of `tool` back for `ms` after the tool has run. */
-  delayNextResponse(tool: string, ms: number): void {
-    this.delays.set(tool, ms);
+  /** Holds the next response of `tool` back, after the tool has run, until the returned function is called. */
+  holdNextResponse(tool: string): () => void {
+    let release!: () => void;
+    this.holds.set(tool, new Promise<void>((resolve) => (release = resolve)));
+    return release;
   }
 
   async stop(): Promise<void> {
@@ -1531,10 +1540,10 @@ export class FakeT3 {
         ctx.mcpReq.signal.removeEventListener("abort", onCancelled);
       }
 
-      const delayMs = this.delays.get(name);
-      if (delayMs !== undefined) {
-        this.delays.delete(name);
-        await new Promise((resume) => setTimeout(resume, delayMs));
+      const hold = this.holds.get(name);
+      if (hold) {
+        this.holds.delete(name);
+        await hold;
       }
       const pendingDrops = this.drops.get(name) ?? 0;
       const socket = this.requestSockets.get(`${ctx.sessionId}:${String(ctx.mcpReq.id)}`);
@@ -2371,7 +2380,8 @@ export class FakeT3 {
     const number = optInt(args.number);
     if (repository === undefined || number === undefined) throw new TextFailure("Pass either url, or both repository and number.");
     const remote = thread ? this.projects.get(thread.projectId)?.remoteUrl : null;
-    const host = optString(args.host) ?? (remote ? "github.com" : undefined);
+    // T3 keys a link by its lower-cased host, as `parsePullRequestUrl` does for a URL.
+    const host = (optString(args.host) ?? (remote ? "github.com" : undefined))?.toLowerCase();
     if (host === undefined) throw new TextFailure("This thread's project has no recognised remote. Pass host or url.");
     return { host, repository: repository.toLowerCase(), number, url: `https://${host}/${repository}/pull/${number}` };
   }
