@@ -37,7 +37,18 @@ import {
 import { loadDevspaceFiles } from "./user-config.js";
 import { DEVSPACE_VERSION } from "./version.js";
 import { FakeT3 } from "./testing/fake-t3.js";
-import { captureConsole, checkCatalog, FULL_ACCESS_SCOPES, ok, resultData, resultText, type CatalogTool, type T3Call } from "./testing/t3-checks.js";
+import {
+  captureConsole,
+  checkCatalog,
+  checkDescriptionRewrites,
+  FULL_ACCESS_SCOPES,
+  NEVER_EXPOSED_T3_TOOLS,
+  ok,
+  resultData,
+  resultText,
+  type CatalogTool,
+  type T3Call,
+} from "./testing/t3-checks.js";
 import { cleanupScenarioThreads, runScenarios, type ScenarioContext, type ScenarioTargetKind } from "./testing/t3-scenarios.js";
 
 type Json = Record<string, unknown>;
@@ -82,6 +93,7 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
     itemId: "string",
     view: "string",
     afterPosition: "integer",
+    beforePosition: "integer",
     limit: "integer",
     maxCharsPerItem: "integer",
   },
@@ -113,7 +125,7 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
   },
   t3_project_clone: { environmentId: "string", destinationPath: "string", remoteUrl: "string", provider: "string", repository: "string" },
   t3_project_update: { environmentId: "string", projectId: "string", title: "string", defaultModelSelection: "object" },
-  list_scheduled_tasks: { environmentId: "string", projectId: "string" },
+  list_scheduled_tasks: { environmentId: "string", projectId: "string", scheduledTaskId: "string" },
   schedule_task: {
     environmentId: "string",
     projectId: "string",
@@ -143,7 +155,7 @@ const REQUIRED_ENUM_VALUES: Record<string, string[]> = {
 const BRIDGE_READS = {
   listRow: ["threadId", "projectId", "title", "status", "settled", "snoozed", "updatedAt", "link"],
   listEnvelope: ["threads", "nextCursor", "total"],
-  readEnvelope: ["thread", "items", "nextPosition", "hasMore"],
+  readEnvelope: ["thread", "items", "nextPosition", "hasMore", "earlierPosition"],
   readThread: ["threadId", "projectId", "title", "status", "runtimeMode", "pendingRequestCount", "settled", "archived", "link", "itemCount"],
   readItem: ["position", "itemId", "type", "createdBy", "text", "textTruncated", "nextTextOffset", "updatedAt"],
   searchMatch: ["threadId", "projectId", "title", "source", "link"],
@@ -159,14 +171,18 @@ const ERROR_CASES: Array<{ tool: string; args: Json; code: string }> = [
   { tool: "t3_thread_list", args: {}, code: "target_required" },
   { tool: "t3_pending_request", args: { action: "list" }, code: "target_required" },
   { tool: "t3_thread_organize", args: { action: "settle" }, code: "target_required" },
-  { tool: "task_status", args: { taskId: "devspace-contract-probe" }, code: "thread_credential_required" },
-  { tool: "create_threads", args: { threads: [{ prompt: "Reply with exactly OK" }] }, code: "thread_credential_required" },
   { tool: "t3_thread_update", args: { action: "rename", title: "DevSpace contract probe" }, code: "target_required" },
   {
     tool: "schedule_task",
     args: { prompt: "Reply with exactly OK", schedule: { type: "once", runAt: new Date(Date.now() + 300 * 86_400_000).toISOString() } },
     code: "target_required",
   },
+];
+
+/** Tools that act as the calling thread: T3 neither lists nor serves them to a client outside a thread. */
+const THREAD_ONLY_TOOLS: Array<{ tool: string; args: Json }> = [
+  { tool: "task_status", args: { taskId: "devspace-contract-probe" } },
+  { tool: "create_threads", args: { threads: [{ prompt: "Reply with exactly OK" }] } },
 ];
 
 class LiveFailure extends Error {}
@@ -445,6 +461,7 @@ interface ShapeSample {
   listEnvelope: Json;
   listRows: Json[];
   read: Json;
+  searchEnvelope: Json;
   searchMatches: Json[];
   projectRows: Json[];
   threadId: string;
@@ -467,12 +484,44 @@ async function sampleShapes(call: T3Call, title: string, query: string, modelSel
     return records(envelope.threads).some((row) => row.threadId === threadId) ? envelope : undefined;
   });
   const read = await ok(call, "t3_thread_read", { threadId, view: "messages", limit: 5 });
-  const searchMatches = await poll(`t3_thread_search to find ${threadId}`, async () => {
-    const matches = records((await ok(call, "t3_thread_search", { query, limit: 5 })).matches).filter((match) => match.source === "title");
-    return matches.some((match) => match.threadId === threadId) ? matches : undefined;
+  const searchEnvelope = await poll(`t3_thread_search to find ${threadId}`, async () => {
+    const envelope = await ok(call, "t3_thread_search", { query, limit: 5 });
+    return records(envelope.matches).some((match) => match.source === "title" && match.threadId === threadId) ? envelope : undefined;
   });
+  const searchMatches = records(searchEnvelope.matches).filter((match) => match.source === "title");
   const projectRows = records((await ok(call, "t3_project_list", { limit: 5 })).projects);
-  return { launch, wait, listEnvelope, listRows: records(listEnvelope.threads), read, searchMatches, projectRows, threadId };
+  return { launch, wait, listEnvelope, listRows: records(listEnvelope.threads), read, searchEnvelope, searchMatches, projectRows, threadId };
+}
+
+/** A JSON-RPC error answered by T3 (thrown by the client), as `{ code, message }`. */
+async function rpcFailure(call: T3Call, tool: string, args: Json): Promise<Json> {
+  try {
+    await call(tool, args);
+  } catch (error) {
+    return { code: (error as { code?: unknown }).code, message: describe(error) };
+  }
+  fail(`${tool} must be refused with a JSON-RPC error`);
+}
+
+/**
+ * The paging facts `t3_thread_read` forwards: `afterPosition` is exclusive and -1 starts at the
+ * first item; `beforePosition` returns the items just before it, oldest first; `earlierPosition`
+ * is the first returned position while earlier items exist.
+ */
+async function readPaging(call: T3Call, sample: ShapeSample): Promise<Json> {
+  const positions = records(sample.read.items).map((item) => item.position as number);
+  assert.ok(positions.length >= 2, "the sampled thread has at least two messages");
+  const page = async (args: Json): Promise<Json> => {
+    const data = await ok(call, "t3_thread_read", { threadId: sample.threadId, view: "messages", limit: 5, ...args });
+    return { positions: records(data.items).map((item) => item.position), earlierPosition: data.earlierPosition, hasMore: data.hasMore };
+  };
+  return {
+    all: positions,
+    fromStart: await page({ afterPosition: -1 }),
+    afterFirst: await page({ afterPosition: positions[0] }),
+    beforeLast: await page({ beforePosition: positions.at(-1) }),
+    beforeFirst: await page({ beforePosition: positions[0] }),
+  };
 }
 
 async function poll<T>(what: string, probe: () => Promise<T | undefined>, timeoutMs = 30_000): Promise<T> {
@@ -504,6 +553,23 @@ async function contractAssertions(options: {
     const real = await listAllTools(options.realClient);
     const snapshot = await listAllTools(options.fakeClient);
     compareToolSchemas(real, snapshot);
+  });
+
+  await check("contract: every description rewrite matches T3's wording", async () => {
+    checkDescriptionRewrites(await listAllTools(options.realClient), "T3 Code");
+  });
+
+  await check("contract: thread-only tools are neither listed nor served to outside clients", async () => {
+    const listed = (await listAllTools(options.realClient)).map((tool) => tool.name);
+    const snapshot = (await listAllTools(options.fakeClient)).map((tool) => tool.name);
+    for (const { tool, args } of THREAD_ONLY_TOOLS) {
+      assert.ok((NEVER_EXPOSED_T3_TOOLS as readonly string[]).includes(tool), `${tool} is one DevSpace must never expose`);
+      assert.ok(!listed.includes(tool), `T3 lists ${tool} to an outside client again; restore its error-code check`);
+      assert.ok(!snapshot.includes(tool), `${tool} is in the snapshot served by the fake`);
+      const real = await rpcFailure(realCall, tool, args);
+      assert.deepEqual(real, { code: -32602, message: `Tool '${tool}' not found` });
+      assert.deepEqual(await rpcFailure(fakeCall, tool, args), real, `${tool}: the fake must refuse it like T3`);
+    }
   });
 
   await check("contract: error codes for outside clients", async () => {
@@ -539,11 +605,28 @@ async function contractAssertions(options: {
     compareKeys("thread read detail", [real.read.thread as Json], [fake.read.thread as Json], BRIDGE_READS.readThread);
     compareKeys("thread read items", records(real.read.items), records(fake.read.items), BRIDGE_READS.readItem);
     compareKeys("thread read runs", records(real.read.recentRuns), records(fake.read.recentRuns), []);
+    compareKeys("search envelope", [real.searchEnvelope], [fake.searchEnvelope], ["matches"]);
     compareKeys("search title matches", real.searchMatches, fake.searchMatches, BRIDGE_READS.searchMatch);
     compareKeys("project rows", real.projectRows, fake.projectRows, BRIDGE_READS.projectRow);
     assert.equal((real.read.thread as Json).runtimeMode, "full-access", "a full-access launch reports runtimeMode full-access");
     const lastItem = records(real.read.items).at(-1);
     assert.equal(lastItem?.type, "assistant_message");
+    const paging = await readPaging(realCall, real);
+    const [first, ...rest] = paging.all as number[];
+    assert.deepEqual(
+      { fromStart: paging.fromStart, afterFirst: paging.afterFirst, beforeLast: paging.beforeLast, beforeFirst: paging.beforeFirst },
+      {
+        fromStart: { positions: paging.all, earlierPosition: null, hasMore: false },
+        afterFirst: { positions: rest, earlierPosition: rest[0], hasMore: false },
+        beforeLast: { positions: [first, ...rest.slice(0, -1)], earlierPosition: null, hasMore: true },
+        beforeFirst: { positions: [], earlierPosition: null, hasMore: true },
+      },
+      "t3_thread_read paging in T3",
+    );
+    const fakePaging = await readPaging(fakeCall, fake);
+    const relative = (sample: Json): Json =>
+      JSON.parse(JSON.stringify(sample, (_key, value: unknown) => (typeof value === "number" ? (sample.all as number[]).indexOf(value) : value))) as Json;
+    assert.deepEqual(relative(fakePaging), relative(paging), "t3_thread_read paging: the fake must page like T3");
     await ok(realCall, "t3_thread_organize", { threadId: real.threadId, action: "settle" });
     await ok(realCall, "t3_thread_organize", { threadId: real.threadId, action: "archive" });
     const archived = await ok(realCall, "t3_thread_read", { threadId: real.threadId, limit: 1 });
@@ -595,6 +678,17 @@ async function phase2Contract(
     });
     try {
       assert.equal(project.defaultModelSelection, null, `${side}: T3 ignores defaultModelSelection on create (if this fails, T3 fixed it; expose it again)`);
+      // T3 resolves a scheduled task's model from its own settings, so a project with no default
+      // model of its own can schedule (0.1.8 refused). T3's settings must hold a default model.
+      const unmodeled = await ok(call, "schedule_task", {
+        projectId: project.id,
+        title: `DevSpace bridge check ${stamp} contract no model`,
+        prompt: "Reply with exactly OK",
+        schedule: { type: "once", runAt: new Date(Date.now() + 300 * 86_400_000).toISOString() },
+        bindToCurrentThread: false,
+        enabled: false,
+      });
+      await ok(call, "delete_scheduled_task", { scheduledTaskId: unmodeled.scheduledTaskId });
       const updated = await ok(call, "t3_project_update", { projectId: project.id, defaultModelSelection: model });
       assert.deepEqual(updated.defaultModelSelection, model, `${side}: t3_project_update sets the default model`);
       const task = await ok(call, "schedule_task", {
@@ -617,13 +711,15 @@ async function phase2Contract(
   const fakeSample = samples.fake!;
   if (typeof real.task.webhookUrl === "string") {
     assert.ok("webhookSignature" in real.task, "a webhook task result carries webhookSignature");
-    assert.ok(records(real.listing.tasks).some((entry) => typeof entry.webhookUrl === "string"), "list_scheduled_tasks returns webhookUrl");
   } else {
     notes.push("T3 returned no webhookUrl (T3 Connect remote access is off); the webhook field names were not checked");
   }
   compareKeys("project records", [real.project, real.updated], [fakeSample.project, fakeSample.updated], BRIDGE_READS.projectRecord);
   compareKeys("scheduled tasks", [real.task], [fakeSample.task], BRIDGE_READS.scheduledTask);
   compareKeys("scheduled task listing", [real.listing], [fakeSample.listing], ["tasks"]);
+  // Since T3 0.1.11 only the creation result carries `webhookUrl`; if a listing brings it back,
+  // the fake is stale (the bridge removes it either way).
+  compareKeys("scheduled task rows", records(real.listing.tasks), records(fakeSample.listing.tasks), BRIDGE_READS.scheduledTask);
   compareKeys("capabilities", [real.capabilities], [fakeSample.capabilities], ["providers"]);
   const realProviders = records(real.capabilities.providers);
   const fakeProviders = records(fakeSample.capabilities.providers);

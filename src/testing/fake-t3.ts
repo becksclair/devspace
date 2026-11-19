@@ -43,6 +43,7 @@ interface JsonSchema {
 
 interface SnapshotTool {
   name: string;
+  description?: string;
   inputSchema: JsonSchema;
   outputSchema?: JsonSchema;
 }
@@ -231,7 +232,7 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-const SERVER_INFO = { name: "T3 Code", version: "0.1.8-nightly.20261109.4392" };
+const SERVER_INFO = { name: "T3 Code", version: "0.1.11-nightly.20261118.4890" };
 const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 const SUPPORTED_SCOPES = ["orchestration:read", "orchestration:operate"];
 const TOKEN_TTL_SECONDS = 2_592_000;
@@ -241,8 +242,6 @@ const CREDENTIAL_ERROR_BODY = JSON.stringify({
   message: "A valid T3 Code MCP credential is required.",
 });
 const NOT_IN_THREAD = "this MCP client is not running inside a T3 thread.";
-const THREAD_CREDENTIAL_REQUIRED =
-  "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread.";
 const DEFAULT_MODEL_SELECTION = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
 const WEBHOOK_URL_PREFIX = "https://connect.example.invalid/hooks/";
 const REGENERATED_TITLE_FALLBACK = "Regenerated title";
@@ -684,6 +683,7 @@ export class FakeT3 {
   private taskCounter = 0;
   private stopped = false;
   private rejectingCredentials = false;
+  private webhookUrlEverywhere = false;
 
   private constructor(tempDir: string, httpServer: HttpServer, port: number, options: FakeT3Options) {
     this.tempDir = tempDir;
@@ -755,9 +755,9 @@ export class FakeT3 {
   }
 
   /**
-   * Registers a project. `defaultModelSelection` (default none) is what `schedule_task` requires
-   * and scheduled runs use; `git: true` creates `<workspaceRoot>/.git` (and the root), making the
-   * project a repository so `run_scheduled_task_now` can provision a worktree for it.
+   * Registers a project. `defaultModelSelection` defaults to none; `git: true` creates
+   * `<workspaceRoot>/.git` (and the root), making the project a repository, so a scheduled run
+   * gets a worktree instead of running in place.
    */
   addProject(input: {
     title: string;
@@ -784,13 +784,28 @@ export class FakeT3 {
     return project ? this.projectRow(project) : undefined;
   }
 
-  /** Every scheduled task, newest first, as `list_scheduled_tasks` shows it (webhook fields included). */
+  /** Every scheduled task, newest first, as `schedule_task` returned it on creation (`webhookUrl` included). */
   scheduledTasks(): Array<Record<string, unknown>> {
-    return this.sortedTasks().map((task) => this.taskView(task));
+    return this.sortedTasks().map((task) => this.taskView(task, true));
   }
 
   /**
-   * Seeds a scheduled task without `schedule_task`'s checks (no default model needed). A webhook
+   * Makes update and listing results carry `webhookUrl` too, as T3 did before 0.1.11. DevSpace
+   * must remove the URL wherever T3 returns it.
+   */
+  returnWebhookUrlEverywhere(enabled: boolean): void {
+    this.webhookUrlEverywhere = enabled;
+  }
+
+  /** Replaces the description `tools/list` serves for `tool`, as a T3 release that rewords it would. */
+  setToolDescription(tool: string, description: string): void {
+    const entry = this.toolsByName.get(tool);
+    if (!entry) throw new Error(`fake T3 has no tool named ${tool}`);
+    entry.description = description;
+  }
+
+  /**
+   * Seeds a scheduled task without going through `schedule_task`. A webhook
    * schedule gets a `webhookUrl` under `https://connect.example.invalid/hooks/`, as T3 Connect would.
    */
   addScheduledTask(input: {
@@ -1335,7 +1350,7 @@ export class FakeT3 {
       this.calls.push({ tool: name, args: structuredClone(args), label: session?.label ?? "" });
 
       const tool = this.toolsByName.get(name);
-      if (!tool) throw rpcError(ProtocolErrorCode.InvalidParams, `Tool ${name} not found`);
+      if (!tool) throw rpcError(ProtocolErrorCode.InvalidParams, `Tool '${name}' not found`);
       const problem = validateArguments(tool, args);
       if (problem) throw rpcError(ProtocolErrorCode.InvalidParams, `Invalid parameters for tool '${name}': ${problem}`);
 
@@ -1408,9 +1423,6 @@ export class FakeT3 {
         return this.deleteScheduledTask(args);
       case "run_scheduled_task_now":
         return this.runScheduledTaskNow(args);
-      case "task_status":
-      case "create_threads":
-        throw new ToolFailure("thread_credential_required", THREAD_CREDENTIAL_REQUIRED);
       default:
         throw new ToolFailure("not_implemented", `${name} is not implemented in fake T3.`);
     }
@@ -1596,20 +1608,16 @@ export class FakeT3 {
 
     const projectId = optString(args.projectId);
     if (projectId === undefined) throw new ToolFailure("target_required", `Pass projectId: ${NOT_IN_THREAD}`);
+    // The project needs no default model of its own: T3 falls back to the default model in its
+    // settings, which this fake always has. (Real T3 without one fails with `invalid_request`.)
     const project = this.requireProject(projectId);
-    if (!project.defaultModelSelection) {
-      throw new ToolFailure(
-        "invalid_request",
-        `Project ${project.id} has no default model, so this caller cannot pick one for it.`,
-      );
-    }
     const clientRequestId = optString(args.clientRequestId);
     const id =
       clientRequestId !== undefined
         ? `scheduled-task:command:mcp:${encodeURIComponent(`client:${context.clientId}`)}:schedule-task:${clientRequestId}`
         : `scheduled-task:${randomUUID()}`;
     const existing = this.tasks.get(id);
-    if (existing) return this.taskView(existing);
+    if (existing) return this.taskView(existing, true);
 
     const prompt = optString(args.prompt);
     if (prompt === undefined || !isRecord(args.schedule)) {
@@ -1624,6 +1632,7 @@ export class FakeT3 {
         enabled: args.enabled !== false,
         freshSession: args.freshSession === true,
       }),
+      true,
     );
   }
 
@@ -1643,9 +1652,11 @@ export class FakeT3 {
 
   private listScheduledTasks(args: JsonObject): JsonObject {
     const projectId = optString(args.projectId);
+    const scheduledTaskId = optString(args.scheduledTaskId);
     return {
       tasks: this.sortedTasks()
         .filter((task) => projectId === undefined || task.projectId === projectId)
+        .filter((task) => scheduledTaskId === undefined || task.scheduledTaskId === scheduledTaskId)
         .map((task) => this.taskView(task)),
     };
   }
@@ -1657,9 +1668,10 @@ export class FakeT3 {
   }
 
   /**
-   * Starts a new thread in the task's project, even for a disabled task. A project without a
-   * `.git` fails workspace preparation at once (as real T3 does); otherwise a worktree directory
-   * is made and the prompt runs through the scripted agent. "succeeded" means started.
+   * Starts a new thread in the task's project, even for a disabled task, and runs the prompt
+   * through the scripted agent. A project with a `.git` gets a worktree directory; any other runs
+   * in place (`worktreePath` null). The run's model is the default model in T3's settings, not the
+   * one `t3_project_update` set on the project. "succeeded" means started.
    */
   private runScheduledTaskNow(args: JsonObject): JsonObject {
     const task = this.tasks.get(String(args.taskId));
@@ -1680,7 +1692,7 @@ export class FakeT3 {
       title: task.title,
       createdBy: "agent",
       creationSource: "mcp",
-      modelSelection: { ...(project.defaultModelSelection ?? DEFAULT_MODEL_SELECTION) },
+      modelSelection: { ...DEFAULT_MODEL_SELECTION },
       runtimeMode: "full-access",
       interactionMode: "default",
       worktreePath,
@@ -1689,8 +1701,7 @@ export class FakeT3 {
     thread.branch = branch;
     const messageId = `scheduled-task-message:${task.scheduledTaskId}:${Date.now()}:manual`;
     const run = this.newRun(thread, "preparing", task.prompt, messageId);
-    if (repository) this.beginRun(thread, run, "launch", messageId);
-    else this.failWorkspacePreparation(thread, run, project.workspaceRoot);
+    this.beginRun(thread, run, "launch", messageId);
     task.lastRunStatus = "succeeded";
     task.runCount += 1;
     return {
@@ -1698,6 +1709,7 @@ export class FakeT3 {
       threadId: thread.threadId,
       link: this.link(thread.threadId),
       lastRunStatus: task.lastRunStatus,
+      lastRunError: null,
       runCount: task.runCount,
       nextRunAt: task.nextRunAt,
     };
@@ -1706,7 +1718,10 @@ export class FakeT3 {
   private threadList(args: JsonObject): JsonObject {
     const projectId = optString(args.projectId);
     if (projectId === undefined && args.allProjects !== true) {
-      throw new ToolFailure("target_required", `Pass projectId: ${NOT_IN_THREAD}`);
+      throw new ToolFailure(
+        "target_required",
+        "Pass projectId, or allProjects: true for every project. This MCP client is not running inside a T3 thread.",
+      );
     }
     const statuses = Array.isArray(args.statuses) ? new Set(args.statuses) : undefined;
     const titleContains = optString(args.titleContains)?.toLowerCase();
@@ -1734,7 +1749,7 @@ export class FakeT3 {
     const query = String(args.query).trim().toLowerCase();
     const limit = clamp(optInt(args.limit) ?? 50, 1, 50);
     const projectId = optString(args.projectId);
-    if (!query) return { matches: [] };
+    if (!query) return { currentThreadId: null, matches: [] };
     const candidates = [...this.threads.values()]
       .filter((thread) => !thread.archived && thread.relationshipToParent !== "subagent")
       .filter((thread) => projectId === undefined || thread.projectId === projectId)
@@ -1772,7 +1787,7 @@ export class FakeT3 {
       });
     }
     messageMatches.sort((a, b) => (a.messageCreatedAt < b.messageCreatedAt ? 1 : a.messageCreatedAt > b.messageCreatedAt ? -1 : 0));
-    return { matches: [...titleMatches, ...messageMatches].slice(0, limit) };
+    return { currentThreadId: null, matches: [...titleMatches, ...messageMatches].slice(0, limit) };
   }
 
   private threadRead(args: JsonObject): JsonObject {
@@ -1793,14 +1808,26 @@ export class FakeT3 {
       page = [{ item, offset: optInt(args.textOffset) ?? 0 }];
       hasMore = visible.some((candidate) => candidate.position > item.position);
     } else {
+      // `afterPosition` (exclusive, -1 for the start) pages forward; `beforePosition` alone returns
+      // the `limit` items just before it. Both orders are oldest first.
       const afterPosition = optInt(args.afterPosition);
-      const remaining = visible.filter((item) => afterPosition === undefined || item.position > afterPosition);
-      page = remaining.slice(0, limit).map((item) => ({ item, offset: 0 }));
-      hasMore = remaining.length > page.length;
+      const beforePosition = optInt(args.beforePosition);
+      const range = visible.filter(
+        (item) =>
+          (afterPosition === undefined || item.position > afterPosition) &&
+          (beforePosition === undefined || item.position < beforePosition),
+      );
+      const selected = beforePosition !== undefined && afterPosition === undefined ? range.slice(-limit) : range.slice(0, limit);
+      page = selected.map((item) => ({ item, offset: 0 }));
+      // Whether items follow the page; an empty page before `beforePosition` still has that item on.
+      const end = selected.at(-1)?.position ?? (beforePosition !== undefined ? beforePosition - 1 : undefined);
+      hasMore = end !== undefined && visible.some((item) => item.position > end);
     }
+    const first = page[0]?.item.position;
     const last = page.at(-1)?.item.position;
+    const positioned = args.afterPosition !== undefined || args.beforePosition !== undefined || args.itemId !== undefined;
     return {
-      thread: this.threadDetail(thread),
+      thread: this.threadDetail(thread, positioned),
       recentRuns: [...thread.runs]
         .reverse()
         .slice(0, runLimit)
@@ -1810,6 +1837,7 @@ export class FakeT3 {
           status: run.status,
           providerInstanceId: run.providerInstanceId,
           model: run.model,
+          executedModel: run.model,
           requestedAt: run.requestedAt,
           startedAt: run.startedAt,
           completedAt: run.completedAt,
@@ -1817,6 +1845,8 @@ export class FakeT3 {
       items: page.map(({ item, offset }) => this.renderItem(thread, item, offset, maxChars)),
       nextPosition: last ?? optInt(args.afterPosition) ?? null,
       hasMore,
+      // The first returned position while earlier items exist; pass it as `beforePosition`.
+      earlierPosition: first !== undefined && visible.some((item) => item.position < first) ? first : null,
     };
   }
 
@@ -1905,7 +1935,10 @@ export class FakeT3 {
     let delivery: "started" | "queued" | "steered" | "restarted";
     if (mode === "steer" || (mode === "auto" && active && STEERABLE_RUN_STATUSES.has(active.status))) {
       if (!active || !STEERABLE_RUN_STATUSES.has(active.status)) {
-        throw new ToolFailure("thread_not_sendable", `Thread ${thread.threadId} has no running turn that can be steered.`);
+        throw new ToolFailure(
+          "thread_not_sendable",
+          `Thread ${thread.threadId} has no running turn that can be steered. Send with mode: "auto" or "queue" to start a new turn there.`,
+        );
       }
       this.addUserItem(thread, active.runId, messageId, message);
       this.touch(thread);
@@ -2204,7 +2237,11 @@ export class FakeT3 {
     }
   }
 
-  private taskView(task: ScheduledTaskRecord): JsonObject {
+  /**
+   * Only the creation result carries `webhookUrl` (it holds the access token); updates and
+   * listings carry `webhookSignature` alone, unless `returnWebhookUrlEverywhere` is on.
+   */
+  private taskView(task: ScheduledTaskRecord, withWebhookUrl = this.webhookUrlEverywhere): JsonObject {
     return {
       scheduledTaskId: task.scheduledTaskId,
       title: task.title,
@@ -2216,7 +2253,9 @@ export class FakeT3 {
       schedule: structuredClone(task.schedule),
       nextRunAt: task.nextRunAt,
       lastRunStatus: task.lastRunStatus,
-      ...(task.schedule.type === "webhook" ? { webhookUrl: task.webhookUrl, webhookSignature: task.webhookSignature } : {}),
+      ...(task.schedule.type === "webhook"
+        ? { ...(withWebhookUrl ? { webhookUrl: task.webhookUrl } : {}), webhookSignature: task.webhookSignature }
+        : {}),
     };
   }
 
@@ -2228,30 +2267,6 @@ export class FakeT3 {
     const task = this.tasks.get(scheduledTaskId);
     if (!task) throw new ToolFailure("task_not_found", `Scheduled task ${scheduledTaskId} was not found.`);
     return task;
-  }
-
-  /** Real T3's immediate failure when a scheduled run's project folder is not a git repository. */
-  private failWorkspacePreparation(thread: ThreadRecord, run: RunRecord, workspaceRoot: string): void {
-    const message = `Workspace preparation failed during provision worktree: Git command failed in GitWorkflowService.resolveWorktreeBaseRemote (${workspaceRoot}): Failed to resolve the VCS driver for this Git command.`;
-    const messageId = run.messageId ?? randomUUID();
-    this.addUserItem(thread, run.runId, messageId, run.message ?? "", messageId);
-    for (const [kind, type, text] of [
-      ["workspace-preparation", "command_execution", `$ Preparing workspace\n${message}`],
-      ["workspace-preparation-failure", "error", message],
-    ]) {
-      this.addItem(thread, {
-        itemId: `turn-item:provider:${run.providerInstanceId}:native-item:${encodeURIComponent(`${kind}:${run.runId}`)}`,
-        runId: run.runId,
-        messageId: null,
-        createdBy: null,
-        creationSource: null,
-        type,
-        status: "failed",
-        title: "Workspace preparation failed",
-        text,
-      });
-    }
-    this.finishRun(thread, run, "failed");
   }
 
   // ---------------------------------------------------------------------------
@@ -2566,10 +2581,15 @@ export class FakeT3 {
       interactionMode: thread.interactionMode,
       linkedPullRequest: null,
       pullRequests: [],
+      pullRequestCount: 0,
+      openPullRequestCount: 0,
       settled: thread.settled,
       settledAt: thread.settledAt,
       snoozed: this.isSnoozed(thread),
       snoozedUntil: this.isSnoozed(thread) ? thread.snoozedUntil : null,
+      pinned: thread.pinnedAt !== null,
+      blockedOnThreadWait: false,
+      pendingBackgroundTasks: [],
       parentThreadId: thread.parentThreadId,
       relationshipToParent: thread.relationshipToParent,
       itemCount: thread.items.length,
@@ -2578,7 +2598,8 @@ export class FakeT3 {
     };
   }
 
-  private threadDetail(thread: ThreadRecord): JsonObject {
+  /** A positioned read (`afterPosition`, `beforePosition`, or `itemId`) leaves out the pull request list, like T3. */
+  private threadDetail(thread: ThreadRecord, positioned = false): JsonObject {
     return {
       threadId: thread.threadId,
       projectId: thread.projectId,
@@ -2594,8 +2615,11 @@ export class FakeT3 {
       runtimeMode: thread.runtimeMode,
       interactionMode: thread.interactionMode,
       linkedPullRequest: null,
-      pullRequests: [],
+      ...(positioned ? {} : { pullRequests: [] }),
+      pullRequestCount: 0,
+      ...(positioned ? {} : { openPullRequestCount: 0 }),
       titleRegeneration: thread.titleRegeneration ? { ...thread.titleRegeneration } : null,
+      lastTitleRegeneration: null,
       branch: thread.branch,
       worktreePath: thread.worktreePath,
       parentThreadId: thread.parentThreadId,
@@ -2608,6 +2632,9 @@ export class FakeT3 {
       settledAt: thread.settledAt,
       snoozed: this.isSnoozed(thread),
       snoozedUntil: this.isSnoozed(thread) ? thread.snoozedUntil : null,
+      pinned: thread.pinnedAt !== null,
+      blockedOnThreadWait: false,
+      pendingBackgroundTasks: [],
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
     };

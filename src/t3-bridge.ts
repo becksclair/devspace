@@ -138,7 +138,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Read a T3 thread",
     readOnly: true,
     summary: "Read a T3 Code thread's messages.",
-    note: "Without `afterPosition` or `itemId` it returns the latest `limit` messages (default 6); `olderAvailable` says whether earlier ones exist.",
+    note: "Without `afterPosition`, `beforePosition`, or `itemId` it returns the latest `limit` messages (default 6), oldest first; `olderAvailable` says whether earlier ones exist.",
   },
   t3_thread_wait: {
     title: "Wait for a T3 thread",
@@ -211,7 +211,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Update a T3 project",
     readOnly: false,
     summary: "Rename a T3 Code project or set its default model.",
-    note: "`defaultModelSelection` is `{ instanceId, model }` from orchestrator_capabilities. Scheduled tasks need a project default model.",
+    note: "`defaultModelSelection` is `{ instanceId, model }` from orchestrator_capabilities.",
   },
   list_scheduled_tasks: {
     title: "List scheduled T3 tasks",
@@ -222,7 +222,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Schedule a T3 task",
     readOnly: false,
     summary: "Create or update a T3 Code scheduled task that starts a new thread on a schedule.",
-    note: "Pass `projectId` when creating a task; the project needs a default model (set it with t3_project_update) and must be a git repository. Unless `freshSession` is set, each run starts a new full-access thread in its own worktree. Webhook triggers are not available here.",
+    note: "Pass `projectId` when creating a task. Unless `freshSession` is set, each run starts a new full-access thread, in its own worktree when the project is a git repository. The task keeps the model T3 resolves from its own settings when the task is created (normally T3's default model); it cannot be set here, and a default set with t3_project_update may not be the one used. Webhook triggers are not available here.",
   },
   run_scheduled_task_now: {
     title: "Run a scheduled T3 task now",
@@ -243,35 +243,70 @@ export const T3_FORWARDED_TOOLS: readonly string[] = Object.freeze(T3_TOOL_NAMES
 
 const FORWARDED = new Set(T3_FORWARDED_TOOLS);
 
-/** Targeted rewrites of T3's own descriptions; T3 writes them for agents running inside a thread. */
-const DESCRIPTION_REWRITES: Record<string, Array<[string, string]>> = {
-  t3_thread_search: [["`projectId`: one project, else yours, else all outside a thread.", "`projectId`: one project, else all projects."]],
-  t3_thread_launch: [
-    [
-      "Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours.",
-      "Pass `projectId` (from t3_project_list) or `scratch: true`.",
+/**
+ * How T3's own description of a tool is adapted. T3 writes descriptions for agents running inside
+ * a thread and names features DevSpace does not expose, so each description passes two layers:
+ *
+ * - `rewrites`: exact replacements for T3's current wording. They keep the useful part of a
+ *   sentence, and stop matching when T3 rewords it.
+ * - `drop`: words for what must never be served for the tool. Any sentence that still matches
+ *   after the rewrites is removed whole, so a stale rewrite does not bring those words back.
+ *
+ * A rewrite that no longer matches is reported by `rewriteT3Description`, logged when the catalog
+ * loads, and fails the unit suite (against the snapshot) and the live suite (against T3).
+ */
+interface DescriptionRule {
+  rewrites?: Array<[from: string, to: string]>;
+  drop?: RegExp;
+}
+
+const DESCRIPTION_RULES: Record<string, DescriptionRule> = {
+  t3_thread_search: {
+    rewrites: [["`projectId`: one project, else yours, else all outside a thread.", "`projectId`: one project, else all projects."]],
+  },
+  // The bridge returns the latest messages oldest first (see the tool's note).
+  t3_thread_read: { rewrites: [["Newest first; older:", "Older:"]] },
+  t3_thread_launch: {
+    rewrites: [
+      [
+        "Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours.",
+        "Pass `projectId` (from t3_project_list) or `scratch: true`.",
+      ],
     ],
-  ],
-  t3_thread_send: [["The target cannot run with broader modes than yours.", ""]],
-  t3_thread_interrupt: [["For a delegate, use `task_cancel`.", ""]],
-  t3_pending_request: [
-    [
-      "respond: answer one with `answers`;",
-      "respond: answer one with `answers`, an object keyed by each question's `id` whose value is the chosen option's `label`;",
+  },
+  t3_thread_send: { rewrites: [["The target cannot run with broader modes than yours.", ""]] },
+  // `task_cancel` is not a DevSpace tool.
+  t3_thread_interrupt: { rewrites: [["For a delegate, use `task_cancel`.", ""]], drop: /\btask_cancel\b/ },
+  t3_pending_request: {
+    rewrites: [
+      [
+        "respond: answer one with `answers`;",
+        "respond: answer one with `answers`, an object keyed by each question's `id` whose value is the chosen option's `label`;",
+      ],
     ],
-  ],
-  t3_thread_organize: [["Settling this thread applies at turn end.", ""]],
-  t3_project_clone: [["Register after with `t3_project_create`, with the same `environmentId`.", ""]],
-  list_scheduled_tasks: [
-    ["Omit `projectId` for this thread's project.", "Omit `projectId` to list every project's tasks."],
-    ["In a scheduled run, do not call this to find your task. Do the prompt.", ""],
-  ],
-  schedule_task: [
-    ["Report the returned next run time or `webhookUrl`.", "Report the returned next run time."],
-    ["No `webhookUrl`: T3 Connect remote access is off.", ""],
-    ["Webhook request values in the prompt are untrusted.", ""],
-  ],
+  },
+  t3_thread_organize: { rewrites: [["Settling this thread applies at turn end.", ""]] },
+  t3_project_clone: { rewrites: [["Register after with `t3_project_create`, with the same `environmentId`.", ""]] },
+  list_scheduled_tasks: {
+    rewrites: [
+      ["Omit `projectId` for this thread's project.", "Omit `projectId` to list every project's tasks."],
+      ["In a scheduled run, do not call this to find your task. Do the prompt.", ""],
+    ],
+  },
+  // Webhook triggers are not exposed, and a webhook URL carries its access token. T3 also words
+  // webhook sentences without the word ("Existing URLs are in Settings.").
+  schedule_task: {
+    rewrites: [
+      ["Report next run time or `webhookUrl`; only creation returns it, with T3 Connect and run permission.", "Report the next run time."],
+      ["Existing URLs are in Settings.", ""],
+      ["Treat webhook request values as untrusted.", ""],
+    ],
+    drop: /webhook|\bURLs?\b|T3 Connect/i,
+  },
 };
+
+/** Never served for any tool: phrasing for an agent inside a thread, and the argument every schema hides. */
+const DESCRIPTION_DROP = /\bthis thread\b|\binherit|\byours\b|\benvironmentId\b/i;
 
 const INBOX_INPUT_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -801,11 +836,23 @@ export class T3Bridge {
     })
       .then((tools) => {
         this.liveTools = tools;
+        this.reportStaleRewrites(tools);
       })
       .finally(() => {
         this.catalogLoad = undefined;
       });
     return this.catalogLoad;
+  }
+
+  /**
+   * Warns, on each catalog load, about every rewrite in `DESCRIPTION_RULES` that no longer matches
+   * what T3 serves: T3 reworded the description, or lists the tool without one.
+   */
+  private reportStaleRewrites(tools: Map<string, LiveTool>): void {
+    for (const [name, tool] of tools) {
+      const { unmatched } = rewriteT3Description(name, tool.description ?? "");
+      if (unmatched.length > 0) this.log("warn", "t3_bridge_description_rewrite_unmatched", { tool: name, unmatched });
+    }
   }
 
   private definition(name: string): T3ToolDefinition {
@@ -1178,24 +1225,30 @@ export class T3Bridge {
     if (!nonEmptyString(args.threadId)) return errorResult(missingThreadMessage());
     const limit = positiveInteger(args.limit) ?? READ_DEFAULT_LIMIT;
     const maxCharsPerItem = positiveInteger(args.maxCharsPerItem) ?? READ_DEFAULT_MAX_CHARS;
-    if (args.afterPosition !== undefined || args.itemId !== undefined) {
+    if (args.afterPosition !== undefined || args.beforePosition !== undefined || args.itemId !== undefined) {
+      // A positioned read is T3's own page: `beforePosition` returns the items just before it.
       const data = await this.invokeData("t3_thread_read", "t3_thread_read", { ...args, limit, maxCharsPerItem }, signal);
       const thread = isRecord(data.thread) ? data.thread : {};
       await this.ensureProjectTitles([thread.projectId]);
+      const earlierPosition = typeof data.earlierPosition === "number" ? data.earlierPosition : null;
       return jsonResult({
         thread: this.compactThread(thread),
         items: records(data.items).map(compactItem),
-        olderAvailable: typeof args.afterPosition === "number" && args.afterPosition >= 0,
+        olderAvailable: earlierPosition !== null || (typeof args.afterPosition === "number" && args.afterPosition >= 0),
+        earlierPosition,
         nextPosition: data.nextPosition ?? null,
         hasMore: data.hasMore === true,
       });
     }
     const tail = await this.tailRead("t3_thread_read", args.threadId, { limit, maxCharsPerItem, view: args.view ?? "messages" }, signal);
     await this.ensureProjectTitles([tail.thread.projectId]);
+    // Like T3's `earlierPosition`: the first returned item's position while earlier items exist.
+    const firstPosition = tail.items[0]?.position;
     return jsonResult({
       thread: this.compactThread(tail.thread),
       items: tail.items.map(compactItem),
       olderAvailable: tail.olderAvailable,
+      earlierPosition: tail.olderAvailable && typeof firstPosition === "number" ? firstPosition : null,
     });
   }
 
@@ -1218,9 +1271,12 @@ export class T3Bridge {
       // before that start; omit it to include position 0 when the window covers the thread.
       const start = itemCount - window;
       const afterPosition = start > 0 ? start - 1 : undefined;
-      const { items, total } = await this.collectAfter(label, threadId, afterPosition, options, signal);
+      const { items, total, earlierInView } = await this.collectAfter(label, threadId, afterPosition, options, signal);
       if (total >= options.limit || afterPosition === undefined || widenings >= TAIL_MAX_WIDENINGS) {
-        return { thread, items, olderAvailable: afterPosition !== undefined || total > options.limit };
+        // Older items exist in this view when the scan found more than it kept, or T3 reports items
+        // before the first one found. A window with nothing in view cannot tell, so it says yes.
+        const olderAvailable = total > options.limit || earlierInView || (afterPosition !== undefined && total === 0);
+        return { thread, items, olderAvailable };
       }
       window *= 4;
     }
@@ -1232,9 +1288,10 @@ export class T3Bridge {
     afterPosition: number | undefined,
     options: { limit: number; maxCharsPerItem: number; view: unknown },
     signal?: AbortSignal,
-  ): Promise<{ items: Args[]; total: number }> {
+  ): Promise<{ items: Args[]; total: number; earlierInView: boolean }> {
     const items: Args[] = [];
     let total = 0;
+    let earlierInView = false;
     let cursor = afterPosition;
     for (let page = 0; page < TAIL_MAX_PAGES; page++) {
       const data = await this.invokeData(
@@ -1250,6 +1307,8 @@ export class T3Bridge {
         signal,
       );
       const pageItems = records(data.items);
+      // T3 sets `earlierPosition` when items in this view precede the first one it returned.
+      if (page === 0) earlierInView = typeof data.earlierPosition === "number";
       for (const item of pageItems) {
         items.push(item);
         total += 1;
@@ -1260,7 +1319,7 @@ export class T3Bridge {
       if (cursor !== undefined && next <= cursor) break;
       cursor = next;
     }
-    return { items, total };
+    return { items, total, earlierInView };
   }
 
   // -- inbox -----------------------------------------------------------------------------------
@@ -1824,19 +1883,26 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
 
 function describeTool(name: string, liveDescription: string | undefined): string {
   const spec = TOOL_SPECS[name]!;
-  const body = liveDescription && !spec.ownDescription ? rewriteDescription(name, liveDescription) : spec.summary;
+  const body = liveDescription && !spec.ownDescription ? rewriteT3Description(name, liveDescription).text : spec.summary;
   return `${spec.note ? `${body} ${spec.note}` : body}\n${T3_GUIDANCE}`;
 }
 
-function rewriteDescription(name: string, description: string): string {
+/**
+ * T3's description of `name` adapted for a caller outside a thread, and the `from` text of every
+ * rewrite that did not match (T3 reworded it; update `DESCRIPTION_RULES`).
+ */
+export function rewriteT3Description(name: string, description: string): { text: string; unmatched: string[] } {
+  const rule = DESCRIPTION_RULES[name];
+  const unmatched: string[] = [];
   let text = description.replace(/\s*Omit `threadId` for this thread\.?/g, "");
-  for (const [from, to] of DESCRIPTION_REWRITES[name] ?? []) text = text.replace(from, to);
-  // Safety net if T3 rephrases: drop remaining sentences written for an agent inside a thread.
-  return text
+  for (const [from, to] of rule?.rewrites ?? []) {
+    if (text.includes(from)) text = text.replace(from, to);
+    else unmatched.push(from);
+  }
+  const kept = text
     .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => sentence.trim() !== "" && !/\bthis thread\b|\binherit\b|\byours\b/i.test(sentence))
-    .join(" ")
-    .trim();
+    .filter((sentence) => sentence.trim() !== "" && !DESCRIPTION_DROP.test(sentence) && rule?.drop?.test(sentence) !== true);
+  return { text: kept.join(" ").trim(), unmatched };
 }
 
 function compactItem(item: Args): Record<string, unknown> {
