@@ -39,6 +39,7 @@ import {
   checkCatalog,
   checkCliEnvironment,
   checkCredentialRecovery,
+  checkDescriptionRewrites,
   checkDroppedLaunch,
   checkFullAccessMint,
   checkInbox,
@@ -53,14 +54,18 @@ import {
   checkNoSecrets,
   checkReading,
   checkRestart,
+  checkRewordedCatalog,
   checkShaping,
+  checkStaleDescriptionRewrites,
   checkUnavailable,
   fails,
   forwarded,
   ok,
   pairingCount,
   recordingCall,
+  REWORDED_SCHEDULE_TASK,
   resultText,
+  staleRewriteWarnings,
   waitFor,
   type CatalogTool,
   type T3Call,
@@ -384,8 +389,25 @@ try {
   assert.ok(definitions.every((definition) => definition.live), "the first fetch loads the live catalog");
   assert.ok(definitions.every((definition) => definition.title.length > 0));
   checkCatalog(definitions.map((definition): CatalogTool => ({ ...definition })));
-  const readDefinition = definitions.find((definition) => definition.name === "t3_thread_read");
-  assert.match(String(readDefinition?.description), /returns the latest `limit` messages \(default 6\)/);
+  // Every rewrite matches the snapshot's wording, so the catalog load reported nothing.
+  checkDescriptionRewrites();
+  checkStaleDescriptionRewrites();
+  assert.deepEqual(staleRewriteWarnings(consoleCapture.lines), [], "no stale rewrite against the snapshot");
+
+  // A T3 release rewords a description the bridge rewrites: the bridge warns, and still serves
+  // the tool without what it must never say.
+  const rewordedFake = await startFake();
+  rewordedFake.setToolDescription("schedule_task", REWORDED_SCHEDULE_TASK);
+  const rewordedBridge = newBridge(rewordedFake, "devspace-t3-bridge:unit-reworded");
+  const rewordedDefinitions = await rewordedBridge.toolDefinitions();
+  assert.ok(rewordedDefinitions.every((definition) => definition.live));
+  checkRewordedCatalog(rewordedDefinitions.map((definition): CatalogTool => ({ ...definition })));
+  checkCatalog(rewordedDefinitions.map((definition): CatalogTool => ({ ...definition })));
+  const rewordedLogs = staleRewriteWarnings(consoleCapture.lines).map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(rewordedLogs.length, 1, "one warning for the reworded tool");
+  assert.equal(rewordedLogs[0]!.level, "warn");
+  assert.equal(rewordedLogs[0]!.tool, "schedule_task");
+  assert.equal((rewordedLogs[0]!.unmatched as string[]).length, 3);
 
   for (const profile of ["standard", "trusted-owner"] as const) {
     const registered = await connectRegistered(catalogBridge, profile);

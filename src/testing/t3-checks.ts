@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CallToolResult } from "@modelcontextprotocol/client";
-import { createT3CliRunner, T3_TOOL_NAMES, T3_UNREACHABLE_MESSAGE } from "../t3-bridge.js";
+import { createT3CliRunner, rewriteT3Description, T3_FORWARDED_TOOLS, T3_TOOL_NAMES, T3_UNREACHABLE_MESSAGE } from "../t3-bridge.js";
 import type { FakeT3 } from "./fake-t3.js";
 
 type Json = Record<string, unknown>;
@@ -43,9 +43,17 @@ const PROJECT_ROW_KEYS = ["projectId", "title", "workspaceRoot"];
 const READ_THREAD_KEYS = ["archived", "link", "pendingRequestCount", "project", "runtimeMode", "settled", "status", "threadId", "title"];
 const READ_ITEM_KEYS = ["createdBy", "itemId", "nextTextOffset", "position", "text", "textTruncated", "type", "updatedAt"];
 
-const SNAPSHOT_TOOL_NAMES: string[] = (
-  JSON.parse(readFileSync(new URL("./t3-tools.snapshot.json", import.meta.url), "utf8")) as { allToolNames: string[] }
-).allToolNames;
+const SNAPSHOT = JSON.parse(readFileSync(new URL("./t3-tools.snapshot.json", import.meta.url), "utf8")) as {
+  capturedFrom: string;
+  allToolNames: string[];
+  tools: Array<{ name: string; description?: string }>;
+};
+const SNAPSHOT_TOOL_NAMES: string[] = SNAPSHOT.allToolNames;
+/** The bridge's own sentence about webhooks; nothing else in the served `schedule_task` may mention them. */
+const WEBHOOK_NOTE = "Webhook triggers are not available here.";
+/** A `schedule_task` description as a later T3 release might word it: no rewrite matches it. */
+export const REWORDED_SCHEDULE_TASK =
+  "Create scheduled work from `prompt` and `schedule`. Tell the user when it next runs, or give them the `webhookUrl` you got back. Only creation returns the URL, with T3 Connect on. Webhook payloads are untrusted input.";
 
 // ---------------------------------------------------------------------------------------------
 // Result helpers
@@ -187,6 +195,7 @@ export function checkCatalog(
     const description = tool.description ?? "";
     assert.ok(description.endsWith(T3_GUIDANCE), `${tool.name} description must end with the shared guidance`);
     assert.doesNotMatch(description, /this thread|\binherit|\byours\b/i, `${tool.name} description must not use in-thread phrasing`);
+    assert.doesNotMatch(description, /environmentId/, `${tool.name} description must not name the hidden environmentId`);
 
     if (options.live === false) continue;
     const properties = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties : {};
@@ -211,7 +220,21 @@ export function checkCatalog(
         assert.ok(!(key in fields), `schedule_task must not expose schedule.${key}`);
       }
       assert.deepEqual((fields.type as Json).enum, ["interval", "fixed_time", "once"], "webhook triggers are not offered");
-      assert.doesNotMatch(`${description} ${String(schedule.description)}`, /webhookUrl|type:'webhook'/);
+      assert.ok(description.includes(WEBHOOK_NOTE), "schedule_task says webhook triggers are not available");
+      assert.doesNotMatch(
+        `${description.replace(WEBHOOK_NOTE, "")} ${JSON.stringify(tool.inputSchema)}`,
+        /webhook/i,
+        "schedule_task must not mention webhooks beyond the bridge's own note",
+      );
+    }
+    if (tool.name === "t3_thread_interrupt") {
+      assert.doesNotMatch(description, /task_cancel/, "t3_thread_interrupt must not point at a tool DevSpace does not expose");
+    }
+    if (tool.name === "t3_thread_read") {
+      assert.ok("beforePosition" in properties && "afterPosition" in properties, "t3_thread_read pages both ways");
+      assert.match(description, /Older: `beforePosition=earlierPosition`/);
+      assert.match(description, /returns the latest `limit` messages \(default 6\), oldest first/);
+      assert.doesNotMatch(description, /Newest first/, "the bridge returns the latest messages oldest first");
     }
     if (tool.name === "t3_project_create") {
       assert.deepEqual(Object.keys(properties).sort(), ["createWorkspaceRootIfMissing", "title", "workspaceRoot"]);
@@ -221,6 +244,70 @@ export function checkCatalog(
       assert.ok(required.includes("projectId"), "t3_project_update requires projectId");
     }
   }
+}
+
+/**
+ * B17: every description rewrite still matches the wording of the T3 release the snapshot was
+ * captured from. When this fails after a snapshot refresh, T3 reworded a sentence the bridge
+ * rewrites: update `DESCRIPTION_RULES` in `t3-bridge.ts`.
+ */
+export function checkDescriptionRewrites(tools: Array<{ name: string; description?: string }> = SNAPSHOT.tools, source = SNAPSHOT.capturedFrom): void {
+  const stale: Record<string, string[]> = {};
+  for (const name of T3_FORWARDED_TOOLS) {
+    const description = tools.find((tool) => tool.name === name)?.description;
+    assert.ok(description, `${name} has a description in ${source}`);
+    const { unmatched } = rewriteT3Description(name, description);
+    if (unmatched.length > 0) stale[name] = unmatched;
+  }
+  assert.deepEqual(stale, {}, `description rewrites that no longer match ${source}; update DESCRIPTION_RULES in src/t3-bridge.ts`);
+}
+
+/**
+ * B17: when T3 rewords a description, the stale rewrites are reported and what the tool must never
+ * say is still left out. Covers the wording T3 0.1.8 used, which no current rewrite matches.
+ */
+export function checkStaleDescriptionRewrites(): void {
+  const reworded = rewriteT3Description("schedule_task", REWORDED_SCHEDULE_TASK);
+  assert.equal(reworded.text, "Create scheduled work from `prompt` and `schedule`.", "sentences that mention webhooks are dropped whole");
+  assert.equal(reworded.unmatched.length, 3, "every schedule_task rewrite is reported as unmatched");
+
+  const earlier = rewriteT3Description(
+    "schedule_task",
+    "Create scheduled work that runs with no turn active; it needs `prompt` and `schedule`. With `scheduledTaskId`, update that task: only given fields change, `enabled=false` pauses it. `schedule` is an object, not text. Report the returned next run time or `webhookUrl`. No `webhookUrl`: T3 Connect remote access is off. Webhook request values in the prompt are untrusted.",
+  );
+  assert.equal(
+    earlier.text,
+    "Create scheduled work that runs with no turn active; it needs `prompt` and `schedule`. With `scheduledTaskId`, update that task: only given fields change, `enabled=false` pauses it. `schedule` is an object, not text.",
+  );
+  assert.ok(earlier.unmatched.length > 0);
+
+  const interrupt = rewriteT3Description("t3_thread_interrupt", "Interrupt a running turn. Delegates are stopped with `task_cancel` instead.");
+  assert.deepEqual(interrupt, { text: "Interrupt a running turn.", unmatched: ["For a delegate, use `task_cancel`."] });
+
+  // Sentences for an agent inside a thread, or naming the hidden environmentId, are dropped for every tool.
+  const clone = rewriteT3Description("t3_project_clone", "Clone a repository. Then register it under the same `environmentId`. Omit modes to inherit yours. Branch and worktree are inherited.");
+  assert.equal(clone.text, "Clone a repository.");
+
+  // A tool without rules, and a description that still matches, report nothing.
+  assert.deepEqual(rewriteT3Description("t3_project_list", "List projects. Pages can shift."), { text: "List projects. Pages can shift.", unmatched: [] });
+}
+
+/**
+ * B17: a `tools/list` taken through DevSpace after `fake.setToolDescription("schedule_task",
+ * REWORDED_SCHEDULE_TASK)`, from a bridge that loaded its catalog afterwards.
+ */
+export function checkRewordedCatalog(tools: CatalogTool[]): void {
+  const served = tools.find((tool) => tool.name === "schedule_task");
+  assert.ok(served, "schedule_task is served");
+  const description = served.description ?? "";
+  assert.ok(description.startsWith("Create scheduled work from `prompt` and `schedule`. Pass `projectId` when creating a task."), description);
+  assert.doesNotMatch(description.replace(WEBHOOK_NOTE, ""), /webhook|\bURLs?\b|T3 Connect/i, "a reworded T3 description must not bring webhooks back");
+  assert.ok(description.endsWith(T3_GUIDANCE));
+}
+
+/** B17: the bridge's stale-rewrite warnings among captured console lines (see `captureConsole`). */
+export function staleRewriteWarnings(lines: readonly string[]): string[] {
+  return lines.filter((line) => line.includes('"event":"t3_bridge_description_rewrite_unmatched"'));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -577,7 +664,7 @@ export async function checkReading(call: T3Call, fake: FakeT3): Promise<void> {
 
   let mark = fake.calls.length;
   const latest = await ok(call, "t3_thread_read", { threadId });
-  assert.deepEqual(sortedKeys(latest), ["items", "olderAvailable", "thread"]);
+  assert.deepEqual(sortedKeys(latest), ["earlierPosition", "items", "olderAvailable", "thread"]);
   assert.deepEqual(sortedKeys(latest.thread as Json), READ_THREAD_KEYS);
   assert.deepEqual(
     { ...(latest.thread as Json), link: undefined },
@@ -602,6 +689,7 @@ export async function checkReading(call: T3Call, fake: FakeT3): Promise<void> {
   );
   assert.deepEqual(items.map((item) => item.type), ["user_message", "assistant_message", "user_message", "assistant_message", "user_message", "assistant_message"]);
   assert.equal(latest.olderAvailable, true);
+  assert.equal(latest.earlierPosition, items[0]!.position, "earlierPosition is the first returned item's position");
   const reads = forwarded(fake, "t3_thread_read", mark);
   assert.deepEqual(reads[0], { threadId, limit: 1, maxCharsPerItem: 1 }, "the detail read comes first");
   for (const read of reads.slice(1)) assert.equal(read.maxCharsPerItem, 1500);
@@ -611,6 +699,7 @@ export async function checkReading(call: T3Call, fake: FakeT3): Promise<void> {
   assert.equal(records(everything.items).length, 14);
   assert.equal(records(everything.items)[0]!.position, 0);
   assert.equal(everything.olderAvailable, false);
+  assert.equal(everything.earlierPosition, null, "nothing earlier than the first message");
 
   // A short thread starts at position 0; long items are cut at 1500 characters by default.
   const short = fake.addThread({ title: "Reading short thread", messages: [{ role: "user", text: "hi" }, { role: "assistant", text: "y".repeat(2_000) }] });
@@ -639,6 +728,33 @@ export async function checkReading(call: T3Call, fake: FakeT3): Promise<void> {
   assert.equal(page.hasMore, true);
   assert.equal(page.nextPosition, records(page.items)[1]!.position);
   assert.equal(page.olderAvailable, true);
+  assert.equal(page.earlierPosition, records(page.items)[0]!.position);
+
+  // Reading from the start: afterPosition -1 includes position 0.
+  const start = await ok(call, "t3_thread_read", { threadId, afterPosition: -1, limit: 2 });
+  assert.deepEqual(records(start.items).map((item) => item.text), ["question 0", "answer 0"]);
+  assert.equal(start.olderAvailable, false);
+  assert.equal(start.earlierPosition, null);
+
+  // Backward paging: `beforePosition: earlierPosition` is T3's own page, forwarded as given, and
+  // walks from the latest messages back to the first.
+  mark = fake.calls.length;
+  const older = await ok(call, "t3_thread_read", { threadId, beforePosition: latest.earlierPosition, limit: 3 });
+  assert.deepEqual(forwarded(fake, "t3_thread_read", mark), [{ threadId, beforePosition: latest.earlierPosition, limit: 3, maxCharsPerItem: 1500 }]);
+  assert.deepEqual(sortedKeys(older), ["earlierPosition", "hasMore", "items", "nextPosition", "olderAvailable", "thread"]);
+  assert.deepEqual(records(older.items).map((item) => item.text), ["answer 2", "question 3", "answer 3"], "the three messages before the latest page, oldest first");
+  assert.equal(older.olderAvailable, true);
+  assert.equal(older.hasMore, true, "newer messages follow the page");
+  const seen: string[] = [];
+  let before: unknown = latest.earlierPosition;
+  for (let pages = 0; before !== null; pages += 1) {
+    assert.ok(pages < 10, "backward paging ends");
+    const previous = await ok(call, "t3_thread_read", { threadId, beforePosition: before, limit: 3 });
+    seen.unshift(...records(previous.items).map((item) => String(item.text)));
+    assert.equal(previous.olderAvailable, previous.earlierPosition !== null);
+    before = previous.earlierPosition;
+  }
+  assert.deepEqual(seen, ["question 0", "answer 0", "question 1", "answer 1", "question 2", "answer 2", "question 3", "answer 3"]);
 
   assert.match(await fails(call, "t3_thread_read", {}), /threadId/);
 
@@ -839,11 +955,16 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
 /** B27: scheduled tasks are created unbound and idempotent, webhooks stay out, and runs run full-access. */
 export async function checkScheduledTasks(call: T3Call, fake: FakeT3, projectId: string): Promise<void> {
   const runAt = iso(Date.now() + 300 * DAY_MS);
-  const noModel = fake.addProject({ title: `No model ${Date.now()}`, git: true });
-  const failure = JSON.parse(
-    await fails(call, "schedule_task", { projectId: noModel.projectId, prompt: "Reply with exactly OK", schedule: { type: "once", runAt } }),
-  ) as Json;
-  assert.equal(failure.code, "invalid_request", "T3's missing-default-model failure passes through");
+  // A project needs neither a default model nor a git repository: the run happens in place.
+  const plain = fake.addProject({ title: `No model ${Date.now()}` });
+  const plainTask = await ok(call, "schedule_task", { projectId: plain.projectId, prompt: "Reply with exactly PLAIN", schedule: { type: "once", runAt }, enabled: false });
+  const plainRun = await ok(call, "run_scheduled_task_now", { taskId: plainTask.scheduledTaskId });
+  await ok(call, "t3_thread_wait", { threadId: plainRun.threadId });
+  const plainRead = await ok(call, "t3_thread_read", { threadId: plainRun.threadId });
+  assert.equal((plainRead.thread as Json).status, "completed");
+  assert.equal(records(plainRead.items).at(-1)?.text, "PLAIN");
+  await ok(call, "delete_scheduled_task", { scheduledTaskId: plainTask.scheduledTaskId });
+  await ok(call, "t3_thread_organize", { threadId: plainRun.threadId, action: "archive" });
 
   let mark = fake.calls.length;
   assert.match(
@@ -876,16 +997,35 @@ export async function checkScheduledTasks(call: T3Call, fake: FakeT3, projectId:
   assert.equal(paused.enabled, false);
   assert.deepEqual(forwarded(fake, "schedule_task", mark)[0], { scheduledTaskId: taskId, enabled: false });
 
-  // Webhook URLs (they carry their token) never reach the caller.
+  // Webhook URLs (they carry their token) never reach the caller: neither as T3 returns results
+  // now (the URL on creation only, the signature state everywhere) nor if it returned the URL
+  // everywhere, as it did before 0.1.11.
   const webhook = fake.addScheduledTask({ projectId, title: "Seeded webhook", prompt: "Handle it", schedule: { type: "webhook" }, enabled: false });
   assert.ok(fake.scheduledTasks().some((entry) => typeof entry.webhookUrl === "string"), "the fake stores a webhook URL");
-  for (const listing of [await ok(call, "list_scheduled_tasks", { projectId }), await ok(call, "list_scheduled_tasks")]) {
-    const tasks = records(listing.tasks);
-    assert.ok(tasks.some((entry) => entry.scheduledTaskId === webhook.scheduledTaskId) && tasks.some((entry) => entry.scheduledTaskId === taskId));
-    for (const entry of tasks) assert.ok(!("webhookUrl" in entry) && !("webhookSignature" in entry), "webhook secrets are stripped");
+  for (const everywhere of [false, true]) {
+    fake.returnWebhookUrlEverywhere(everywhere);
+    try {
+      for (const listing of [
+        await ok(call, "list_scheduled_tasks", { projectId }),
+        await ok(call, "list_scheduled_tasks"),
+        await ok(call, "list_scheduled_tasks", { scheduledTaskId: webhook.scheduledTaskId }),
+      ]) {
+        const tasks = records(listing.tasks);
+        assert.ok(tasks.some((entry) => entry.scheduledTaskId === webhook.scheduledTaskId));
+        for (const entry of tasks) assert.ok(!("webhookUrl" in entry) && !("webhookSignature" in entry), "webhook secrets are stripped");
+      }
+      const webhookUpdate = await ok(call, "schedule_task", { scheduledTaskId: webhook.scheduledTaskId, title: `Seeded webhook renamed ${everywhere}` });
+      assert.ok(!("webhookUrl" in webhookUpdate) && !("webhookSignature" in webhookUpdate), "webhook secrets are stripped from updates");
+    } finally {
+      fake.returnWebhookUrlEverywhere(false);
+    }
   }
-  const webhookUpdate = await ok(call, "schedule_task", { scheduledTaskId: webhook.scheduledTaskId, title: "Seeded webhook renamed" });
-  assert.ok(!("webhookUrl" in webhookUpdate) && !("webhookSignature" in webhookUpdate), "webhook secrets are stripped from updates");
+  assert.ok(records((await ok(call, "list_scheduled_tasks", { projectId })).tasks).some((entry) => entry.scheduledTaskId === taskId));
+  assert.deepEqual(
+    records((await ok(call, "list_scheduled_tasks", { scheduledTaskId: taskId })).tasks).map((entry) => entry.scheduledTaskId),
+    [taskId],
+    "scheduledTaskId narrows the listing to one task",
+  );
 
   // A run starts a new full-access thread that does the work, even while the task is paused.
   const run = await ok(call, "run_scheduled_task_now", { taskId });

@@ -38,9 +38,12 @@ import {
   checkNoSecrets,
   checkReading,
   checkRestart,
+  checkRewordedCatalog,
   checkShaping,
   checkUnavailable,
   ok,
+  REWORDED_SCHEDULE_TASK,
+  staleRewriteWarnings,
   waitFor,
   type CatalogTool,
   type T3Call,
@@ -309,6 +312,21 @@ async function serveMode(): Promise<void> {
   }
   assert.equal(fake.liveSessions(label), 0, "close({ revoke: true }) leaves no session behind");
   progress("ok - serve: revoke before mint across DevSpace restarts (B4, B5)");
+
+  // B17: T3 rewords a description the bridge rewrites. A DevSpace started afterwards warns about
+  // the stale rewrites and still lists the tool without what it must never say.
+  assert.equal(staleRewriteWarnings(consoleCapture.lines).length, 0, "no rewrite is stale against the snapshot");
+  fake.setToolDescription("schedule_task", REWORDED_SCHEDULE_TASK);
+  const rewordedBridge = newBridge();
+  await warmCatalog(rewordedBridge);
+  const rewordedClient = await connect(await startServe(config, rewordedBridge));
+  const rewordedTools = (await rewordedClient.listTools()).tools as CatalogTool[];
+  checkRewordedCatalog(rewordedTools);
+  checkCatalog(rewordedTools.filter((tool) => T3_TOOL_NAMES.includes(tool.name)), { annotationProfile: "trusted-owner" });
+  assert.equal(staleRewriteWarnings(consoleCapture.lines).length, 1, "the stale rewrites are logged");
+  await rewordedClient.close();
+  await rewordedBridge.close({ revoke: true });
+  progress("ok - serve: a reworded T3 description is reported and served without webhooks (B17)");
 
   finalSecretScan("serve", fake, outputs);
 }

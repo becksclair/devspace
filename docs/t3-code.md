@@ -62,13 +62,14 @@ Thread list rows, search matches, read results, inbox items, and launch and send
 
 ### Scheduled tasks
 
-T3 runs scheduled tasks itself; the bridge creates, updates, lists, runs, and deletes them. Creating a task needs:
+T3 runs scheduled tasks itself; the bridge creates, updates, lists, runs, and deletes them. Creating a task needs a `projectId`; without it T3 returns `target_required`.
 
-- **`projectId`.** Without it T3 returns `target_required`.
-- **A project default model.** T3 records it when the task is created and starts every run with that model; changing the project default later does not change existing tasks. Pick a model with `orchestrator_capabilities` and set it with `t3_project_update`; T3 ignores a default model given at project creation.
-- **A git repository.** Each run gets its own git worktree, so the project folder must be a repository. A project created without `workspaceRoot` is one.
+As of T3 Code 0.1.11 the project needs no default model of its own and no git repository (0.1.8 refused a project without a default model, and failed the run in a folder that was not a repository):
 
-Each run of a task created through DevSpace starts a new thread (unless the task sets `freshSession`, when runs share the thread the first run made) in `full-access` mode with the model recorded at creation, in a worktree under `~/.t3/worktrees/<folder>/`. Tasks created through DevSpace are never bound to a calling thread, and their creation carries a `clientRequestId`, so a retried creation returns the same `scheduledTaskId`. An update (`scheduledTaskId` given) changes only the fields it names. `run_scheduled_task_now` also runs a disabled task. A task created in the T3 app keeps its own thread binding, runtime mode, and model when DevSpace updates it.
+- **Model.** `schedule_task` has no model argument. T3 fixes the task's model when the task is created, from its own settings: the project's default model there, otherwise T3's default model. A default set with `t3_project_update` is not reliably the one used: on Svartal a project whose default was Claude Haiku 5.5 ran its scheduled task with Claude Fable 5.2. Expect a scheduled run to cost what T3's own default model costs. When T3's settings hold no default model for the project and none of their own, T3 still refuses the task (see [Troubleshooting](#troubleshooting)).
+- **Folder.** In a git repository each run gets its own worktree under `~/.t3/worktrees/<folder>/`. In any other folder the run works in the project folder itself.
+
+Each run of a task created through DevSpace starts a new thread (unless the task sets `freshSession`, when runs share the thread the first run made) in `full-access` mode. Tasks created through DevSpace are never bound to a calling thread, and their creation carries a `clientRequestId`, so a retried creation returns the same `scheduledTaskId`. An update (`scheduledTaskId` given) changes only the fields it names. `run_scheduled_task_now` also runs a disabled task. A task created in the T3 app keeps its own thread binding, runtime mode, and model when DevSpace updates it.
 
 ## Setup
 
@@ -76,7 +77,7 @@ Each run of a task created through DevSpace starts a new thread (unless the task
 
 - T3 Code running on the same machine as the DevSpace process that serves the tools. In gateway mode that is the gateway host; remote nodes are not involved.
 - The T3 CLI at `~/.t3/bin/t3`. The defaults assume DevSpace runs as the OS user that runs T3 Code.
-- Verified against T3 Code `v0.1.8-nightly.20261109.4392`. T3 Code ships nightly; run the live suite after T3 updates that touch MCP or auth.
+- Verified against T3 Code `v0.1.11-nightly.20261118.4890`. T3 Code ships nightly; run the live suite after T3 updates that touch MCP or auth.
 
 ### Settings
 
@@ -157,12 +158,14 @@ Nothing can start a turn in a ChatGPT conversation from outside, so DevSpace can
 
 `readOnlyHint` is as listed. Under the `trusted-owner` annotation profile (Svartal's) every tool advertises `destructiveHint: false` and `openWorldHint: false`, so ChatGPT asks for no confirmations; under `standard`, write tools advertise `destructiveHint: true` and `openWorldHint: true`, as T3 itself does. No other T3 tool is reachable through DevSpace. Forwarded tools drop `environmentId` from their schema and pass T3's result through unchanged unless noted. Results carry `structuredContent` and the same JSON as text; no tool declares an output schema. T3 failures are `isError` results whose text is `{"_tag":"OrchestratorMcpFailure","code":…,"message":…}`.
 
+Descriptions are T3's own, adapted for a caller outside a thread (`DESCRIPTION_RULES` in `src/t3-bridge.ts`). Exact rewrites replace the sentences T3 words for an in-thread agent, and a second pass removes any sentence that still contains a word for what a tool must not offer here: `this thread`, `inherit`, `yours`, and `environmentId` for every tool, `webhook`, `URL`, and `T3 Connect` for `schedule_task`, and `task_cancel` for `t3_thread_interrupt`. The second pass matches those words, not T3's sentences, so a rewrite that stopped matching does not bring them back; it is logged as `t3_bridge_description_rewrite_unmatched` (see [Troubleshooting](#troubleshooting)). A rewording that avoids every one of those words is not caught at runtime, and input-schema property descriptions are served as T3 wrote them apart from the fields the bridge removes; the unit and live suites check the served `schedule_task` description and schema for webhook text.
+
 | Tool | Read-only | Purpose, defaults, and shaping |
 | --- | --- | --- |
 | `t3_project_list` | yes | Projects by name and path. `limit` 50. Returns `{ projects: [{ projectId, title, workspaceRoot }], nextCursor }`. |
 | `t3_thread_search` | yes | Find threads by title, branch, pull request, project, then message text; skips subagent threads. `limit` 8. Returns `{ matches: [{ threadId, project, title, source, link }] }`. |
 | `t3_thread_list` | yes | Recent threads, newest first. All projects unless `projectId` is given; no subagent threads; `limit` 10. Returns `{ threads: [{ threadId, project, title, status, settled, updatedAt, link }], nextCursor, total }`. |
-| `t3_thread_read` | yes | Without `afterPosition` or `itemId`, the latest `limit` (6) messages, `maxCharsPerItem` 1500. Returns `{ thread, items, olderAvailable }`; `thread` includes `status`, `runtimeMode`, `pendingRequestCount`, `settled`, `archived`, and `link`. With `afterPosition` or `itemId`, pages forward through T3 with the same defaults and also returns `nextPosition` and `hasMore`. |
+| `t3_thread_read` | yes | Without `afterPosition`, `beforePosition`, or `itemId`, the latest `limit` (6) messages, oldest first, `maxCharsPerItem` 1500. Returns `{ thread, items, olderAvailable, earlierPosition }`; `thread` includes `status`, `runtimeMode`, `pendingRequestCount`, `settled`, `archived`, and `link`, and `earlierPosition` is the first returned item's position while earlier items exist, otherwise `null`. With `afterPosition` (exclusive; `-1` starts at the first item), `beforePosition` (the `limit` items just before it; pass `earlierPosition` to page back), or `itemId`, the read is T3's own page with the same defaults and also returns `nextPosition` and `hasMore`. |
 | `t3_thread_wait` | yes | Wait for a run to finish. `timeoutMs` 20000, at most 25000. Returns `{ threadId, runId, status, timedOut }`. |
 | `t3_inbox` | yes | DevSpace-native inbox (see [Inbox](#inbox)). `since` (ISO-8601), `limit` 1 to 20 (default 8); `omitted` counts outcomes left out by `limit`. |
 | `t3_thread_launch` | no | Start a thread in a project (`projectId`) or a scratch folder (`scratch`). Always `full-access`; `clientRequestId` added when absent, so the bridge's own retry cannot create a second thread. |
@@ -176,14 +179,14 @@ Nothing can start a turn in a ChatGPT conversation from outside, so DevSpace can
 | `t3_project_create` | no | Register a folder as a project, or, without `workspaceRoot`, have T3 create a git repository at `~/.t3/projects/<title>`. `workspaceRoot` must be absolute or start with `~/` (expanded to the DevSpace user's home folder); `createWorkspaceRootIfMissing` defaults to `true` when it is given. Only `title`, `workspaceRoot`, and `createWorkspaceRootIfMissing` are exposed and forwarded: T3 ignores a default model given at creation, and project scripts stay out. |
 | `t3_project_clone` | no | Clone a repository into a new or empty folder. `destinationPath` is required, with the same path rule. Register the clone with `t3_project_create`, passing the returned `cwd` as `workspaceRoot`. |
 | `t3_project_update` | no | Rename a project or set its default model (`defaultModelSelection`: `{ instanceId, model }` from `orchestrator_capabilities`). Only `projectId`, `title`, and `defaultModelSelection` are exposed and forwarded. |
-| `list_scheduled_tasks` | yes | Scheduled tasks in one project (`projectId`) or in every project. `webhookUrl` and `webhookSignature` are removed from results. |
+| `list_scheduled_tasks` | yes | Scheduled tasks in one project (`projectId`) or in every project, or one task by `scheduledTaskId`. `webhookUrl` and `webhookSignature` are removed from results. |
 | `schedule_task` | no | Create a task (no `scheduledTaskId`; see [Scheduled tasks](#scheduled-tasks)) or update one. `schedule.type`: `interval` (`everyMs`, at least 60000), `fixed_time` (`timeOfDay`, optional `weekdays`), or `once` (`runAt`). Creation forces `bindToCurrentThread: false` and adds `clientRequestId` when absent. Webhook triggers are removed from the schema and rejected; `webhookUrl` and `webhookSignature` are removed from results. |
 | `run_scheduled_task_now` | no | Start one run now; `taskId` is the task's `scheduledTaskId`. Follow the returned thread with `t3_thread_wait` and `t3_thread_read`. |
 | `delete_scheduled_task` | no | Delete a task by `scheduledTaskId`. A missing task returns `task_not_found`. |
 
 ### Not exposed
 
-- **Batch launch (`create_threads`).** T3 accepts it only from inside a thread (`thread_credential_required`). Start several threads with repeated `t3_thread_launch` calls.
+- **Batch launch (`create_threads`).** T3 serves it only to agents inside a thread; a client outside one is told the tool does not exist. Start several threads with repeated `t3_thread_launch` calls.
 - **Project deletion (`t3_project_delete`).** Kept out of the voice surface; delete projects in the T3 Code app.
 - **Webhook triggers for scheduled tasks.** A webhook URL accepts requests from anyone who holds it and starts full-access agents with each request's content. DevSpace callers can already start threads directly, so a webhook would add only a persistent outside trigger. Set webhooks up in the T3 Code app.
 - **Other project settings** (scripts, workspace root, icon, archiving, and the like). `t3_project_create` takes only a title and a folder, and `t3_project_update` only the title and the default model; change the rest in the T3 Code app.
@@ -197,7 +200,7 @@ Nothing can start a turn in a ChatGPT conversation from outside, so DevSpace can
 | Live | `bun run test:t3-live` | MCP SDK client → in-process DevSpace → bridge → real T3 Code and real CLI on this machine |
 | Deployed | `bun run test:t3-deployed` | MCP SDK client → public DevSpace URL → Svartal gateway → real T3 Code |
 
-`bun run test` includes the unit and end-to-end suites. The fake T3 serves the captured `tools/list` and result shapes in `src/testing/`. The live suite also asserts that real T3 still matches the fake's contract (tool names and properties, error codes, HTTP failure modes, list and read fields, CLI output) and fails on any mismatch; run it before merging bridge changes and after T3 updates. Run the deployed suite after each deployment; it reads `publicBaseUrl` from `config.json` and the owner token from `auth.json` in the DevSpace configuration directory (`DEVSPACE_CONFIG_DIR`, default `~/.devspace`; `DEVSPACE_PUBLIC_BASE_URL` and `DEVSPACE_OAUTH_OWNER_TOKEN` override them). DevSpace keeps at most 500 registered OAuth clients and refuses registration beyond that, so the suite reuses one client: it caches the client, its refresh token, and the OAuth metadata in `~/.local/state/devspace/t3-deployed-check.json` (directory `0700`, file `0600`, never printed), obtains each run's access token with the refresh-token grant (storing the rotated refresh token), and registers a new client through DevSpace's public OAuth flow with the owner token only when the cache is missing, belongs to another `publicBaseUrl`, or its refresh fails. At the end it revokes the access token and keeps the refresh token. It prints whether the client was reused or newly minted, and the refresh token's expiry when DevSpace reports it.
+`bun run test` includes the unit and end-to-end suites. The fake T3 serves the captured `tools/list` and result shapes in `src/testing/`. The unit suite fails when a description rewrite no longer matches the captured `tools/list`, and the live suite fails when one no longer matches real T3. The live suite also asserts that real T3 still matches the fake's contract (tool names and properties, error codes, HTTP failure modes, list and read fields and paging, CLI output) and fails on any mismatch; run it before merging bridge changes and after T3 updates. Run the deployed suite after each deployment; it reads `publicBaseUrl` from `config.json` and the owner token from `auth.json` in the DevSpace configuration directory (`DEVSPACE_CONFIG_DIR`, default `~/.devspace`; `DEVSPACE_PUBLIC_BASE_URL` and `DEVSPACE_OAUTH_OWNER_TOKEN` override them). DevSpace keeps at most 500 registered OAuth clients and refuses registration beyond that, so the suite reuses one client: it caches the client, its refresh token, and the OAuth metadata in `~/.local/state/devspace/t3-deployed-check.json` (directory `0700`, file `0600`, never printed), obtains each run's access token with the refresh-token grant (storing the rotated refresh token), and registers a new client through DevSpace's public OAuth flow with the owner token only when the cache is missing, belongs to another `publicBaseUrl`, or its refresh fails. At the end it revokes the access token and keeps the refresh token. It prints whether the client was reused or newly minted, and the refresh token's expiry when DevSpace reports it.
 
 The live and deployed suites start real agent turns, which use provider credits. Their threads are titled `DevSpace bridge check <stamp> …` and are settled and archived at the end. They also clone a small public repository into a temporary folder, register it as a project, and schedule and run a task in it; at the end they delete the task, remove the project through their own T3 client (project deletion is not exposed through DevSpace), and delete its folder and the run worktrees. The deployed suite can do this because it runs on the gateway's machine. The suites revoke every T3 session they created, fail if any remain, and fail loudly when T3 is unreachable.
 
@@ -218,15 +221,15 @@ An Electron `CompileAndCall` warning on stderr is harmless. If the launcher repo
 
 **`T3 Code connection failed during <tool>; it may or may not have run.`** The connection failed after the request was sent, and the call is not one the bridge retries (see [Connection and retries](#connection-and-retries)), or its one retry failed too. Check the result with `t3_thread_read`, `t3_project_list`, or `list_scheduled_tasks` before repeating the call.
 
-**`Project … has no default model, so this caller cannot pick one for it.`** `schedule_task` needs a project default model. Pick a model with `orchestrator_capabilities`, set it with `t3_project_update` (`defaultModelSelection`), and create the task again.
-
-**A scheduled run fails at once with `Workspace preparation failed during provision worktree …`.** The project folder is not a git repository, and each run needs a git worktree. Make the folder a repository, or use a project T3 created without `workspaceRoot`.
+**`Project … has no default model, so this caller cannot pick one for it.`** `schedule_task` found no default model for the project in T3's settings and no default model for T3 itself. Set a default model in the T3 Code app's settings and create the task again.
 
 **`workspaceRoot must be an absolute path (or start with ~/), not "…".`** T3 resolves a relative path against its own working directory, the home folder, so DevSpace rejects relative `workspaceRoot` and `destinationPath` values. Pass an absolute path or one starting with `~/`.
 
 **ChatGPT does not show the T3 tools, or shows an old list.** Refresh the DevSpace connector in ChatGPT. If they are still missing, check that `t3.enabled` is `true` in the `config.json` DevSpace actually reads, that DevSpace was restarted after the change, and that `t3` is not a disabled capability for the instance, the session, or the gateway's local machine.
 
 **A bridge-launched thread is not `full-access`.** This should not happen: the bridge forces the mode on every launch. Disable the bridge, report it with the thread link, and run `bun run test:t3-live`.
+
+**A `t3_bridge_description_rewrite_unmatched` warning in the log.** T3 reworded a tool description that the bridge rewrites; the entry names the tool and the rewrites that no longer match. The tool still works, and its description is still served without what it must never offer, but it may have lost a useful sentence. Run `bun run test:t3-live`, then update `DESCRIPTION_RULES` in `src/t3-bridge.ts` and refresh `src/testing/t3-tools.snapshot.json`.
 
 **Logs.** DevSpace's request log records the tool name of every call. On Svartal the logs are `~/.local/state/devspace-svartal/gateway.log` and `gateway.err.log`; a standalone server writes to its standard output and error streams as configured by `DEVSPACE_LOG_*`. T3 credential values never appear in them.
 

@@ -1,30 +1,12 @@
 {
-  "capturedFrom": "T3 Code v0.1.8-nightly.20261109.4392",
-  "capturedAt": "2026-11-09",
+  "capturedFrom": "T3 Code v0.1.11-nightly.20261118.4890",
+  "capturedAt": "2026-11-19",
   "allToolNames": [
-    "preview_dialog",
-    "preview_status",
-    "preview_open",
-    "preview_navigate",
-    "preview_resize",
-    "preview_set_appearance",
-    "preview_act",
-    "preview_evaluate",
-    "preview_wait_for",
-    "preview_recording_start",
-    "preview_recording_stop",
-    "preview_snapshot",
     "orchestrator_capabilities",
-    "delegate_task",
-    "task_status",
-    "task_cancel",
     "t3_workflow_stop",
-    "t3_background_wait",
     "schedule_task",
     "list_scheduled_tasks",
     "delete_scheduled_task",
-    "request_secret",
-    "create_threads",
     "t3_thread_list",
     "t3_thread_read",
     "t3_thread_update",
@@ -53,10 +35,8 @@
     "t3_project_clone",
     "t3_environment_read",
     "t3_environment_preferences_update",
-    "t3_preview_list",
-    "t3_preview_close",
-    "t3_worktree_handoff",
-    "t3_worktree_status",
+    "t3_theme_read",
+    "t3_theme_set",
     "t3_worktree_list",
     "link_pull_request",
     "link_pull_requests",
@@ -67,12 +47,14 @@
     "unwatch_pull_request",
     "write_pull_request_guides",
     "read_pull_request_guide",
-    "device_list",
-    "device_open",
-    "device_close",
-    "device_screenshot",
-    "html_render",
-    "html_preview"
+    "list_issues",
+    "read_issue",
+    "create_issue",
+    "comment_on_issue",
+    "set_issue_state",
+    "link_issue",
+    "unlink_issue",
+    "list_thread_issues"
   ],
   "tools": [
     {
@@ -90,8 +72,7 @@
           },
           "limit": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+            "minimum": 1
           }
         }
       },
@@ -621,6 +602,19 @@
       "outputSchema": {
         "type": "object",
         "properties": {
+          "currentThreadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "matches": {
             "type": "array",
             "items": {
@@ -754,8 +748,7 @@
           },
           "limit": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+            "minimum": 1
           }
         }
       },
@@ -950,6 +943,19 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "watching": {
+                            "type": "boolean"
+                          },
+                          "watchStartedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "required": [
@@ -958,10 +964,36 @@
                           "number",
                           "url",
                           "source",
-                          "state"
+                          "state",
+                          "watching",
+                          "watchStartedAt"
                         ],
                         "additionalProperties": true
                       }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pullRequestCount": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "openPullRequestCount": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
                     },
                     {
                       "type": "null"
@@ -994,6 +1026,91 @@
                     }
                   ]
                 },
+                "pinned": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "blockedOnThreadWait": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pendingBackgroundTasks": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "taskId": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "subagent",
+                              "command",
+                              "monitor",
+                              "background_task"
+                            ]
+                          },
+                          "description": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "awaited": {
+                            "anyOf": [
+                              {
+                                "type": "boolean",
+                                "enum": [
+                                  true
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "childThreadId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "taskId",
+                          "kind"
+                        ],
+                        "additionalProperties": true
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "parentThreadId": {
                   "anyOf": [
                     {
@@ -1012,6 +1129,33 @@
                         "fork",
                         "subagent"
                       ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "delegatedFrom": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "environmentId": {
+                          "type": "string"
+                        },
+                        "threadId": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "environmentId",
+                        "threadId",
+                        "title"
+                      ],
+                      "additionalProperties": true
                     },
                     {
                       "type": "null"
@@ -1094,7 +1238,7 @@
     {
       "name": "t3_thread_read",
       "title": "Read a T3 thread",
-      "description": "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+      "description": "Read any thread by id. View `messages` (default) or `activity` (all items). Newest first; older: `beforePosition=earlierPosition`; from the start: `afterPosition=-1`, then `nextPosition`. Cut-off text: `itemId`, `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1120,22 +1264,26 @@
           },
           "afterPosition": {
             "type": "integer",
+            "minimum": -1
+          },
+          "beforePosition": {
+            "type": "integer",
             "minimum": 0
           },
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "description": "Max items, 1 to 100."
+            "description": "Max 100."
           },
           "runLimit": {
             "type": "integer",
             "minimum": 1,
-            "description": "Max recent runs, 1 to 50."
+            "description": "Max 50."
           },
           "maxCharsPerItem": {
             "type": "integer",
             "minimum": 1,
-            "description": "Max chars per item, 1 to 50000."
+            "description": "Max 20000."
           }
         },
         "required": [
@@ -1321,6 +1469,19 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "watching": {
+                          "type": "boolean"
+                        },
+                        "watchStartedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -1329,10 +1490,36 @@
                         "number",
                         "url",
                         "source",
-                        "state"
+                        "state",
+                        "watching",
+                        "watchStartedAt"
                       ],
                       "additionalProperties": true
                     }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pullRequestCount": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "openPullRequestCount": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
                   },
                   {
                     "type": "null"
@@ -1356,6 +1543,51 @@
                       "startedAt"
                     ],
                     "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastTitleRegeneration": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "renamed",
+                          "unchanged",
+                          "failed"
+                        ]
+                      },
+                      "message": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "requestId": {
+                        "type": "string"
+                      },
+                      "completedAt": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "requestId",
+                      "completedAt"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
                   },
                   {
                     "type": "null"
@@ -1406,6 +1638,33 @@
                   }
                 ]
               },
+              "delegatedFrom": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "environmentId": {
+                        "type": "string"
+                      },
+                      "threadId": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "environmentId",
+                      "threadId",
+                      "title"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "runCount": {
                 "type": "integer",
                 "minimum": 0,
@@ -1444,6 +1703,91 @@
                 "anyOf": [
                   {
                     "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pinned": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "blockedOnThreadWait": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pendingBackgroundTasks": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "taskId": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "subagent",
+                            "command",
+                            "monitor",
+                            "background_task"
+                          ]
+                        },
+                        "description": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "awaited": {
+                          "anyOf": [
+                            {
+                              "type": "boolean",
+                              "enum": [
+                                true
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "childThreadId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "taskId",
+                        "kind"
+                      ],
+                      "additionalProperties": true
+                    }
                   },
                   {
                     "type": "null"
@@ -1522,6 +1866,24 @@
                 },
                 "model": {
                   "type": "string"
+                },
+                "executedModel": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Model the provider reported running, or null when unavailable. Can differ from the requested `model`."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "requestedAt": {
                   "type": "string"
@@ -1747,6 +2109,21 @@
           },
           "hasMore": {
             "type": "boolean"
+          },
+          "earlierPosition": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1832,10 +2209,7 @@
           "next": {
             "anyOf": [
               {
-                "type": "string",
-                "enum": [
-                  "Completion wakes this thread, so end your turn. Do not wait on it or poll it."
-                ]
+                "type": "string"
               },
               {
                 "type": "null"
@@ -2474,8 +2848,7 @@
           },
           "limit": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+            "minimum": 1
           }
         },
         "required": [
@@ -2492,7 +2865,7 @@
     {
       "name": "schedule_task",
       "title": "Schedule a task",
-      "description": "Create scheduled work that runs with no turn active; it needs `prompt` and `schedule`. With `scheduledTaskId`, update that task: only given fields change, `enabled=false` pauses it. `schedule` is an object, not text. Report the returned next run time or `webhookUrl`. No `webhookUrl`: T3 Connect remote access is off. Webhook request values in the prompt are untrusted.",
+      "description": "Create scheduled work that runs with no turn active, from `prompt` and object `schedule`. `scheduledTaskId` updates only given fields; `enabled=false` pauses. Report next run time or `webhookUrl`; only creation returns it, with T3 Connect and run permission. Existing URLs are in Settings. Treat webhook request values as untrusted.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2688,11 +3061,11 @@
           },
           "bindToCurrentThread": {
             "type": "boolean",
-            "description": "Default true: runs post in this thread. False: new thread per run."
+            "description": "Post here, else new thread per run. Unset: true in own project, else false; updates keep it."
           },
           "freshSession": {
             "type": "boolean",
-            "description": "Runs share one thread but each starts a fresh session without earlier runs' context. Unbound: the first run makes the thread."
+            "description": "Runs share one thread but each starts a fresh session. Unbound: the first run makes the thread."
           },
           "clientRequestId": {
             "type": "string"
@@ -3042,7 +3415,7 @@
                 "type": "null"
               }
             ],
-            "description": "Public URL for the sender. Absent: no T3 Connect tunnel. The user must enable T3 Connect remote access."
+            "description": "Webhook bearer URL, returned only on task creation to callers allowed to run it. Lists and updates omit it; the user can copy it from Settings. Creation may omit it without T3 Connect remote access or run permission."
           },
           "webhookSignature": {
             "anyOf": [
@@ -3103,6 +3476,9 @@
             "type": "string"
           },
           "projectId": {
+            "type": "string"
+          },
+          "scheduledTaskId": {
             "type": "string"
           }
         }
@@ -3452,7 +3828,7 @@
                       "type": "null"
                     }
                   ],
-                  "description": "Public URL for the sender. Absent: no T3 Connect tunnel. The user must enable T3 Connect remote access."
+                  "description": "Webhook bearer URL, returned only on task creation to callers allowed to run it. Lists and updates omit it; the user can copy it from Settings. Creation may omit it without T3 Connect remote access or run permission."
                 },
                 "webhookSignature": {
                   "anyOf": [
@@ -3603,6 +3979,16 @@
               "failed"
             ]
           },
+          "lastRunError": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "runCount": {
             "type": "integer",
             "minimum": 0,
@@ -3623,6 +4009,7 @@
           "taskId",
           "threadId",
           "lastRunStatus",
+          "lastRunError",
           "runCount",
           "nextRunAt"
         ],
@@ -3764,220 +4151,6 @@
       },
       "annotations": {
         "title": "Update T3 thread metadata",
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "idempotentHint": false,
-        "openWorldHint": true
-      }
-    },
-    {
-      "name": "create_threads",
-      "title": "Create T3 threads",
-      "description": "Create new top-level threads in this checkout. Not delegation. One thread or its own worktree: `t3_thread_launch`. Project, branch, and worktree inherit.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "threads": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "prompt": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "target": {
-                  "type": "object",
-                  "properties": {
-                    "providerInstanceId": {
-                      "type": "string"
-                    },
-                    "driverKind": {
-                      "type": "string"
-                    },
-                    "model": {
-                      "type": "string"
-                    },
-                    "options": {
-                      "description": "Options from `orchestrator_capabilities`, such as {effort:'max'}. Given values override inherited. [] or {} clears.",
-                      "anyOf": [
-                        {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "id": {
-                                "type": "string"
-                              },
-                              "value": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "type": "boolean"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "id",
-                              "value"
-                            ]
-                          }
-                        },
-                        {
-                          "type": "object",
-                          "additionalProperties": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "boolean"
-                              }
-                            ]
-                          }
-                        }
-                      ]
-                    },
-                    "environmentId": {
-                      "type": "string"
-                    },
-                    "projectId": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "runtimeMode": {
-                  "type": "string",
-                  "enum": [
-                    "inherit",
-                    "approval-required",
-                    "auto-accept-edits",
-                    "auto",
-                    "full-access"
-                  ]
-                },
-                "interactionMode": {
-                  "type": "string",
-                  "enum": [
-                    "inherit",
-                    "default",
-                    "plan"
-                  ]
-                }
-              }
-            },
-            "minItems": 1,
-            "maxItems": 20
-          },
-          "clientRequestId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "threads"
-        ]
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "threads": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "threadId": {
-                  "type": "string"
-                },
-                "link": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "runId": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "idle",
-                    "preparing",
-                    "starting",
-                    "queued",
-                    "running",
-                    "waiting",
-                    "completed",
-                    "failed",
-                    "cancelled",
-                    "interrupted",
-                    "rolled_back"
-                  ]
-                },
-                "title": {
-                  "type": "string"
-                },
-                "createdBy": {
-                  "type": "string",
-                  "enum": [
-                    "user",
-                    "agent",
-                    "system"
-                  ]
-                },
-                "creationSource": {
-                  "type": "string",
-                  "enum": [
-                    "web",
-                    "mobile",
-                    "mcp",
-                    "provider",
-                    "server"
-                  ]
-                },
-                "providerInstanceId": {
-                  "type": "string"
-                },
-                "model": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "threadId",
-                "runId",
-                "status",
-                "title",
-                "createdBy",
-                "creationSource",
-                "providerInstanceId",
-                "model"
-              ],
-              "additionalProperties": true
-            }
-          }
-        },
-        "required": [
-          "threads"
-        ],
-        "additionalProperties": true
-      },
-      "annotations": {
-        "title": "Create T3 threads",
         "readOnlyHint": false,
         "destructiveHint": true,
         "idempotentHint": false,
@@ -5760,856 +5933,6 @@
         "additionalProperties": true
       },
       "annotations": {
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "idempotentHint": false,
-        "openWorldHint": true
-      }
-    },
-    {
-      "name": "task_status",
-      "title": "Get delegated task status",
-      "description": "Read one delegated task you started. Do not call it on a running task before its completion wakes you. `workState`: working, waiting_for_children, result_available. A finished turn with live child work is not done. `summary`: final result. Reading it marks it delivered.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "taskId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "taskId"
-        ]
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "taskId": {
-            "type": "string"
-          },
-          "childThreadId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "remoteChild": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "environmentId": {
-                    "type": "string"
-                  },
-                  "threadId": {
-                    "type": "string"
-                  },
-                  "label": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "environmentId",
-                  "threadId",
-                  "label"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "link": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "childRunId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "childNodeId": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "queued",
-              "running",
-              "waiting",
-              "completed",
-              "failed",
-              "cancelled",
-              "interrupted"
-            ]
-          },
-          "workState": {
-            "type": "string",
-            "enum": [
-              "working",
-              "waiting_for_children",
-              "result_available"
-            ]
-          },
-          "hasPendingChildRuns": {
-            "type": "boolean"
-          },
-          "latestTerminalRunId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "latestTerminalStatus": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "completed",
-                  "failed",
-                  "cancelled",
-                  "interrupted"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "latestTerminalSummary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "latestTerminalResultContextTransferId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "providerInstanceId": {
-            "type": "string"
-          },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "options": {
-            "anyOf": [
-              {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "value": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "boolean"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "value"
-                  ],
-                  "additionalProperties": true
-                }
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "resultContextTransferId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "hasPendingQuestion": {
-            "type": "boolean",
-            "description": "A question blocks the child and ends a wait. Answer via `t3_pending_request` on `childThreadId`, or the user does."
-          },
-          "pendingApproval": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "requestId": {
-                    "type": "string"
-                  },
-                  "kind": {
-                    "type": "string",
-                    "enum": [
-                      "command",
-                      "file-read",
-                      "file-change",
-                      "mcp-elicitation",
-                      "permission"
-                    ]
-                  },
-                  "runId": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "requestId",
-                  "kind",
-                  "runId"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Oldest pending approval, or null. Ends a wait. Grants no approval rights."
-          },
-          "waitTimedOut": {
-            "type": "boolean",
-            "description": "True only on the timed-out wait call. The child keeps running."
-          },
-          "next": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "Completion wakes this thread, so end your turn. Do not wait on it or poll it."
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "taskId",
-          "childThreadId",
-          "childRunId",
-          "childNodeId",
-          "status",
-          "workState",
-          "hasPendingChildRuns",
-          "latestTerminalRunId",
-          "latestTerminalStatus",
-          "latestTerminalSummary",
-          "latestTerminalResultContextTransferId",
-          "providerInstanceId",
-          "model",
-          "summary",
-          "resultContextTransferId",
-          "hasPendingQuestion",
-          "pendingApproval",
-          "waitTimedOut"
-        ],
-        "additionalProperties": true
-      },
-      "annotations": {
-        "title": "Get delegated task status",
-        "readOnlyHint": false,
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": true
-      }
-    },
-    {
-      "name": "preview_open",
-      "title": "Open browser preview",
-      "description": "Open a preview tab in this thread and show it. For a dev server, pass `target` instead of `url`. `open=false` keeps it in the background. Reuses your current tab unless `tabId` or `reuseExistingTab=false` says otherwise. Parallel subagents in one session must each use `reuseExistingTab=false`, then their own returned `tabId`.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "tabId": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string",
-            "pattern": "^\\S[\\s\\S]*\\S$|^\\S$|^$",
-            "minLength": 1,
-            "maxLength": 2048,
-            "description": "First page URL. Absolute http(s) URL, or a bare host (https; http for loopback). Omit to open a blank tab."
-          },
-          "open": {
-            "type": "boolean",
-            "description": "Show the preview to the user. Default true. False for background only."
-          },
-          "show": {
-            "type": "boolean",
-            "description": "Old alias for `open`."
-          },
-          "reuseExistingTab": {
-            "type": "boolean",
-            "description": "Reuse `tabId`, or your current tab. Default true. False makes a new tab."
-          },
-          "profileId": {
-            "type": "string",
-            "description": "Profile id or name from preview_status, for a new tab. Default: the user's. A tab keeps its profile."
-          },
-          "target": {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "environment-port"
-                ]
-              },
-              "port": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "exclusiveMaximum": 65536,
-                "description": "Dev-server port here."
-              },
-              "protocol": {
-                "type": "string",
-                "enum": [
-                  "http",
-                  "https"
-                ],
-                "description": "Default http."
-              },
-              "path": {
-                "type": "string",
-                "description": "Path, query, and fragment, such as /settings?tab=account."
-              }
-            },
-            "required": [
-              "kind",
-              "port"
-            ]
-          }
-        }
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "available": {
-            "type": "boolean"
-          },
-          "visible": {
-            "type": "boolean"
-          },
-          "tabId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "loading": {
-            "type": "boolean"
-          },
-          "control": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "owner": {
-                    "type": "string",
-                    "enum": [
-                      "agent",
-                      "human",
-                      "unclaimed"
-                    ]
-                  },
-                  "ownedByCaller": {
-                    "type": "boolean"
-                  },
-                  "generation": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string",
-                        "enum": [
-                          "Infinity",
-                          "-Infinity",
-                          "NaN"
-                        ]
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "owner",
-                  "ownedByCaller",
-                  "generation"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "dialog": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string"
-                  },
-                  "message": {
-                    "type": "string"
-                  },
-                  "defaultValue": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "type",
-                  "message",
-                  "defaultValue"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "viewportSetting": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "_tag": {
-                    "type": "string",
-                    "enum": [
-                      "fill"
-                    ]
-                  }
-                },
-                "required": [
-                  "_tag"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "_tag": {
-                    "type": "string",
-                    "enum": [
-                      "freeform"
-                    ]
-                  },
-                  "width": {
-                    "type": "integer",
-                    "minimum": 240,
-                    "maximum": 3840
-                  },
-                  "height": {
-                    "type": "integer",
-                    "minimum": 240,
-                    "maximum": 3840
-                  }
-                },
-                "required": [
-                  "_tag",
-                  "width",
-                  "height"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "_tag": {
-                    "type": "string",
-                    "enum": [
-                      "preset"
-                    ]
-                  },
-                  "width": {
-                    "type": "integer",
-                    "minimum": 240,
-                    "maximum": 3840
-                  },
-                  "height": {
-                    "type": "integer",
-                    "minimum": 240,
-                    "maximum": 3840
-                  },
-                  "presetId": {
-                    "type": "string",
-                    "enum": [
-                      "iphone-se",
-                      "iphone-xr",
-                      "iphone-12-pro",
-                      "iphone-14-pro-max",
-                      "pixel-7",
-                      "samsung-galaxy-s8-plus",
-                      "samsung-galaxy-s20-ultra",
-                      "ipad-mini",
-                      "ipad-air",
-                      "ipad-pro",
-                      "surface-pro-7",
-                      "surface-duo",
-                      "galaxy-z-fold-5",
-                      "asus-zenbook-fold",
-                      "samsung-galaxy-a51-71",
-                      "nest-hub",
-                      "nest-hub-max",
-                      "desktop-1920x1080",
-                      "desktop-1440x900",
-                      "laptop-1366x768",
-                      "laptop-1280x800",
-                      "ipad-pro-11",
-                      "iphone-15-pro",
-                      "pixel-8",
-                      "galaxy-s24"
-                    ]
-                  }
-                },
-                "required": [
-                  "_tag",
-                  "width",
-                  "height",
-                  "presetId"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "viewport": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "width": {
-                    "type": "integer",
-                    "maximum": 9007199254740991,
-                    "exclusiveMinimum": 0
-                  },
-                  "height": {
-                    "type": "integer",
-                    "maximum": 9007199254740991,
-                    "exclusiveMinimum": 0
-                  }
-                },
-                "required": [
-                  "width",
-                  "height"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "fileChooser": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "multiple": {
-                    "type": "boolean"
-                  },
-                  "accept": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "multiple",
-                  "accept"
-                ],
-                "additionalProperties": true
-              },
-              {
-                "type": "null"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "downloads": {
-            "anyOf": [
-              {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "fileName": {
-                      "type": "string"
-                    },
-                    "path": {
-                      "type": "string"
-                    },
-                    "sizeBytes": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "string",
-                          "enum": [
-                            "Infinity",
-                            "-Infinity",
-                            "NaN"
-                          ]
-                        }
-                      ]
-                    },
-                    "url": {
-                      "type": "string"
-                    },
-                    "completedAt": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "fileName",
-                    "path",
-                    "sizeBytes",
-                    "url",
-                    "completedAt"
-                  ],
-                  "additionalProperties": true
-                }
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "tabs": {
-            "anyOf": [
-              {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "tabId": {
-                      "type": "string"
-                    },
-                    "url": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "openerTabId": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "owner": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "enum": [
-                            "agent",
-                            "human",
-                            "unclaimed"
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "ownedByCaller": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "visible": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "profileId": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "tabId",
-                    "url"
-                  ],
-                  "additionalProperties": true
-                }
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "profiles": {
-            "anyOf": [
-              {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "incognito": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "name"
-                  ],
-                  "additionalProperties": true
-                }
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "defaultProfileId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "available",
-          "visible",
-          "tabId",
-          "url",
-          "title",
-          "loading"
-        ],
-        "additionalProperties": true
-      },
-      "annotations": {
-        "title": "Open browser preview",
         "readOnlyHint": false,
         "destructiveHint": true,
         "idempotentHint": false,
