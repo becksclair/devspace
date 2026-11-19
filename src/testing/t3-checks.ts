@@ -1372,6 +1372,28 @@ export async function checkWorkspaceReads(call: T3Call, fake: FakeT3): Promise<v
   const missing = JSON.parse(await fails(call, "t3_project_read", { projectId: "missing-project" })) as Json;
   assert.deepEqual([missing.code, missing.message], ["invalid_request", "The project was not found."]);
 
+  // T3 stores a remote URL as git prints it; a credential in it never reaches the caller.
+  const token = "ghp_remoteCredentialThatMustNotLeak";
+  for (const [remoteUrl, cleaned] of [
+    [`https://x-access-token:${token}@github.com/octocat/private.git`, "https://github.com/octocat/private.git"],
+    [`https://${token}@github.com/octocat/private.git`, "https://github.com/octocat/private.git"],
+    [`ssh://git:${token}@github.com/octocat/private.git`, "ssh://git@github.com/octocat/private.git"],
+    ["ssh://git@github.com/octocat/private.git", "ssh://git@github.com/octocat/private.git"],
+    ["git@github.com:octocat/private.git", "git@github.com:octocat/private.git"],
+  ] as const) {
+    const remote = fake.addProject({ title: `remote-fixture ${remoteUrl.length}`, remoteUrl });
+    const stored = fake.project(remote.projectId)?.repositoryIdentity as Json;
+    assert.equal((stored.locator as Json).remoteUrl, remoteUrl, "the fake stores the URL as T3 does");
+    const result = await call("t3_project_read", { projectId: remote.projectId });
+    assert.ok(!JSON.stringify(result).includes(token), "a remote URL credential must not reach the caller");
+    const identity = resultData(result).repositoryIdentity as Json;
+    assert.equal((identity.locator as Json).remoteUrl, cleaned);
+    assert.deepEqual({ ...identity, locator: undefined }, { ...stored, locator: undefined }, "the rest of the identity passes through");
+    // The same record comes back from an update.
+    const renamed = await call("t3_project_update", { projectId: remote.projectId, title: `remote-fixture ${remoteUrl.length} renamed` });
+    assert.ok(!JSON.stringify(renamed).includes(token), "t3_project_update must not return the credential either");
+  }
+
   // Branches and worktrees: 50 refs by default; a folder that is not a repository lists none.
   const repo = fake.addProject({ title: "worktree-fixture", git: true, branches: Array.from({ length: 60 }, (_, index) => `feature/${String(index).padStart(2, "0")}`) });
   const inRepo = fake.addThread({ projectId: repo.projectId, title: "Worktree fixture thread" });

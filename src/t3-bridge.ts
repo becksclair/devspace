@@ -326,7 +326,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Read a T3 project",
     readOnly: true,
     summary: "Read one T3 Code project's full record: its folder, git repository, default model, and saved scripts.",
-    note: "`projectId` comes from t3_project_list, which returns only titles and folders. Returns `{ id, title, workspaceRoot, repositoryIdentity, defaultModelSelection, scripts, … }`; `repositoryIdentity` names the git remote (`provider`, `owner`, `name`) and is null when the folder has none.",
+    note: "`projectId` comes from t3_project_list, which returns only titles and folders. Returns `{ id, title, workspaceRoot, repositoryIdentity, defaultModelSelection, scripts, … }`; `repositoryIdentity` names the git remote (`provider`, `owner`, `name`) and is null when the folder has none. Credentials in a remote URL are removed.",
   },
   t3_environment_links: {
     title: "List machines linked to T3 Code",
@@ -898,7 +898,7 @@ export class T3Bridge {
           const project = resultRecord(result);
           rememberProject(this.projectTitles, project);
           if (typeof project.id === "string") this.projectMisses.delete(project.id);
-          return result;
+          return isRecord(project.repositoryIdentity) ? jsonResult(withoutRemoteCredentials(project)) : result;
         }
         case "link_pull_requests": {
           // For a subagent thread T3 adds `next`, an instruction to the agent inside that thread.
@@ -1949,6 +1949,32 @@ function compactCapabilities(data: Args): Args {
 /** The object without its undefined fields, so `structuredContent` and its JSON text agree. */
 function definedOnly(value: Args): Args {
   return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined));
+}
+
+/**
+ * A project record whose git remote URLs carry no credential. T3 stores `git remote -v` output as
+ * `repositoryIdentity…remoteUrl`, so a remote such as `https://user:token@host/o/r.git` would
+ * otherwise reach the caller. The user of an `ssh://git@host` URL is not a secret and is kept.
+ */
+function withoutRemoteCredentials(project: Args): Args {
+  const scrub = (value: unknown, key?: string): unknown => {
+    if (typeof value === "string") return key === "remoteUrl" ? urlWithoutCredentials(value) : value;
+    if (Array.isArray(value)) return value.map((entry) => scrub(entry));
+    if (!isRecord(value)) return value;
+    return Object.fromEntries(Object.entries(value).map(([field, entry]) => [field, scrub(entry, field)]));
+  };
+  return { ...project, repositoryIdentity: scrub(project.repositoryIdentity) };
+}
+
+function urlWithoutCredentials(value: string): string {
+  const url = URL.parse(value);
+  if (!url || (!url.username && !url.password)) return value;
+  const web = url.protocol === "http:" || url.protocol === "https:";
+  if (!web && !url.password) return value;
+  // Over HTTP a token is often given as the user name; elsewhere only the password is a secret.
+  if (web) url.username = "";
+  url.password = "";
+  return url.href;
 }
 
 /** Removes the webhook URL (it carries its access token) and signing details from scheduled-task results. */

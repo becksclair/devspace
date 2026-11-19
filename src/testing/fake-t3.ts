@@ -81,6 +81,8 @@ interface ProjectRecord {
   updatedAt: string;
   /** Local branches besides `main`, for `t3_worktree_list` in a project that is a repository. */
   branches: string[];
+  /** `git remote -v` URL of `origin`, exactly as T3 stores it (credentials included). */
+  remoteUrl: string | null;
 }
 
 type PullRequestState = "open" | "closed" | "merged";
@@ -637,6 +639,20 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** T3's identity of a GitHub checkout: the remote URL is stored as `git remote -v` prints it. */
+function repositoryIdentity(remoteUrl: string, rootPath: string): JsonObject {
+  const [owner = "owner", name = "repository"] = remoteUrl.replace(/\.git$/, "").split(/[/:]/).slice(-2);
+  return {
+    canonicalKey: `github.com/${owner}/${name}`,
+    locator: { source: "git-remote", remoteName: "origin", remoteUrl },
+    rootPath,
+    displayName: `${owner}/${name}`,
+    provider: "github",
+    owner,
+    name,
+  };
+}
+
 function parsePullRequestUrl(url: string): PullRequestTarget | undefined {
   const match = PULL_REQUEST_URL.exec(url.trim());
   if (!match) return undefined;
@@ -844,11 +860,14 @@ export class FakeT3 {
     git?: boolean;
     /** Local branches besides `main`; only listed when the project is a repository. */
     branches?: string[];
+    /** Origin URL for `repositoryIdentity`; T3 keeps it as git prints it, credentials included. */
+    remoteUrl?: string;
   }): { projectId: string } {
     const id = randomUUID();
     const project = this.newProject(id, input.title, input.workspaceRoot ?? join(this.tempDir, "projects", slug(input.title)));
     project.defaultModelSelection = input.defaultModelSelection ? { ...input.defaultModelSelection } : null;
     project.branches = [...(input.branches ?? [])];
+    project.remoteUrl = input.remoteUrl ?? null;
     if (input.git) mkdirSync(join(project.workspaceRoot, ".git"), { recursive: true });
     this.projects.set(id, project);
     return { projectId: id };
@@ -2571,6 +2590,7 @@ export class FakeT3 {
       createdAt: at,
       updatedAt: at,
       branches: [],
+      remoteUrl: null,
     };
   }
 
@@ -2579,7 +2599,7 @@ export class FakeT3 {
       id: project.id,
       title: project.title,
       workspaceRoot: project.workspaceRoot,
-      repositoryIdentity: null,
+      repositoryIdentity: project.remoteUrl === null ? null : repositoryIdentity(project.remoteUrl, project.workspaceRoot),
       faviconPath: project.faviconPath,
       projectIcon: project.projectIcon ? { ...project.projectIcon } : null,
       defaultModelSelection: project.defaultModelSelection ? structuredClone(project.defaultModelSelection) : null,
