@@ -929,6 +929,20 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
   assert.equal(failure._tag, "OrchestratorMcpFailure");
   assert.equal(failure.code, "thread_not_sendable");
 
+  // An unknown thread is T3's `thread_not_found` in its three wordings. T3 ends each with advice to
+  // pass `environmentId`, which every tool here refuses; the bridge replaces that sentence.
+  for (const [tool, toolArgs, text] of [
+    ["t3_thread_read", {}, "Thread missing-thread is no longer available."],
+    ["t3_thread_wait", {}, "Thread missing-thread was not found."],
+    ["t3_thread_send", { message: "hello" }, "Thread missing-thread was not found."],
+    ["t3_thread_update", { action: "rename", title: "Renamed" }, "Thread missing-thread was not found."],
+    ["t3_thread_organize", { action: "pin" }, "The thread was not found."],
+    ["t3_queue", { action: "list" }, "The thread was not found."],
+  ] as const) {
+    const missing = JSON.parse(await fails(call, tool, { ...toolArgs, threadId: "missing-thread" })) as Json;
+    assert.deepEqual([missing._tag, missing.code, missing.message], ["OrchestratorMcpFailure", "thread_not_found", `${text} ${LOCAL_THREAD_HINT}`], tool);
+  }
+
   await ok(call, "t3_thread_organize", { threadId, action: "archive" });
 }
 
@@ -1689,9 +1703,8 @@ export async function checkWatchScope(call: T3Call, fake: FakeT3): Promise<void>
   assert.equal(watches(mark).length, 1);
 
   // An unknown thread is T3's failure, not a refusal.
-  const unknown = await fails(call, "watch_pull_request", { threadId: "missing-thread", url: own });
-  assert.doesNotMatch(unknown, /own repository/);
-  assert.match(unknown, /missing-thread|not_found/);
+  const unknown = JSON.parse(await fails(call, "watch_pull_request", { threadId: "missing-thread", url: own })) as Json;
+  assert.deepEqual([unknown.code, unknown.message], ["thread_not_found", `Thread missing-thread is no longer available. ${LOCAL_THREAD_HINT}`]);
 
   // A remote T3 cannot parse: its key is the remote URL, credentials included. It names no
   // repository a pull request could be in, and neither the refusal nor a project read repeats it.

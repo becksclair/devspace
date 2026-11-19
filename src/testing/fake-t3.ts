@@ -1768,7 +1768,8 @@ export class FakeT3 {
     if ((action === "rename") !== (title !== undefined)) {
       throw invalidParams("t3_thread_update", "rename requires title; regenerate_title does not accept one.");
     }
-    const thread = this.requireTargetThread(args.threadId);
+    if (typeof args.threadId !== "string") throw new ToolFailure("target_required", `Pass threadId: ${NOT_IN_THREAD}`);
+    const thread = this.requireThread(args.threadId);
     const commandId = `command:mcp:${encodeURIComponent(`client:${context.clientId}`)}:thread-update:${encodeURIComponent(thread.threadId)}:${action}:${optString(args.clientRequestId) ?? randomUUID()}`;
     const previous = this.idempotent.get(commandId);
     if (previous) return previous;
@@ -1994,7 +1995,7 @@ export class FakeT3 {
   }
 
   private threadRead(args: JsonObject): JsonObject {
-    const thread = this.requireThread(args.threadId);
+    const thread = this.requireThread(args.threadId, true);
     const view = args.view === "activity" ? "activity" : "messages";
     const limit = clamp(optInt(args.limit) ?? 20, 1, 100);
     const runLimit = clamp(optInt(args.runLimit) ?? 5, 1, 50);
@@ -3138,19 +3139,25 @@ export class FakeT3 {
     return `https://app.t3.codes/threads/${this.environmentId}/${encodeURIComponent(threadId)}`;
   }
 
-  private requireThread(threadId: unknown): ThreadRecord {
+  /**
+   * T3 0.1.11 answers a thread it does not have with `thread_not_found` and its hint about linked
+   * environments, in three wordings: `t3_thread_read` says the thread "is no longer available"
+   * (`gone`), the tools that name the thread say "Thread <id> was not found", and the tools that
+   * default to the calling thread say "The thread was not found" (`requireTargetThread`).
+   */
+  private requireThread(threadId: unknown, gone = false): ThreadRecord {
     const thread = this.threads.get(String(threadId));
     if (thread) return thread;
-    if (this.deletedThreads.has(String(threadId))) {
-      throw new ToolFailure("thread_not_found", `Thread ${String(threadId)} is no longer available.`);
-    }
-    throw new ToolFailure("not_found", `Thread ${String(threadId)} was not found.`);
+    const what = gone || this.deletedThreads.has(String(threadId)) ? "is no longer available" : "was not found";
+    throw new ToolFailure("thread_not_found", `Thread ${String(threadId)} ${what}.${OTHER_ENVIRONMENT_HINT}`);
   }
 
   /** Tools whose `threadId` is optional inside T3 refuse outside callers without it. */
   private requireTargetThread(threadId: unknown): ThreadRecord {
     if (typeof threadId !== "string") throw new ToolFailure("target_required", `Pass threadId: ${NOT_IN_THREAD}`);
-    return this.requireThread(threadId);
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new ToolFailure("thread_not_found", `The thread was not found.${OTHER_ENVIRONMENT_HINT}`);
+    return thread;
   }
 
   private controlThread(threadId: string): ThreadRecord {

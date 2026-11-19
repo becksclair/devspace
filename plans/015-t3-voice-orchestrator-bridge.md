@@ -525,6 +525,11 @@ dropped.
   through unchanged.
 - A slow `t3_project_read` no longer overwrites a project title that a rename
   cached while the read was in flight.
+- Rebased onto the T3 0.1.11 adaptation (PR #21): the description rewrites of
+  these tools are `DESCRIPTION_RULES` entries, the fixtures are that capture
+  plus these tools, and the fake answers an unknown thread as T3 0.1.11 does
+  (`thread_not_found`, in T3's three wordings, with its advice about linked
+  environments). The live suite compares that reply with real T3.
 
 ## Implementation contract
 

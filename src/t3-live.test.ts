@@ -224,6 +224,17 @@ const EXPANSION_TEXT_FAILURES: Array<{ tool: string; args: Json }> = [
   { tool: "unwatch_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
 ];
 const THREAD_REQUIRED_TEXT = "Pass threadId: this MCP client is not running inside a T3 thread.";
+/** One tool for each of T3's three wordings of an unknown thread, and the tools added after Phase 2. */
+const UNKNOWN_THREAD_CASES: Array<{ tool: string; args: Json }> = [
+  { tool: "t3_thread_read", args: { threadId: "devspace-contract-probe" } },
+  { tool: "t3_thread_wait", args: { threadId: "devspace-contract-probe", timeoutMs: 100 } },
+  { tool: "t3_thread_organize", args: { threadId: "devspace-contract-probe", action: "pin" } },
+  { tool: "t3_pending_request", args: { threadId: "devspace-contract-probe", action: "list" } },
+  { tool: "t3_queue", args: { threadId: "devspace-contract-probe", action: "list" } },
+  { tool: "t3_thread_configure", args: { threadId: "devspace-contract-probe" } },
+  { tool: "t3_thread_transfer", args: { threadId: "devspace-contract-probe", action: "status" } },
+  { tool: "t3_worktree_list", args: { threadId: "devspace-contract-probe" } },
+];
 
 class LiveFailure extends Error {}
 
@@ -743,6 +754,18 @@ async function contractAssertions(options: {
       assert.equal(fake._tag, real._tag, `${tool} fake _tag`);
       assert.equal(fake.code, real.code, `${tool} fake code`);
       if (fake.message !== real.message) notes.push(`${tool} error message differs from the fake's`);
+    }
+  });
+
+  await check("contract: an unknown thread is thread_not_found, in the wording the fake uses", async () => {
+    // T3 appends its advice about linked environments only while that feature is on; the bridge
+    // replaces the sentence, so the comparison leaves it out on both sides.
+    const withoutHint = (message: unknown): string => String(message).replace(/\s*Thread ids belong to one environment:[^.]*\./, "");
+    for (const { tool, args } of UNKNOWN_THREAD_CASES) {
+      const real = await failureCode(realCall, tool, args);
+      const fake = await failureCode(fakeCall, tool, args);
+      assert.deepEqual([real._tag, real.code], ["OrchestratorMcpFailure", "thread_not_found"], `${tool} real failure`);
+      assert.deepEqual([fake._tag, fake.code, withoutHint(fake.message)], [real._tag, real.code, withoutHint(real.message)], `${tool} fake failure`);
     }
   });
 
