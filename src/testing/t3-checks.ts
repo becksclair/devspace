@@ -254,9 +254,8 @@ export function checkCatalog(
 export function checkDescriptionRewrites(tools: Array<{ name: string; description?: string }> = SNAPSHOT.tools, source = SNAPSHOT.capturedFrom): void {
   const stale: Record<string, string[]> = {};
   for (const name of T3_FORWARDED_TOOLS) {
-    const description = tools.find((tool) => tool.name === name)?.description;
-    assert.ok(description, `${name} has a description in ${source}`);
-    const { unmatched } = rewriteT3Description(name, description);
+    // A tool listed without a description matches none of its rewrites, so it fails here too.
+    const { unmatched } = rewriteT3Description(name, tools.find((tool) => tool.name === name)?.description ?? "");
     if (unmatched.length > 0) stale[name] = unmatched;
   }
   assert.deepEqual(stale, {}, `description rewrites that no longer match ${source}; update DESCRIPTION_RULES in src/t3-bridge.ts`);
@@ -287,6 +286,10 @@ export function checkStaleDescriptionRewrites(): void {
   // Sentences for an agent inside a thread, or naming the hidden environmentId, are dropped for every tool.
   const clone = rewriteT3Description("t3_project_clone", "Clone a repository. Then register it under the same `environmentId`. Omit modes to inherit yours. Branch and worktree are inherited.");
   assert.equal(clone.text, "Clone a repository.");
+
+  // A tool listed without a description: every rewrite is unmatched, and a tool without rules reports nothing.
+  assert.equal(rewriteT3Description("schedule_task", "").unmatched.length, 3);
+  assert.deepEqual(rewriteT3Description("orchestrator_capabilities", ""), { text: "", unmatched: [] });
 
   // A tool without rules, and a description that still matches, report nothing.
   assert.deepEqual(rewriteT3Description("t3_project_list", "List projects. Pages can shift."), { text: "List projects. Pages can shift.", unmatched: [] });
@@ -719,6 +722,24 @@ export async function checkReading(call: T3Call, fake: FakeT3): Promise<void> {
   const sparseRead = await ok(call, "t3_thread_read", { threadId: sparse.threadId, limit: 30 });
   assert.deepEqual(records(sparseRead.items).map((item) => item.text), Array.from({ length: 30 }, (_, index) => `note ${index}`));
   assert.equal(sparseRead.olderAvailable, false);
+
+  // The tail window can leave out leading items that are not in the view. Only items in the view
+  // count as older: without one, no backward cursor; with one, the cursor reaches it.
+  const assistants = Array.from({ length: 20 }, (_, index) => ({ role: "assistant" as const, text: `step ${index}` }));
+  const tailMessages = [...assistants, { role: "user" as const, text: "last" }];
+  const noPrefix = fake.addThread({ title: "Reading activity prefix", messages: tailMessages });
+  mark = fake.calls.length;
+  const noPrefixRead = await ok(call, "t3_thread_read", { threadId: noPrefix.threadId, limit: 21 });
+  assert.ok(forwarded(fake, "t3_thread_read", mark).some((read) => typeof read.afterPosition === "number"), "the tail window starts after position 0");
+  assert.equal(records(noPrefixRead.items).length, 21);
+  assert.equal(noPrefixRead.olderAvailable, false, "only activity precedes the first message");
+  assert.equal(noPrefixRead.earlierPosition, null);
+  const prefixed = fake.addThread({ title: "Reading message prefix", messages: [{ role: "user", text: "first" }, ...tailMessages] });
+  const prefixedRead = await ok(call, "t3_thread_read", { threadId: prefixed.threadId, limit: 21 });
+  assert.deepEqual(records(prefixedRead.items).map((item) => item.text), tailMessages.map((message) => message.text));
+  assert.equal(prefixedRead.olderAvailable, true, "T3 reports a message before the window");
+  const prefixedOlder = await ok(call, "t3_thread_read", { threadId: prefixed.threadId, beforePosition: prefixedRead.earlierPosition });
+  assert.deepEqual(records(prefixedOlder.items).map((item) => item.text), ["first"]);
 
   // Forward paging is forwarded with the same defaults.
   mark = fake.calls.length;

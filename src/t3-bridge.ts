@@ -845,13 +845,12 @@ export class T3Bridge {
   }
 
   /**
-   * Warns, on each catalog load, about every description T3 reworded that `DESCRIPTION_RULES`
-   * rewrites. The description is still served without what the rule's `drop` pattern forbids.
+   * Warns, on each catalog load, about every rewrite in `DESCRIPTION_RULES` that no longer matches
+   * what T3 serves: T3 reworded the description, or lists the tool without one.
    */
   private reportStaleRewrites(tools: Map<string, LiveTool>): void {
     for (const [name, tool] of tools) {
-      if (!tool.description || TOOL_SPECS[name]?.ownDescription) continue;
-      const { unmatched } = rewriteT3Description(name, tool.description);
+      const { unmatched } = rewriteT3Description(name, tool.description ?? "");
       if (unmatched.length > 0) this.log("warn", "t3_bridge_description_rewrite_unmatched", { tool: name, unmatched });
     }
   }
@@ -1272,9 +1271,12 @@ export class T3Bridge {
       // before that start; omit it to include position 0 when the window covers the thread.
       const start = itemCount - window;
       const afterPosition = start > 0 ? start - 1 : undefined;
-      const { items, total } = await this.collectAfter(label, threadId, afterPosition, options, signal);
+      const { items, total, earlierInView } = await this.collectAfter(label, threadId, afterPosition, options, signal);
       if (total >= options.limit || afterPosition === undefined || widenings >= TAIL_MAX_WIDENINGS) {
-        return { thread, items, olderAvailable: afterPosition !== undefined || total > options.limit };
+        // Older items exist in this view when the scan found more than it kept, or T3 reports items
+        // before the first one found. A window with nothing in view cannot tell, so it says yes.
+        const olderAvailable = total > options.limit || earlierInView || (afterPosition !== undefined && total === 0);
+        return { thread, items, olderAvailable };
       }
       window *= 4;
     }
@@ -1286,9 +1288,10 @@ export class T3Bridge {
     afterPosition: number | undefined,
     options: { limit: number; maxCharsPerItem: number; view: unknown },
     signal?: AbortSignal,
-  ): Promise<{ items: Args[]; total: number }> {
+  ): Promise<{ items: Args[]; total: number; earlierInView: boolean }> {
     const items: Args[] = [];
     let total = 0;
+    let earlierInView = false;
     let cursor = afterPosition;
     for (let page = 0; page < TAIL_MAX_PAGES; page++) {
       const data = await this.invokeData(
@@ -1304,6 +1307,8 @@ export class T3Bridge {
         signal,
       );
       const pageItems = records(data.items);
+      // T3 sets `earlierPosition` when items in this view precede the first one it returned.
+      if (page === 0) earlierInView = typeof data.earlierPosition === "number";
       for (const item of pageItems) {
         items.push(item);
         total += 1;
@@ -1314,7 +1319,7 @@ export class T3Bridge {
       if (cursor !== undefined && next <= cursor) break;
       cursor = next;
     }
-    return { items, total };
+    return { items, total, earlierInView };
   }
 
   // -- inbox -----------------------------------------------------------------------------------
