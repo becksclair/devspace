@@ -26,7 +26,8 @@
     "watch_pull_request links first when needed and refuses only a merged pull request; a closed one is accepted. With repository and number, a thread whose project has no git remote also needs host.",
     "unlink_pull_requests unlinks by last known state; unwatch_pull_request on a pull request that was never linked succeeds and links nothing.",
     "t3_thread_configure rejects an unknown provider instance and accepts an unknown model id.",
-    "A fork is idle, carries relationshipToParent 'fork' and its source as parentThreadId, and keeps the source's model and modes; its transfer stays 'pending' and is listed for source and target. merge_back from a thread without a finished run fails."
+    "A fork is idle, carries relationshipToParent 'fork' and its source as parentThreadId, and keeps the source's model and modes; its transfer stays 'pending' and is listed for source and target. merge_back from a thread without a finished run fails.",
+    "unlink_pull_request (captured 2026-11-19, same T3 Code version) unlinks one pull request by url, or by repository, number, and host, whatever its state and before T3 has read it; it ends a watch on that pull request and returns wasLinked false when it was not linked."
   ],
   "results": {
     "t3_thread_launch": {
@@ -1598,6 +1599,40 @@
       "unlinkedCount": 0,
       "remaining": 0
     },
+    "unlink_pull_request.watched": {
+      "args": {
+        "url": "https://github.com/octocat/Hello-World/pull/11750"
+      },
+      "result": {
+        "host": "github.com",
+        "repository": "octocat/hello-world",
+        "number": 11750,
+        "wasLinked": true
+      },
+      "unwatchAfterwards": {
+        "watching": false,
+        "wasWatching": false
+      }
+    },
+    "unlink_pull_request.notLinked": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 11750,
+      "wasLinked": false
+    },
+    "unlink_pull_request.byRepositoryNumberHost": {
+      "args": {
+        "repository": "octocat/Hello-World",
+        "number": 2,
+        "host": "github.com"
+      },
+      "result": {
+        "host": "github.com",
+        "repository": "octocat/hello-world",
+        "number": 2,
+        "wasLinked": true
+      }
+    },
     "t3_worktree_list.notARepository": {
       "refs": [],
       "isRepo": false,
@@ -1786,6 +1821,9 @@
     "watch_pull_request.repositoryWithoutHost": "This thread's project has no recognised remote. Pass host or url.",
     "watch_pull_request.noTarget": "Pass either url, or both repository and number.",
     "watch_pull_request.notAPullRequestUrl": "This is not a recognised pull request URL. Pass repository and number instead.",
+    "unlink_pull_request.repositoryWithoutHost": "This thread's project has no recognised remote. Pass host or url.",
+    "unlink_pull_request.noTarget": "Pass either url, or both repository and number.",
+    "unlink_pull_request.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
     "plainTextNote": "String entries are isError results whose single text content is that plain text: T3's pull-request tools do not return the failure JSON.",
     "note": "Tool failures are returned as isError results whose single text content is the JSON shown here.",
     "jsonRpcNote": "Entries shaped {code: -32602, message} are JSON-RPC errors (thrown; clients prefix the message with 'MCP error -32602: '), not isError results. Calling a tool that is not listed for the client is one of them."

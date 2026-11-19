@@ -22,6 +22,7 @@ import {
   registerT3Tools,
   sharedT3Bridge,
   T3_CAPABILITY,
+  T3_ENVIRONMENT_REJECTED_MESSAGE,
   T3_FORWARDED_TOOLS,
   T3_INBOX_TOOL,
   T3_TOOL_NAMES,
@@ -41,6 +42,7 @@ import {
   checkCredentialRecovery,
   checkDescriptionRewrites,
   checkDroppedLaunch,
+  checkEnvironmentRejected,
   checkExpansionRetries,
   checkFullAccessMint,
   checkInbox,
@@ -270,13 +272,14 @@ try {
     "link_pull_requests",
     "list_thread_pull_requests",
     "unlink_pull_requests",
+    "unlink_pull_request",
     "t3_thread_configure",
     "t3_thread_transfer",
     "t3_worktree_list",
     "t3_project_read",
     "t3_environment_links",
   ]);
-  assert.deepEqual(T3_TOOL_NAMES.slice(-10), Object.keys(EXPANSION_T3_TOOLS), "the expansion tools are registered last, in this order");
+  assert.deepEqual(T3_TOOL_NAMES.slice(-11), Object.keys(EXPANSION_T3_TOOLS), "the expansion tools are registered last, in this order");
   assert.deepEqual([...T3_FORWARDED_TOOLS], T3_TOOL_NAMES.filter((name) => name !== T3_INBOX_TOOL));
   const stateLabel = t3SessionLabel(join(tempDir, "state"));
   assert.match(stateLabel, /^devspace-t3-bridge:[0-9a-f]{10}$/);
@@ -435,7 +438,9 @@ try {
     link_pull_requests: "Link several PRs to a thread. URLs that are not PRs come back in `invalidUrls`. `threadId` is required.",
     list_thread_pull_requests: "List a thread's PRs, with last known state and stack order (bottom to top). `threadId` is required.",
     unlink_pull_requests:
-      "Unlink a thread's PRs whose last known state is in `states`. PRs with no known state stay linked. `threadId` is required.",
+      "Unlink a thread's PRs whose last known state is in `states`. Use it instead of one `unlink_pull_request` per PR. PRs with no known state stay linked. `threadId` is required.",
+    unlink_pull_request:
+      "Remove one PR's link from a thread, named by `url`, or by `repository`, `number`, and `host`. Succeeds with `wasLinked=false` when it was not linked. `threadId` is required.",
     t3_thread_configure:
       "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Permission modes stay. Values from `orchestrator_capabilities`. `threadId` is required.",
     t3_thread_transfer:
@@ -478,6 +483,15 @@ try {
       assert.match(await fails(registeredCall, "t3_inbox", { limit: 50 }), /limit/);
       assert.match(await fails(registeredCall, "t3_queue", { action: "list" }), /threadId/);
       assert.match(await fails(registeredCall, "list_thread_pull_requests", {}), /threadId/);
+      assert.match(await fails(registeredCall, "unlink_pull_request", { url: "https://github.com/octocat/Hello-World/pull/7" }), /threadId/);
+      // A registered tool never strips `environmentId` before the bridge can refuse it, not even
+      // the one tool whose T3 schema is closed.
+      for (const [tool, toolArgs] of [
+        ["t3_environment_links", {}],
+        ["t3_thread_launch", { scratch: true, title: "Launch on a linked machine", message: "Reply with exactly OK" }],
+      ] as const) {
+        assert.equal(await fails(registeredCall, tool, { ...toolArgs, environmentId: "linked-machine" }), T3_ENVIRONMENT_REJECTED_MESSAGE);
+      }
       assert.match(await fails(registeredCall, "t3_thread_transfer", { action: "fork" }), /threadId/);
       assert.match(await fails(registeredCall, "link_pull_requests", { threadId: String(launched.threadId) }), /urls/);
       assert.deepEqual(await ok(registeredCall, "list_thread_pull_requests", { threadId: String(launched.threadId) }), {
@@ -514,7 +528,12 @@ try {
   try {
     const { tools } = await coldRegistered.client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name), [...T3_TOOL_NAMES], "fallback schemas still register every tool");
-    assert.equal(await fails(mcpCaller(coldRegistered.client), "t3_thread_list", { anything: true }), T3_UNREACHABLE_MESSAGE);
+    const coldCall = mcpCaller(coldRegistered.client);
+    assert.equal(await fails(coldCall, "t3_thread_list", { anything: true }), T3_UNREACHABLE_MESSAGE);
+    // The loose schemas keep `environmentId` too, so the refusal does not depend on T3 being up.
+    for (const name of T3_TOOL_NAMES) {
+      assert.equal(await fails(coldCall, name, { environmentId: "linked-machine" }), T3_ENVIRONMENT_REJECTED_MESSAGE, `${name} with a fallback schema`);
+    }
   } finally {
     await coldRegistered.close();
   }
@@ -648,6 +667,7 @@ try {
     link_pull_requests: { valid: { threadId: "t", urls: ["https://github.com/octocat/Hello-World/pull/7"] }, invalid: { threadId: "t", urls: [] } },
     list_thread_pull_requests: { valid: { threadId: "t", states: ["open", "merged"], cursor: "c" }, invalid: { threadId: "t", states: ["draft"] } },
     unlink_pull_requests: { valid: { threadId: "t", states: ["closed"] }, invalid: { threadId: "t" } },
+    unlink_pull_request: { valid: { threadId: "t", url: "https://github.com/octocat/Hello-World/pull/7" }, invalid: { threadId: "t", number: "seven" } },
     t3_thread_configure: {
       valid: { threadId: "t", modelSelection: { instanceId: "claudeAgent", model: "claude-haiku-5-5", options: [{ id: "effort", value: "low" }] } },
       invalid: { threadId: "t", modelSelection: { instanceId: "claudeAgent" } },
@@ -772,11 +792,13 @@ try {
   await checkScheduledTasks(call, fake, String(projects.projectId));
   progress("ok - scheduled tasks (B27)");
   await checkPullRequests(call, fake);
-  progress("ok - pull requests: link, list, watch, unwatch, unlink by state (B34)");
+  progress("ok - pull requests: link, list, watch, unwatch, unlink by state and one by URL (B34)");
   await checkThreadConfigureAndTransfer(call, fake);
   progress("ok - thread model, fork, merge back, context transfers (B35)");
   await checkWorkspaceReads(call, fake);
   progress("ok - project read, branches and worktrees, linked environments (B36)");
+  await checkEnvironmentRejected(call, fake);
+  progress("ok - every tool refuses a call that names another machine (B38)");
   await checkFullAccessMint(fake, label, [SECRET_NAME]);
 
   // -----------------------------------------------------------------------------------------

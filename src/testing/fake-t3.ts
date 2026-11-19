@@ -1565,6 +1565,8 @@ export class FakeT3 {
         return this.listThreadPullRequests(args);
       case "unlink_pull_requests":
         return this.unlinkPullRequests(args);
+      case "unlink_pull_request":
+        return this.unlinkPullRequest(args);
       case "watch_pull_request":
         return this.setWatching(args, true);
       case "unwatch_pull_request":
@@ -2426,6 +2428,16 @@ export class FakeT3 {
       groups.set(key, group);
     }
     return { unlinked: [...groups.values()], unlinkedCount: matching.length, remaining: before - matching.length };
+  }
+
+  /** Unlinks one pull request whatever its state; its watch goes with the link. */
+  private unlinkPullRequest(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const target = this.pullRequestTarget(args);
+    const remaining = thread.pullRequests.filter((link) => pullRequestKey(link) !== pullRequestKey(target));
+    const wasLinked = remaining.length < thread.pullRequests.length;
+    thread.pullRequests = remaining;
+    return { host: target.host, repository: target.repository, number: target.number, wasLinked };
   }
 
   /** Watching links the pull request first; a merged one is refused. Unwatching never links. */

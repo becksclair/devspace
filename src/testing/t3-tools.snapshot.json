@@ -6847,6 +6847,68 @@
       }
     },
     {
+      "name": "unlink_pull_request",
+      "description": "Remove a PR link from this thread. Succeeds with `wasLinked=false` when it was not linked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "With `repository`, when no `url`."
+          },
+          "host": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "wasLinked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "host",
+          "repository",
+          "number",
+          "wasLinked"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "Unlink pull request from thread",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "t3_thread_configure",
       "description": "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
       "inputSchema": {

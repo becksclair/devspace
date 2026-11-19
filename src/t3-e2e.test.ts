@@ -26,6 +26,7 @@ import {
   checkCliEnvironment,
   checkCredentialRecovery,
   checkDroppedLaunch,
+  checkEnvironmentRejected,
   checkExpansionRetries,
   checkFullAccessMint,
   checkInbox,
@@ -192,7 +193,8 @@ async function exerciseChain(
   await checkPullRequests(call, fake);
   await checkThreadConfigureAndTransfer(call, fake);
   await checkWorkspaceReads(call, fake);
-  progress(`ok - ${mode}: pull requests, thread model and context transfer, project read, worktrees, linked environments (B33–B36)`);
+  await checkEnvironmentRejected(call, fake);
+  progress(`ok - ${mode}: pull requests, thread model and context transfer, project read, worktrees, linked environments, this machine only (B33–B36, B38)`);
 
   const ctx: ScenarioContext = {
     kind: "fake",

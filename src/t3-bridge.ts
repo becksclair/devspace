@@ -26,6 +26,9 @@ export const T3_CAPABILITY = "t3";
 export const T3_INBOX_TOOL = "t3_inbox";
 
 export const T3_UNREACHABLE_MESSAGE = "T3 Code is not reachable on this machine.";
+/** Answer to any call that names another machine; such a call is never forwarded. */
+export const T3_ENVIRONMENT_REJECTED_MESSAGE =
+  "environmentId is not supported: these tools act only on the T3 Code of the machine DevSpace runs on, so a thread cannot be started or reached on another machine through them. t3_environment_links only lists linked machines. To act on this machine instead, call the tool again without environmentId.";
 const T3_CREDENTIAL_REJECTED_MESSAGE = "T3 Code rejected DevSpace's credential.";
 
 const T3_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"] as const;
@@ -84,6 +87,7 @@ const THREAD_REQUIRED_TOOLS = new Set([
   "link_pull_requests",
   "list_thread_pull_requests",
   "unlink_pull_requests",
+  "unlink_pull_request",
   "t3_thread_configure",
   "t3_thread_transfer",
   "t3_worktree_list",
@@ -105,13 +109,14 @@ const IDEMPOTENT_READ_TOOLS = new Set([
 ]);
 /**
  * Writes that set a thread or project to the given values, so repeating one leaves the same state.
- * `unlink_pull_requests` is left out: its result reports what it removed, and a repeat would report
- * nothing.
+ * `unlink_pull_requests` is left out: its result is the only record of which pull requests matched
+ * the states, and a repeat would report none.
  */
 const REPEATABLE_WRITE_TOOLS = new Set([
   "t3_project_update",
   "t3_thread_configure",
   "link_pull_requests",
+  "unlink_pull_request",
   "watch_pull_request",
   "unwatch_pull_request",
 ]);
@@ -191,6 +196,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Start a T3 thread",
     readOnly: false,
     summary: "Start a new T3 Code thread in a project (`projectId`) or a new scratch folder (`scratch: true`), with the task in `message`.",
+    note: "The thread starts on this machine; a thread cannot be started on a linked machine from here.",
   },
   t3_thread_send: {
     title: "Send to a T3 thread",
@@ -301,7 +307,14 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     readOnly: false,
     summary:
       "Unlink the pull requests of a T3 Code thread whose last known state is in `states` (`open`, `closed`, `merged`). Pull requests with no known state stay linked.",
-    note: "`threadId` is required. It unlinks by state, not by URL, so check the states with list_thread_pull_requests first. Returns `unlinked` (PR numbers by repository and state), `unlinkedCount`, and `remaining`.",
+    note: "`threadId` is required. It unlinks every PR in those states, so check them with list_thread_pull_requests first; to unlink one PR whatever its state, use unlink_pull_request. Returns `unlinked` (PR numbers by repository and state), `unlinkedCount`, and `remaining`.",
+  },
+  unlink_pull_request: {
+    title: "Unlink one pull request from a T3 thread",
+    readOnly: false,
+    summary:
+      "Unlink one pull request from a T3 Code thread, named by `url`, or by `repository`, `number`, and `host`. It succeeds with `wasLinked: false` when the PR was not linked.",
+    note: "`threadId` is required. Use it for one PR, whatever its state and even before T3 has read that state; unlink_pull_requests clears every PR in the given states. A watch on the PR ends with its link. Returns `{ host, repository, number, wasLinked }`.",
   },
   t3_thread_configure: {
     title: "Read or set a T3 thread's model",
@@ -332,7 +345,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "List machines linked to T3 Code",
     readOnly: true,
     summary:
-      "List the user's other machines linked to this T3 Code and whether each answers now. Returns this machine's `environmentId` and `links`, each with `environmentId`, `label`, and `status` (`reachable`, `unreachable`, or `expired`). It is a status check: the T3 tools here act on this machine only and take no `environmentId` (one passed to another tool is ignored), and machines are linked and unlinked in the T3 Code app.",
+      "List the user's other machines linked to this T3 Code and whether each answers now. Returns this machine's `environmentId` and `links`, each with `environmentId`, `label`, and `status` (`reachable`, `unreachable`, or `expired`). It is a status check: the T3 tools here act on this machine only and take no `environmentId` (a call that passes one is rejected), and machines are linked and unlinked in the T3 Code app.",
     ownDescription: true,
   },
 };
@@ -403,11 +416,15 @@ const DESCRIPTION_RULES: Record<string, DescriptionRule> = {
     ],
     drop: /webhook|\bURLs?\b|T3 Connect/i,
   },
-  // The singular link and unlink tools are not exposed, so the pointers to them are dropped.
+  // The singular link tool is not exposed, so the pointer to it is dropped.
   link_pull_requests: { rewrites: [["Use it instead of one `link_pull_request` per PR.", ""]], drop: /\blink_pull_request\b/ },
   // Advice for an agent deciding whether its own work is done.
   list_thread_pull_requests: { rewrites: [["Not an end-of-work check.", ""]], drop: /end-of-work/i },
-  unlink_pull_requests: { rewrites: [["Use it instead of one `unlink_pull_request` per PR.", ""]], drop: /\bunlink_pull_request\b/ },
+  unlink_pull_request: {
+    rewrites: [
+      ["Remove a PR link from this thread.", "Remove one PR's link from a thread, named by `url`, or by `repository`, `number`, and `host`."],
+    ],
+  },
 };
 
 /** Never served for any tool: phrasing for an agent inside a thread, and the argument every schema hides. */
@@ -867,8 +884,11 @@ export class T3Bridge {
   async call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
     try {
       const input = isRecord(args) ? args : {};
+      if (name !== T3_INBOX_TOOL && !FORWARDED.has(name)) return errorResult(`${name} is not a DevSpace T3 tool.`);
+      // The bridge acts on its own machine only. Dropping the field would run the call here while
+      // the caller believes it ran on the machine it named.
+      if (input.environmentId !== undefined && input.environmentId !== null) return errorResult(T3_ENVIRONMENT_REJECTED_MESSAGE);
       if (name === T3_INBOX_TOOL) return await this.inbox(input, signal);
-      if (!FORWARDED.has(name)) return errorResult(`${name} is not a DevSpace T3 tool.`);
       const shaped = shapeArguments(name, input);
       if (typeof shaped === "string") return errorResult(shaped);
       switch (name) {
@@ -1826,6 +1846,7 @@ function described(type: z.ZodTypeAny, schema: unknown): z.ZodTypeAny {
 
 function shapeArguments(name: string, input: Args): Args | string {
   const args: Args = { ...input };
+  // `T3Bridge.call` rejects a call that names an environment; this drops an explicit null.
   delete args.environmentId;
   if (THREAD_REQUIRED_TOOLS.has(name) && !nonEmptyString(args.threadId)) return missingThreadMessage();
   switch (name) {
@@ -1850,6 +1871,9 @@ function shapeArguments(name: string, input: Args): Args | string {
     case "t3_worktree_list":
       args.limit ??= WORKTREE_LIST_DEFAULT_LIMIT;
       break;
+    case "t3_environment_links":
+      // It takes no arguments.
+      return {};
     case "t3_thread_wait": {
       const requested = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) ? args.timeoutMs : WAIT_DEFAULT_MS;
       args.timeoutMs = Math.max(0, Math.min(requested, WAIT_MAX_MS));
@@ -1993,6 +2017,10 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
   trimmed.type = "object";
   const properties: Record<string, unknown> = isRecord(trimmed.properties) ? { ...trimmed.properties } : {};
   delete properties.environmentId;
+  // A closed top-level schema would make the MCP layer strip an `environmentId` before the bridge
+  // can reject it. T3 closes only `t3_environment_links`, for which `shapeArguments` forwards
+  // nothing; another tool's unknown arguments reach T3, as they do for every open schema.
+  if (trimmed.additionalProperties === false) delete trimmed.additionalProperties;
   switch (name) {
     case "t3_thread_launch":
       delete properties.runtimeMode;

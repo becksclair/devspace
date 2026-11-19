@@ -41,6 +41,7 @@ import {
   captureConsole,
   checkCatalog,
   checkDescriptionRewrites,
+  checkEnvironmentRejected,
   FULL_ACCESS_SCOPES,
   NEVER_EXPOSED_T3_TOOLS,
   ok,
@@ -144,6 +145,7 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
   link_pull_requests: { environmentId: "string", threadId: "string", urls: "array" },
   list_thread_pull_requests: { environmentId: "string", threadId: "string", states: "array", cursor: "string" },
   unlink_pull_requests: { environmentId: "string", threadId: "string", states: "array" },
+  unlink_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string" },
   t3_thread_configure: { environmentId: "string", threadId: "string", modelSelection: "object" },
   t3_thread_transfer: {
     environmentId: "string",
@@ -211,10 +213,13 @@ const EXPANSION_ERROR_CASES: Array<{ tool: string; args: Json; code: string }> =
   { tool: "t3_project_read", args: { projectId: "devspace-contract-probe" }, code: "invalid_request" },
 ];
 const CONTRACT_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/1";
+// Linked with the first and unlinked by URL straight away, before T3 can have read its state.
+const CONTRACT_SECOND_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/2";
 const EXPANSION_TEXT_FAILURES: Array<{ tool: string; args: Json }> = [
   { tool: "list_thread_pull_requests", args: {} },
   { tool: "link_pull_requests", args: { urls: [CONTRACT_PULL_REQUEST] } },
   { tool: "unlink_pull_requests", args: { states: ["merged"] } },
+  { tool: "unlink_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
   { tool: "watch_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
   { tool: "unwatch_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
 ];
@@ -568,6 +573,7 @@ interface ExpansionSample {
   listing: Json;
   watched: Json;
   unwatched: Json;
+  unlinkedOne: Json;
   unlinked: Json;
   refs: Json;
   project: Json;
@@ -597,7 +603,11 @@ async function sampleExpansionShapes(call: T3Call, title: string, modelSelection
     const fork = await ok(call, "t3_thread_transfer", { threadId, action: "fork", title: `${title} fork` });
     threadIds.push(String(fork.targetThreadId));
     const transfers = records((await ok(call, "t3_thread_transfer", { threadId, action: "status" })).transfers);
-    const linked = await ok(call, "link_pull_requests", { threadId, urls: [CONTRACT_PULL_REQUEST, "https://example.com/not-a-pull-request"] });
+    const linked = await ok(call, "link_pull_requests", {
+      threadId,
+      urls: [CONTRACT_PULL_REQUEST, CONTRACT_SECOND_PULL_REQUEST, "https://example.com/not-a-pull-request"],
+    });
+    const unlinkedOne = await ok(call, "unlink_pull_request", { threadId, url: CONTRACT_SECOND_PULL_REQUEST });
     const listing = await poll(
       "T3 to read the linked pull request's state",
       async () => {
@@ -613,7 +623,7 @@ async function sampleExpansionShapes(call: T3Call, title: string, modelSelection
     const refs = await ok(call, "t3_worktree_list", { threadId });
     const project = await ok(call, "t3_project_read", { projectId: launch.projectId });
     const links = await ok(call, "t3_environment_links", {});
-    return { configuration, configured, fork, transfers, linked, listing, watched, unwatched, unlinked, refs, project, links };
+    return { configuration, configured, fork, transfers, linked, listing, watched, unwatched, unlinkedOne, unlinked, refs, project, links };
   } finally {
     for (const id of threadIds) {
       await call("t3_thread_organize", { threadId: id, action: "settle" });
@@ -653,6 +663,8 @@ async function expansionContract(realCall: T3Call, fakeCall: T3Call, stamp: stri
   compareKeys("pull request entries", records(real.listing.pullRequests), records(fake.listing.pullRequests), ["url", "repository", "number", "state", "watching"]);
   compareKeys("watch results", [real.watched, real.unwatched], [fake.watched, fake.unwatched], ["url", "number", "watching", "wasWatching"]);
   compareKeys("unlink result", [real.unlinked], [fake.unlinked], ["unlinked", "unlinkedCount", "remaining"]);
+  compareKeys("single unlink result", [real.unlinkedOne], [fake.unlinkedOne], ["host", "repository", "number", "wasLinked"]);
+  assert.equal(real.unlinkedOne.wasLinked, true, "T3 unlinks one pull request by URL before it has read its state");
   compareKeys("worktree listing outside a repository", [real.refs], [fake.refs], ["refs", "isRepo", "nextCursor", "totalCount"]);
   compareKeys("project record", [real.project], [fake.project], BRIDGE_READS.projectRecord);
   // The bridge returns `environmentId` and `links` and drops `notListed`.
@@ -1124,6 +1136,10 @@ async function runLocal(stamp: string): Promise<void> {
       checkCatalog((await listAllTools(client!)) as CatalogTool[], { baseline: new Set(baseline) });
     });
 
+    await check("B38: every tool refuses a call that names another machine, and no thread is started", async () => {
+      await checkEnvironmentRejected(call);
+    });
+
     await check("B4: the bridge minted through the CLI pairing flow at full access", async () => {
       const pairing = cliLog.find((entry) => entry.args.slice(0, 3).join(" ") === "auth pairing create" && entry.args.includes(label));
       assert.ok(pairing, "the bridge created a pairing code");
@@ -1428,6 +1444,10 @@ async function runDeployedChecks(endpoint: string, accessToken: string, stamp: s
     await check("B2/B3/B12/B17/B26: the deployed gateway exposes exactly the DevSpace T3 tools", async () => {
       const baseline = await toolNames(endpoint, accessToken, { "x-disabled-capabilities": "t3" });
       checkCatalog((await listAllTools(client)) as CatalogTool[], { baseline: new Set(baseline) });
+    });
+
+    await check("B38: every tool refuses a call that names another machine, and no thread is started", async () => {
+      await checkEnvironmentRejected(call);
     });
 
     await check("B16: compact list and project rows", async () => {
