@@ -41,6 +41,7 @@ import {
   checkCredentialRecovery,
   checkDescriptionRewrites,
   checkDroppedLaunch,
+  checkExpansionRetries,
   checkFullAccessMint,
   checkInbox,
   checkInboxCompleteness,
@@ -49,7 +50,9 @@ import {
   checkNoBlindRetry,
   checkPhase2Retries,
   checkProjects,
+  checkPullRequests,
   checkScheduledTasks,
+  checkThreadConfigureAndTransfer,
   checkThreadUpdate,
   checkNoSecrets,
   checkReading,
@@ -58,6 +61,8 @@ import {
   checkShaping,
   checkStaleDescriptionRewrites,
   checkUnavailable,
+  checkWorkspaceReads,
+  EXPANSION_T3_TOOLS,
   fails,
   forwarded,
   ok,
@@ -260,7 +265,18 @@ try {
     "schedule_task",
     "run_scheduled_task_now",
     "delete_scheduled_task",
+    "watch_pull_request",
+    "unwatch_pull_request",
+    "link_pull_requests",
+    "list_thread_pull_requests",
+    "unlink_pull_requests",
+    "t3_thread_configure",
+    "t3_thread_transfer",
+    "t3_worktree_list",
+    "t3_project_read",
+    "t3_environment_links",
   ]);
+  assert.deepEqual(T3_TOOL_NAMES.slice(-10), Object.keys(EXPANSION_T3_TOOLS), "the expansion tools are registered last, in this order");
   assert.deepEqual([...T3_FORWARDED_TOOLS], T3_TOOL_NAMES.filter((name) => name !== T3_INBOX_TOOL));
   const stateLabel = t3SessionLabel(join(tempDir, "state"));
   assert.match(stateLabel, /^devspace-t3-bridge:[0-9a-f]{10}$/);
@@ -409,6 +425,40 @@ try {
   assert.equal(rewordedLogs[0]!.tool, "schedule_task");
   assert.equal((rewordedLogs[0]!.unmatched as string[]).length, 3);
 
+  // B33: T3's descriptions with the in-thread sentences and the pointers to unexposed tools removed,
+  // then DevSpace's note. The watch tools and the link listing use DevSpace's own description.
+  const liveDescription = (name: string): string => {
+    const description = String(definitions.find((definition) => definition.name === name)?.description);
+    return description.slice(0, description.indexOf("\nFind threads with"));
+  };
+  const rewritten: Record<string, string> = {
+    link_pull_requests: "Link several PRs to a thread. URLs that are not PRs come back in `invalidUrls`. `threadId` is required.",
+    list_thread_pull_requests: "List a thread's PRs, with last known state and stack order (bottom to top). `threadId` is required.",
+    unlink_pull_requests:
+      "Unlink a thread's PRs whose last known state is in `states`. PRs with no known state stay linked. `threadId` is required.",
+    t3_thread_configure:
+      "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Permission modes stay. Values from `orchestrator_capabilities`. `threadId` is required.",
+    t3_thread_transfer:
+      "Move context between threads. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers. `threadId` is the source thread and is required.",
+    t3_worktree_list:
+      "List branch refs and checkout paths for a thread's workspace. Detached worktrees with no branch are left out. `threadId` is required and selects the repository.",
+    t3_project_read: "Read one project: workspace and saved scripts. `projectId` comes from t3_project_list, which returns only titles and folders.",
+  };
+  for (const [name, start] of Object.entries(rewritten)) {
+    assert.ok(liveDescription(name).startsWith(start), `${name} description: ${liveDescription(name)}`);
+  }
+  const coldDescription = (name: string, all: T3ToolDefinition[]): string => String(all.find((definition) => definition.name === name)?.description);
+  const ownDescriptions: Record<string, string> = {
+    watch_pull_request: "Have a T3 Code thread",
+    unwatch_pull_request: "Stop a T3 Code thread",
+    t3_environment_links: "List the user's other machines",
+  };
+  for (const [name, start] of Object.entries(ownDescriptions)) {
+    assert.ok(liveDescription(name).startsWith(start), `${name} uses DevSpace's description`);
+  }
+  assert.match(liveDescription("watch_pull_request"), /The watch wakes that thread's agent, not you: .*T3 messages the thread and its agent runs a turn\./);
+  assert.match(liveDescription("t3_thread_configure"), /T3 does not check the model id/);
+
   for (const profile of ["standard", "trusted-owner"] as const) {
     const registered = await connectRegistered(catalogBridge, profile);
     try {
@@ -425,9 +475,17 @@ try {
       const launch = [...catalogFake.calls].reverse().find((entry) => entry.tool === "t3_thread_launch");
       assert.equal(launch?.args.runtimeMode, "full-access");
       assert.deepEqual(launch?.args.modelSelection, { instanceId: "claudeAgent", model: "claude-haiku-5-5" });
-      await ok(registeredCall, "t3_thread_organize", { threadId: launched.threadId, action: "archive" });
       assert.match(await fails(registeredCall, "t3_inbox", { limit: 50 }), /limit/);
       assert.match(await fails(registeredCall, "t3_queue", { action: "list" }), /threadId/);
+      assert.match(await fails(registeredCall, "list_thread_pull_requests", {}), /threadId/);
+      assert.match(await fails(registeredCall, "t3_thread_transfer", { action: "fork" }), /threadId/);
+      assert.match(await fails(registeredCall, "link_pull_requests", { threadId: String(launched.threadId) }), /urls/);
+      assert.deepEqual(await ok(registeredCall, "list_thread_pull_requests", { threadId: String(launched.threadId) }), {
+        pullRequests: [],
+        chains: [],
+        nextCursor: null,
+      });
+      await ok(registeredCall, "t3_thread_organize", { threadId: launched.threadId, action: "archive" });
     } finally {
       await registered.close();
     }
@@ -443,6 +501,15 @@ try {
     if (definition.name !== T3_INBOX_TOOL) assert.deepEqual(definition.inputSchema, { type: "object", additionalProperties: true });
   }
   checkCatalog(coldDefinitions.map((definition): CatalogTool => ({ ...definition })), { live: false });
+  // B33: while T3 is unreachable every expansion tool still describes itself from its summary.
+  for (const name of Object.keys(EXPANSION_T3_TOOLS)) {
+    const description = coldDescription(name, coldDefinitions);
+    assert.match(description, /T3 Code/, `${name} fallback description names T3 Code`);
+    assert.ok(description.length > 120, `${name} fallback description says what the tool needs and returns`);
+  }
+  for (const name of Object.keys(ownDescriptions)) {
+    assert.equal(coldDescription(name, coldDefinitions), coldDescription(name, definitions), `${name} reads the same with and without T3`);
+  }
   const coldRegistered = await connectRegistered(coldBridge, "standard");
   try {
     const { tools } = await coldRegistered.client.listTools();
@@ -536,7 +603,7 @@ try {
   ).tools.filter((tool) => T3_FORWARDED_TOOLS.includes(tool.name));
   assert.equal(snapshotTools.length, T3_FORWARDED_TOOLS.length);
   const modelSelection = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
-  const conversionCases: Record<string, { valid: Record<string, unknown>; invalid: Record<string, unknown> }> = {
+  const conversionCases: Record<string, { valid: Record<string, unknown>; invalid?: Record<string, unknown> }> = {
     t3_project_list: { valid: { limit: 5, cursor: 0 }, invalid: { limit: "five" } },
     t3_thread_search: { valid: { query: "parser", limit: 3, projectId: "p" }, invalid: { query: 42 } },
     t3_thread_list: {
@@ -576,6 +643,23 @@ try {
     },
     run_scheduled_task_now: { valid: { taskId: "s" }, invalid: {} },
     delete_scheduled_task: { valid: { scheduledTaskId: "s" }, invalid: {} },
+    watch_pull_request: { valid: { threadId: "t", repository: "octocat/Hello-World", number: 7, host: "github.com" }, invalid: { threadId: "t", number: 0 } },
+    unwatch_pull_request: { valid: { threadId: "t", url: "https://github.com/octocat/Hello-World/pull/7" }, invalid: { threadId: "t", url: 7 } },
+    link_pull_requests: { valid: { threadId: "t", urls: ["https://github.com/octocat/Hello-World/pull/7"] }, invalid: { threadId: "t", urls: [] } },
+    list_thread_pull_requests: { valid: { threadId: "t", states: ["open", "merged"], cursor: "c" }, invalid: { threadId: "t", states: ["draft"] } },
+    unlink_pull_requests: { valid: { threadId: "t", states: ["closed"] }, invalid: { threadId: "t" } },
+    t3_thread_configure: {
+      valid: { threadId: "t", modelSelection: { instanceId: "claudeAgent", model: "claude-haiku-5-5", options: [{ id: "effort", value: "low" }] } },
+      invalid: { threadId: "t", modelSelection: { instanceId: "claudeAgent" } },
+    },
+    t3_thread_transfer: {
+      valid: { action: "fork", threadId: "t", sourcePoint: { type: "run", runId: "r" }, title: "Fork" },
+      invalid: { action: "copy", threadId: "t" },
+    },
+    t3_worktree_list: { valid: { threadId: "t", query: "feat", limit: 200, refKind: "local" }, invalid: { threadId: "t", limit: 201 } },
+    t3_project_read: { valid: { projectId: "p" }, invalid: {} },
+    // It takes no arguments, so there is nothing a caller can get wrong.
+    t3_environment_links: { valid: {} },
   };
   const syntheticSchema: Record<string, unknown> = {
     type: "object",
@@ -628,7 +712,7 @@ try {
       const cases = conversionCases[tool.name];
       assert.ok(cases, `a conversion case for ${tool.name}`);
       await accepts(tool.name, cases.valid);
-      await rejects(tool.name, cases.invalid);
+      if (cases.invalid) await rejects(tool.name, cases.invalid);
     }
     await accepts("synthetic_schema", { nullableText: null });
     await accepts("synthetic_schema", {
@@ -687,6 +771,12 @@ try {
   progress("ok - projects, clones, default model, model catalog (B29, B30, B31)");
   await checkScheduledTasks(call, fake, String(projects.projectId));
   progress("ok - scheduled tasks (B27)");
+  await checkPullRequests(call, fake);
+  progress("ok - pull requests: link, list, watch, unwatch, unlink by state (B34)");
+  await checkThreadConfigureAndTransfer(call, fake);
+  progress("ok - thread model, fork, merge back, context transfers (B35)");
+  await checkWorkspaceReads(call, fake);
+  progress("ok - project read, branches and worktrees, linked environments (B36)");
   await checkFullAccessMint(fake, label, [SECRET_NAME]);
 
   // -----------------------------------------------------------------------------------------
@@ -704,6 +794,8 @@ try {
   progress("ok - no blind retry (B11)");
   await checkPhase2Retries(call, fake);
   progress("ok - Phase 2 retry classification (B32)");
+  await checkExpansionRetries(call, fake);
+  progress("ok - retry classification for the pull-request, thread, worktree, and project-read tools (B37)");
 
   // B5: repeated restarts leave at most one live session for the label.
   await bridge.close();

@@ -26,6 +26,7 @@ import {
   checkCliEnvironment,
   checkCredentialRecovery,
   checkDroppedLaunch,
+  checkExpansionRetries,
   checkFullAccessMint,
   checkInbox,
   checkInboxOmitted,
@@ -33,7 +34,9 @@ import {
   checkNoBlindRetry,
   checkPhase2Retries,
   checkProjects,
+  checkPullRequests,
   checkScheduledTasks,
+  checkThreadConfigureAndTransfer,
   checkThreadUpdate,
   checkNoSecrets,
   checkReading,
@@ -41,6 +44,7 @@ import {
   checkRewordedCatalog,
   checkShaping,
   checkUnavailable,
+  checkWorkspaceReads,
   ok,
   REWORDED_SCHEDULE_TASK,
   staleRewriteWarnings,
@@ -185,6 +189,10 @@ async function exerciseChain(
   const projects = await checkProjects(call, fake);
   await checkScheduledTasks(call, fake, String(projects.projectId));
   progress(`ok - ${mode}: rename, projects, model catalog, scheduled tasks (B27–B31)`);
+  await checkPullRequests(call, fake);
+  await checkThreadConfigureAndTransfer(call, fake);
+  await checkWorkspaceReads(call, fake);
+  progress(`ok - ${mode}: pull requests, thread model and context transfer, project read, worktrees, linked environments (B33–B36)`);
 
   const ctx: ScenarioContext = {
     kind: "fake",
@@ -195,10 +203,10 @@ async function exerciseChain(
     workDir: join(fake.home, `scenarios-${mode}`),
   };
   const results = await runScenarios(ctx);
-  assert.deepEqual(results.map((result) => result.id), ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10"]);
+  assert.deepEqual(results.map((result) => result.id), ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"]);
   for (const result of results) assert.ok(result.ok, `${mode} ${result.id} failed: ${result.error}`);
   assert.equal(await cleanupScenarioThreads(ctx), 0, "the scenarios archived every thread they started");
-  progress(`ok - ${mode}: scenarios S1–S10`);
+  progress(`ok - ${mode}: scenarios S1–S11`);
 
   await checkCredentialRecovery(call, fake, label);
   await checkUnavailable(call, fake, () => toolNames(endpoint));
@@ -206,7 +214,8 @@ async function exerciseChain(
   await checkDroppedLaunch(call, fake);
   await checkNoBlindRetry(call, fake);
   await checkPhase2Retries(call, fake);
-  progress(`ok - ${mode}: credential, availability, restart, dropped responses and read retries (B6, B8, B9, B10, B11, B32)`);
+  await checkExpansionRetries(call, fake);
+  progress(`ok - ${mode}: credential, availability, restart, dropped responses and read retries (B6, B8, B9, B10, B11, B32, B37)`);
 
   checkCliEnvironment(fake, SECRET_NAME);
   await checkFullAccessMint(fake, label, [SECRET_NAME]);

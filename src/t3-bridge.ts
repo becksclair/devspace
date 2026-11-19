@@ -68,9 +68,26 @@ const INBOX_PREVIEW_COUNT = 5;
 const INBOX_PREVIEW_CHARS = 300;
 
 const T3_GUIDANCE =
-  "Find threads with t3_thread_search or t3_thread_list; never ask the user for IDs. Refer to threads by title and project, and give the thread link when the user may want to open it in the T3 app. Threads always run in full-access mode.";
+  "Find threads with t3_thread_search or t3_thread_list; never ask the user for IDs. Refer to threads by title and project, and give the thread link when the user may want to open it in the T3 app. Threads you launch always run in full-access mode.";
 
-const THREAD_REQUIRED_TOOLS = new Set(["t3_pending_request", "t3_thread_organize", "t3_queue", "t3_thread_update"]);
+/**
+ * Tools T3 runs against "this thread" when `threadId` is omitted. An outside client has no thread,
+ * so the bridge requires `threadId` and answers without contacting T3 when it is missing.
+ */
+const THREAD_REQUIRED_TOOLS = new Set([
+  "t3_pending_request",
+  "t3_thread_organize",
+  "t3_queue",
+  "t3_thread_update",
+  "watch_pull_request",
+  "unwatch_pull_request",
+  "link_pull_requests",
+  "list_thread_pull_requests",
+  "unlink_pull_requests",
+  "t3_thread_configure",
+  "t3_thread_transfer",
+  "t3_worktree_list",
+]);
 const CLIENT_REQUEST_ID_TOOLS = new Set(["t3_thread_launch", "t3_thread_send", "t3_thread_interrupt", "t3_thread_update"]);
 /** Read-only T3 tools: safe to retry once after the connection dropped mid-request. */
 const IDEMPOTENT_READ_TOOLS = new Set([
@@ -81,11 +98,29 @@ const IDEMPOTENT_READ_TOOLS = new Set([
   "t3_thread_wait",
   "list_scheduled_tasks",
   "orchestrator_capabilities",
+  "list_thread_pull_requests",
+  "t3_worktree_list",
+  "t3_project_read",
+  "t3_environment_links",
 ]);
 /**
- * Fields the project tools forward. T3's other project settings stay out of the model-facing
- * surface, notably `scripts` (commands T3 runs on every new worktree). T3 ignores a default model
- * given at creation, so it is set with `t3_project_update`.
+ * Writes that set a thread or project to the given values, so repeating one leaves the same state.
+ * `unlink_pull_requests` is left out: its result reports what it removed, and a repeat would report
+ * nothing.
+ */
+const REPEATABLE_WRITE_TOOLS = new Set([
+  "t3_project_update",
+  "t3_thread_configure",
+  "link_pull_requests",
+  "watch_pull_request",
+  "unwatch_pull_request",
+]);
+const WORKTREE_LIST_DEFAULT_LIMIT = 50;
+/**
+ * Fields the project create and update tools forward. T3's other project settings cannot be
+ * changed through DevSpace, notably `scripts` (commands T3 runs on every new worktree);
+ * `t3_project_read` returns them read-only. T3 ignores a default model given at creation, so it
+ * is set with `t3_project_update`.
  */
 const PROJECT_CREATE_FIELDS = ["title", "workspaceRoot", "createWorkspaceRootIfMissing"] as const;
 const PROJECT_UPDATE_FIELDS = ["projectId", "title", "defaultModelSelection"] as const;
@@ -235,6 +270,71 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     readOnly: false,
     summary: "Delete a T3 Code scheduled task.",
   },
+  watch_pull_request: {
+    title: "Watch a pull request for a T3 thread",
+    readOnly: false,
+    summary:
+      "Have a T3 Code thread (`threadId`) watch an open pull request, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. A merged PR is refused. The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, or merge conflicts, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. Returns `{ host, repository, number, url, watching, wasWatching }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
+    ownDescription: true,
+  },
+  unwatch_pull_request: {
+    title: "Stop watching a pull request",
+    readOnly: false,
+    summary:
+      "Stop a T3 Code thread (`threadId`) from watching a pull request, named by `url`, or by `repository`, `number`, and `host`. The PR stays linked to the thread. Returns `{ host, repository, number, url, watching, wasWatching }`.",
+    ownDescription: true,
+  },
+  link_pull_requests: {
+    title: "Link pull requests to a T3 thread",
+    readOnly: false,
+    summary: "Link one or more pull requests to a T3 Code thread by URL (`urls`). URLs that are not pull requests come back in `invalidUrls`.",
+    note: "`threadId` is required. T3 then shows each PR's state on the thread and settles the thread on merge. Returns `linked` and `alreadyLinked` (PR numbers by repository) and `linkedCount`. Linking wakes no one; use watch_pull_request to have the thread's agent react to PR activity.",
+  },
+  list_thread_pull_requests: {
+    title: "List a T3 thread's pull requests",
+    readOnly: true,
+    summary: "List the pull requests linked to a T3 Code thread, with each one's last known state and stack order (bottom to top).",
+    note: "`threadId` is required. Each entry has `url`, `repository`, `number`, `state` (`open`, `closed`, `merged`, or null before T3's first sync), `watching`, `title`, and its branches. `states` filters, and `nextCursor` pages (50 per page). States are T3's last sync, not a live read of the host.",
+  },
+  unlink_pull_requests: {
+    title: "Unlink a T3 thread's pull requests by state",
+    readOnly: false,
+    summary:
+      "Unlink the pull requests of a T3 Code thread whose last known state is in `states` (`open`, `closed`, `merged`). Pull requests with no known state stay linked.",
+    note: "`threadId` is required. It unlinks by state, not by URL, so check the states with list_thread_pull_requests first. Returns `unlinked` (PR numbers by repository and state), `unlinkedCount`, and `remaining`.",
+  },
+  t3_thread_configure: {
+    title: "Read or set a T3 thread's model",
+    readOnly: false,
+    summary: "Read a T3 Code thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`.",
+    note: "`threadId` is required. Without `modelSelection` it only reads and returns `{ threadId, modelSelection, runtimeMode, interactionMode }`. `modelSelection` is `{ instanceId, model, options? }`: a provider's `providerInstanceId` and a model's `id` from orchestrator_capabilities. T3 does not check the model id, so pass one that orchestrator_capabilities lists.",
+  },
+  t3_thread_transfer: {
+    title: "Fork or merge a T3 thread's context",
+    readOnly: false,
+    summary:
+      "Fork a T3 Code thread into a new thread (`fork`), merge its context into a related thread in the same project (`merge_back` with `targetThreadId`), or list its context transfers (`status`).",
+    note: "`threadId` is the source thread and is required. `fork` and `merge_back` return `targetThreadId`. A fork keeps the source's project, model, and modes and runs nothing until you message it with t3_thread_send. To start a thread without the source's history, use t3_thread_launch.",
+  },
+  t3_worktree_list: {
+    title: "List a T3 thread's branches and worktrees",
+    readOnly: true,
+    summary: "List the branches of a T3 Code thread's repository and the folder each one is checked out in.",
+    note: "`threadId` is required and selects the repository. Each ref has `name`, `current` (checked out in the thread's folder), `isDefault`, and `worktreePath` when a worktree holds it. `query` filters by name; 50 refs are returned unless `limit` says otherwise, and `nextCursor` pages.",
+  },
+  t3_project_read: {
+    title: "Read a T3 project",
+    readOnly: true,
+    summary: "Read one T3 Code project's full record: its folder, git repository, default model, and saved scripts.",
+    note: "`projectId` comes from t3_project_list, which returns only titles and folders. Returns `{ id, title, workspaceRoot, repositoryIdentity, defaultModelSelection, scripts, … }`; `repositoryIdentity` names the git remote (`provider`, `owner`, `name`) and is null when the folder has none.",
+  },
+  t3_environment_links: {
+    title: "List machines linked to T3 Code",
+    readOnly: true,
+    summary:
+      "List the user's other machines linked to this T3 Code and whether each answers now. Returns this machine's `environmentId` and `links`, each with `environmentId`, `label`, and `status` (`reachable`, `unreachable`, or `expired`). It is a status check: the T3 tools here act on this machine only and take no `environmentId` (one passed to another tool is ignored), and machines are linked and unlinked in the T3 Code app.",
+    ownDescription: true,
+  },
 };
 
 export const T3_TOOL_NAMES: readonly string[] = Object.freeze(Object.keys(TOOL_SPECS));
@@ -303,6 +403,11 @@ const DESCRIPTION_RULES: Record<string, DescriptionRule> = {
     ],
     drop: /webhook|\bURLs?\b|T3 Connect/i,
   },
+  // The singular link and unlink tools are not exposed, so the pointers to them are dropped.
+  link_pull_requests: { rewrites: [["Use it instead of one `link_pull_request` per PR.", ""]], drop: /\blink_pull_request\b/ },
+  // Advice for an agent deciding whether its own work is done.
+  list_thread_pull_requests: { rewrites: [["Not an end-of-work check.", ""]], drop: /end-of-work/i },
+  unlink_pull_requests: { rewrites: [["Use it instead of one `unlink_pull_request` per PR.", ""]], drop: /\bunlink_pull_request\b/ },
 };
 
 /** Never served for any tool: phrasing for an agent inside a thread, and the argument every schema hides. */
@@ -778,16 +883,28 @@ export class T3Bridge {
         case "schedule_task":
         case "list_scheduled_tasks":
           return withoutWebhookSecrets(await this.invoke(name, name, shaped, signal));
+        case "t3_environment_links": {
+          // T3 also returns `notListed`, which tells an agent inside a thread to call a linking tool
+          // that is not exposed here.
+          const data = await this.invokeData(name, name, shaped, signal);
+          return jsonResult({ environmentId: data.environmentId ?? null, links: records(data.links) });
+        }
         case "t3_project_create":
-        case "t3_project_update": {
-          // Keep the project titles shown in thread rows current after a create or rename.
+        case "t3_project_update":
+        case "t3_project_read": {
+          // Keep the project titles shown in thread rows current after a create, rename, or read.
           const result = await this.invoke(name, name, shaped, signal);
-          if (!result.isError) {
-            const project = resultRecord(result);
-            rememberProject(this.projectTitles, project);
-            if (typeof project.id === "string") this.projectMisses.delete(project.id);
-          }
+          if (result.isError) return result;
+          const project = resultRecord(result);
+          rememberProject(this.projectTitles, project);
+          if (typeof project.id === "string") this.projectMisses.delete(project.id);
           return result;
+        }
+        case "link_pull_requests": {
+          // For a subagent thread T3 adds `next`, an instruction to the agent inside that thread.
+          const result = await this.invoke(name, name, shaped, signal);
+          const data = result.isError ? {} : resultRecord(result);
+          return "next" in data ? jsonResult(omit(data, ["next"])) : result;
         }
         default:
           return await this.invoke(name, name, shaped, signal);
@@ -1730,6 +1847,9 @@ function shapeArguments(name: string, input: Args): Args | string {
     case "t3_project_list":
       args.limit ??= 50;
       break;
+    case "t3_worktree_list":
+      args.limit ??= WORKTREE_LIST_DEFAULT_LIMIT;
+      break;
     case "t3_thread_wait": {
       const requested = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) ? args.timeoutMs : WAIT_DEFAULT_MS;
       args.timeoutMs = Math.max(0, Math.min(requested, WAIT_MAX_MS));
@@ -1792,8 +1912,10 @@ function omit(record: Args, fields: readonly string[]): Args {
 function retrySafe(tool: string, args: Args): boolean {
   if (IDEMPOTENT_READ_TOOLS.has(tool)) return true;
   if ((CLIENT_REQUEST_ID_TOOLS.has(tool) || tool === "schedule_task") && nonEmptyString(args.clientRequestId)) return true;
+  // A context-transfer listing is a read; `fork` and `merge_back` are not repeatable.
+  if (tool === "t3_thread_transfer") return args.action === "status";
   // These set fields to given values, so repeating them changes nothing.
-  return tool === "t3_project_update" || (tool === "schedule_task" && nonEmptyString(args.scheduledTaskId));
+  return REPEATABLE_WRITE_TOOLS.has(tool) || (tool === "schedule_task" && nonEmptyString(args.scheduledTaskId));
 }
 
 /** An absolute path, with a leading `~` expanded to this user's home folder (T3 runs as the same user). */

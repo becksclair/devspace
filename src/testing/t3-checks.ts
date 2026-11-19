@@ -19,7 +19,7 @@ type Json = Record<string, unknown>;
 export type T3Call = (name: string, args?: Json) => Promise<CallToolResult>;
 
 export const T3_GUIDANCE =
-  "Find threads with t3_thread_search or t3_thread_list; never ask the user for IDs. Refer to threads by title and project, and give the thread link when the user may want to open it in the T3 app. Threads always run in full-access mode.";
+  "Find threads with t3_thread_search or t3_thread_list; never ask the user for IDs. Refer to threads by title and project, and give the thread link when the user may want to open it in the T3 app. Threads you launch always run in full-access mode.";
 export const CREDENTIAL_REJECTED = "T3 Code rejected DevSpace's credential.";
 export const READ_ONLY_T3_TOOLS: ReadonlySet<string> = new Set([
   "t3_project_list",
@@ -30,8 +30,44 @@ export const READ_ONLY_T3_TOOLS: ReadonlySet<string> = new Set([
   "t3_inbox",
   "orchestrator_capabilities",
   "list_scheduled_tasks",
+  "list_thread_pull_requests",
+  "t3_worktree_list",
+  "t3_project_read",
+  "t3_environment_links",
 ]);
-export const THREAD_REQUIRED_T3_TOOLS = ["t3_pending_request", "t3_thread_organize", "t3_queue", "t3_thread_update"] as const;
+export const THREAD_REQUIRED_T3_TOOLS = [
+  "t3_pending_request",
+  "t3_thread_organize",
+  "t3_queue",
+  "t3_thread_update",
+  "watch_pull_request",
+  "unwatch_pull_request",
+  "link_pull_requests",
+  "list_thread_pull_requests",
+  "unlink_pull_requests",
+  "t3_thread_configure",
+  "t3_thread_transfer",
+  "t3_worktree_list",
+] as const;
+/**
+ * The pull-request, thread-configuration, context-transfer, worktree, project-read, and
+ * linked-environment tools, with the input properties each one's callers rely on.
+ */
+export const EXPANSION_T3_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  watch_pull_request: ["threadId", "url", "repository", "number", "host"],
+  unwatch_pull_request: ["threadId", "url", "repository", "number", "host"],
+  link_pull_requests: ["threadId", "urls"],
+  list_thread_pull_requests: ["threadId", "states", "cursor"],
+  unlink_pull_requests: ["threadId", "states"],
+  t3_thread_configure: ["threadId", "modelSelection"],
+  t3_thread_transfer: ["threadId", "action", "sourcePoint", "targetThreadId", "title"],
+  t3_worktree_list: ["threadId", "query", "cursor", "limit"],
+  t3_project_read: ["projectId"],
+  t3_environment_links: [],
+};
+/** Wording T3 writes for an agent inside a thread, and tools DevSpace does not expose. */
+const IN_THREAD_WORDING =
+  /this thread|\binherit|\byours\b|end your turn|wakes? you\b|Omit `threadId`|end-of-work|\blink_pull_request\b|\bunlink_pull_request\b|\bt3_environment_link\b|\bt3_environment_unlink\b|\bdelegate_task\b/i;
 /** T3 tools DevSpace never exposes, even though an outside client could list them. */
 export const NEVER_EXPOSED_T3_TOOLS = ["create_threads", "t3_project_delete", "task_status"] as const;
 export const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
@@ -195,7 +231,11 @@ export function checkCatalog(
     const description = tool.description ?? "";
     assert.ok(description.endsWith(T3_GUIDANCE), `${tool.name} description must end with the shared guidance`);
     assert.doesNotMatch(description, /this thread|\binherit|\byours\b/i, `${tool.name} description must not use in-thread phrasing`);
-    assert.doesNotMatch(description, /environmentId/, `${tool.name} description must not name the hidden environmentId`);
+    // `t3_environment_links` returns an `environmentId` and says that no tool takes one.
+    if (tool.name !== "t3_environment_links") {
+      assert.doesNotMatch(description, /environmentId/, `${tool.name} description must not name the hidden environmentId`);
+    }
+    if (tool.name in EXPANSION_T3_TOOLS) checkExpansionDescription(tool.name, description);
 
     if (options.live === false) continue;
     const properties = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties : {};
@@ -212,6 +252,13 @@ export function checkCatalog(
     if (tool.name === "t3_pending_request") {
       assert.match(description, /keyed by each question's `id` whose value is the chosen option's `label`/);
     }
+    for (const property of EXPANSION_T3_TOOLS[tool.name] ?? []) {
+      assert.ok(property in properties, `${tool.name} must expose ${property}`);
+    }
+    if (tool.name === "link_pull_requests") assert.ok(required.includes("urls"), "link_pull_requests requires urls");
+    if (tool.name === "unlink_pull_requests") assert.ok(required.includes("states"), "unlink_pull_requests requires states");
+    if (tool.name === "t3_thread_transfer") assert.ok(required.includes("action"), "t3_thread_transfer requires action");
+    if (tool.name === "t3_project_read") assert.ok(required.includes("projectId"), "t3_project_read requires projectId");
     if (tool.name === "schedule_task") {
       assert.ok(!("bindToCurrentThread" in properties), "schedule_task must not expose bindToCurrentThread");
       const schedule = properties.schedule as Json;
@@ -244,6 +291,24 @@ export function checkCatalog(
       assert.ok(required.includes("projectId"), "t3_project_update requires projectId");
     }
   }
+}
+
+/**
+ * B33: a description written for an orchestrator outside T3. It names no tool DevSpace does not
+ * expose and carries no in-thread wording, says when `threadId` is needed, and (for a watch) says
+ * that the thread's agent is woken, not the caller. Holds for T3's rewritten description and for
+ * the fallback used while T3 is unreachable.
+ */
+export function checkExpansionDescription(name: string, description: string): void {
+  assert.doesNotMatch(description, IN_THREAD_WORDING, `${name} description must be written for an outside orchestrator`);
+  if ((THREAD_REQUIRED_T3_TOOLS as readonly string[]).includes(name)) {
+    assert.match(description, /`threadId`/, `${name} description must name threadId`);
+  }
+  if (name === "watch_pull_request") {
+    assert.match(description, /wakes that thread's agent, not you/, "watch_pull_request must say who is woken");
+  }
+  if (name === "t3_project_read") assert.match(description, /`projectId`/);
+  if (name === "t3_environment_links") assert.match(description, /take no `environmentId`/);
 }
 
 /**
@@ -833,9 +898,18 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
 
   // B15: threadId is required before anything is sent to T3.
   mark = fake.calls.length;
+  const pullRequest = { url: "https://github.com/octocat/Hello-World/pull/1" };
   const actionArgs: Record<string, Json> = {
     t3_thread_organize: { action: "settle" },
     t3_thread_update: { action: "rename", title: "Renamed" },
+    watch_pull_request: pullRequest,
+    unwatch_pull_request: pullRequest,
+    link_pull_requests: { urls: [pullRequest.url] },
+    list_thread_pull_requests: {},
+    unlink_pull_requests: { states: ["merged"] },
+    t3_thread_configure: {},
+    t3_thread_transfer: { action: "status" },
+    t3_worktree_list: {},
   };
   for (const tool of THREAD_REQUIRED_T3_TOOLS) {
     const args = actionArgs[tool] ?? { action: "list" };
@@ -1065,6 +1139,340 @@ export async function checkScheduledTasks(call: T3Call, fake: FakeT3, projectId:
 }
 
 // ---------------------------------------------------------------------------------------------
+// Pull requests, thread configuration, context transfer, worktrees, project read, links: B33–B37
+// ---------------------------------------------------------------------------------------------
+
+const PR_OPEN = "https://github.com/octocat/Hello-World/pull/11";
+const PR_CLOSED = "https://github.com/octocat/Hello-World/pull/12";
+const PR_MERGED = "https://github.com/becksclair/devspace/pull/13";
+const PR_UNREAD = "https://github.com/octocat/Hello-World/pull/14";
+const PR_ENTRY_KEYS = ["baseBranch", "headBranch", "host", "isDraft", "number", "repository", "source", "stack", "state", "title", "url", "watching"];
+
+/** Valid arguments for every expansion tool; the thread and project need not exist. */
+const EXPANSION_SAMPLE_ARGS: Record<string, Json> = {
+  watch_pull_request: { threadId: "sample-thread", url: PR_OPEN },
+  unwatch_pull_request: { threadId: "sample-thread", url: PR_OPEN },
+  link_pull_requests: { threadId: "sample-thread", urls: [PR_OPEN] },
+  list_thread_pull_requests: { threadId: "sample-thread" },
+  unlink_pull_requests: { threadId: "sample-thread", states: ["merged"] },
+  t3_thread_configure: { threadId: "sample-thread" },
+  t3_thread_transfer: { threadId: "sample-thread", action: "status" },
+  t3_worktree_list: { threadId: "sample-thread" },
+  t3_project_read: { projectId: "sample-project" },
+  t3_environment_links: {},
+};
+
+/** B34: link, list, watch, unwatch, and unlink a thread's pull requests; T3's results pass through. */
+export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<void> {
+  const { threadId } = fake.addThread({ title: "Pull request thread", messages: [{ role: "user", text: "open the PRs" }] });
+  fake.setPullRequest(PR_CLOSED, { state: "closed", title: "Closed one" });
+  fake.setPullRequest(PR_MERGED, { state: "merged", title: "Merged one" });
+  fake.setPullRequest(PR_UNREAD, { state: null });
+  const numbers = (data: Json): unknown[] => records(data.pullRequests).map((entry) => entry.number);
+
+  // Linking forwards only the thread and the URLs; nothing is added and `environmentId` is dropped.
+  let mark = fake.calls.length;
+  const linked = await ok(call, "link_pull_requests", {
+    threadId,
+    urls: [PR_OPEN, PR_CLOSED, PR_MERGED, PR_UNREAD, "https://example.com/not-a-pr", PR_OPEN],
+    environmentId: "environment-from-caller",
+  });
+  assert.deepEqual(forwarded(fake, "link_pull_requests", mark), [
+    { threadId, urls: [PR_OPEN, PR_CLOSED, PR_MERGED, PR_UNREAD, "https://example.com/not-a-pr", PR_OPEN] },
+  ]);
+  assert.deepEqual(linked, {
+    linked: [
+      { host: "github.com", repository: "octocat/hello-world", numbers: [11, 12, 14] },
+      { host: "github.com", repository: "becksclair/devspace", numbers: [13] },
+    ],
+    alreadyLinked: [],
+    linkedCount: 4,
+    invalidUrls: ["https://example.com/not-a-pr"],
+  });
+  const again = await ok(call, "link_pull_requests", { threadId, urls: [PR_MERGED] });
+  assert.deepEqual(again, { linked: [], alreadyLinked: [{ host: "github.com", repository: "becksclair/devspace", numbers: [13] }], linkedCount: 1 });
+
+  // For a subagent thread T3 adds `next`, an instruction to the agent inside it; it is removed.
+  const child = fake.addThread({ title: "Pull request subagent thread", subagent: true });
+  assert.deepEqual(await ok(call, "link_pull_requests", { threadId: child.threadId, urls: [PR_OPEN] }), {
+    linked: [{ host: "github.com", repository: "octocat/hello-world", numbers: [11] }],
+    alreadyLinked: [],
+    linkedCount: 1,
+  });
+  assert.match(await fails(call, "watch_pull_request", { threadId: child.threadId, url: PR_OPEN }), /^This thread is a subagent/);
+
+  // Listing passes T3's entries through: last known state, watch flag, and paging cursor.
+  mark = fake.calls.length;
+  const listing = await ok(call, "list_thread_pull_requests", { threadId, environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "list_thread_pull_requests", mark), [{ threadId }]);
+  assert.deepEqual(sortedKeys(listing), ["chains", "nextCursor", "pullRequests"]);
+  assert.equal(listing.nextCursor, null);
+  const entries = records(listing.pullRequests);
+  for (const entry of entries) assert.deepEqual(sortedKeys(entry), PR_ENTRY_KEYS);
+  assert.deepEqual(
+    entries.map((entry) => [entry.url, entry.state, entry.watching]),
+    [[PR_OPEN, "open", false], [PR_CLOSED, "closed", false], [PR_MERGED, "merged", false], [PR_UNREAD, null, false]],
+  );
+  mark = fake.calls.length;
+  assert.deepEqual(numbers(await ok(call, "list_thread_pull_requests", { threadId, states: ["merged", "closed"] })), [12, 13]);
+  assert.deepEqual(forwarded(fake, "list_thread_pull_requests", mark), [{ threadId, states: ["merged", "closed"] }]);
+
+  // Watching links first when needed, reports the previous state, and refuses a merged PR.
+  mark = fake.calls.length;
+  const watched = await ok(call, "watch_pull_request", { threadId, url: PR_OPEN, environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "watch_pull_request", mark), [{ threadId, url: PR_OPEN }]);
+  assert.deepEqual(watched, { host: "github.com", repository: "octocat/hello-world", number: 11, url: PR_OPEN, watching: true, wasWatching: false });
+  assert.equal((await ok(call, "watch_pull_request", { threadId, url: PR_OPEN })).wasWatching, true, "a repeated watch reports wasWatching");
+  const fresh = "https://github.com/octocat/Hello-World/pull/15";
+  const linkedByWatch = await ok(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15, host: "github.com" });
+  assert.deepEqual(
+    { url: linkedByWatch.url, watching: linkedByWatch.watching, wasWatching: linkedByWatch.wasWatching },
+    { url: fresh, watching: true, wasWatching: false },
+    "watching by repository, number, and host links the PR",
+  );
+  assert.equal(await fails(call, "watch_pull_request", { threadId, url: PR_MERGED }), "The pull request is merged, so there is nothing to watch.");
+  assert.equal(await fails(call, "watch_pull_request", { threadId }), "Pass either url, or both repository and number.");
+  assert.match(await fails(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15 }), /Pass host or url/);
+  assert.deepEqual(
+    fake.pullRequests(threadId).filter((entry) => entry.watching).map((entry) => entry.number),
+    [11, 15],
+  );
+
+  mark = fake.calls.length;
+  const unwatched = await ok(call, "unwatch_pull_request", { threadId, url: PR_OPEN });
+  assert.deepEqual(forwarded(fake, "unwatch_pull_request", mark), [{ threadId, url: PR_OPEN }]);
+  assert.deepEqual({ watching: unwatched.watching, wasWatching: unwatched.wasWatching }, { watching: false, wasWatching: true });
+  const neverLinked = await ok(call, "unwatch_pull_request", { threadId, url: "https://github.com/octocat/Hello-World/pull/99" });
+  assert.deepEqual({ watching: neverLinked.watching, wasWatching: neverLinked.wasWatching }, { watching: false, wasWatching: false });
+  assert.ok(!numbers(await ok(call, "list_thread_pull_requests", { threadId })).includes(99), "unwatching never links a PR");
+
+  // Unlinking goes by last known state; a PR T3 has not read yet stays linked.
+  mark = fake.calls.length;
+  const unlinked = await ok(call, "unlink_pull_requests", { threadId, states: ["closed", "merged"], environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "unlink_pull_requests", mark), [{ threadId, states: ["closed", "merged"] }]);
+  assert.deepEqual(unlinked, {
+    unlinked: [
+      { host: "github.com", repository: "octocat/hello-world", state: "closed", numbers: [12] },
+      { host: "github.com", repository: "becksclair/devspace", state: "merged", numbers: [13] },
+    ],
+    unlinkedCount: 2,
+    remaining: 3,
+  });
+  assert.deepEqual(await ok(call, "unlink_pull_requests", { threadId, states: ["open"] }), {
+    unlinked: [{ host: "github.com", repository: "octocat/hello-world", state: "open", numbers: [11, 15] }],
+    unlinkedCount: 2,
+    remaining: 1,
+  });
+  assert.deepEqual(numbers(await ok(call, "list_thread_pull_requests", { threadId })), [14], "the PR with no known state stays linked");
+
+  // T3's plain-text failures pass through unchanged.
+  assert.match(await fails(call, "list_thread_pull_requests", { threadId: "missing-thread" }), /^Thread missing-thread was not found\./);
+  assert.match(await fails(call, "link_pull_requests", { threadId: "missing-thread", urls: [PR_OPEN] }), /^Thread missing-thread was not found\./);
+
+  // A page holds 50 pull requests; `nextCursor` reaches the rest.
+  const many = fake.addThread({ title: "Pull request paging thread" });
+  await ok(call, "link_pull_requests", {
+    threadId: many.threadId,
+    urls: Array.from({ length: 55 }, (_, index) => `https://github.com/octocat/Hello-World/pull/${1_000 + index}`),
+  });
+  const firstPage = await ok(call, "list_thread_pull_requests", { threadId: many.threadId });
+  assert.equal(records(firstPage.pullRequests).length, 50);
+  assert.equal(typeof firstPage.nextCursor, "string");
+  const secondPage = await ok(call, "list_thread_pull_requests", { threadId: many.threadId, cursor: firstPage.nextCursor });
+  assert.deepEqual(numbers(secondPage), [1_050, 1_051, 1_052, 1_053, 1_054]);
+  assert.equal(secondPage.nextCursor, null);
+
+  for (const id of [threadId, many.threadId]) await ok(call, "t3_thread_organize", { threadId: id, action: "archive" });
+}
+
+/** B35: read and set a thread's model; fork, merge back, and list context transfers. */
+export async function checkThreadConfigureAndTransfer(call: T3Call, fake: FakeT3): Promise<void> {
+  const { projectId } = fake.addProject({ title: "transfer-fixture" });
+  const source = fake.addThread({
+    projectId,
+    title: "Transfer source",
+    messages: [{ role: "user", text: "Plan the migration" }, { role: "assistant", text: "Here is the plan" }],
+  });
+  const threadId = source.threadId;
+
+  // Without `modelSelection` it is a read; `environmentId` is dropped and nothing is added.
+  let mark = fake.calls.length;
+  const configuration = await ok(call, "t3_thread_configure", { threadId, environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "t3_thread_configure", mark), [{ threadId }]);
+  assert.deepEqual(configuration, { threadId, modelSelection: HAIKU, runtimeMode: "full-access", interactionMode: "default" });
+
+  const sonnet = { instanceId: "claudeAgent", model: "claude-sonnet-5-5", options: [{ id: "effort", value: "low" }] };
+  mark = fake.calls.length;
+  const configured = await ok(call, "t3_thread_configure", { threadId, modelSelection: sonnet });
+  assert.deepEqual(forwarded(fake, "t3_thread_configure", mark), [{ threadId, modelSelection: sonnet }]);
+  assert.deepEqual(sortedKeys(configured), ["sequence"]);
+  const reconfigured = await ok(call, "t3_thread_configure", { threadId });
+  assert.deepEqual(reconfigured.modelSelection, sonnet);
+  assert.equal(reconfigured.runtimeMode, "full-access", "setting the model leaves the modes alone");
+  const refused = JSON.parse(await fails(call, "t3_thread_configure", { threadId, modelSelection: { instanceId: "no-such-provider", model: "x" } })) as Json;
+  assert.equal(refused.code, "orchestration_error", "T3's failure for an unknown provider passes through");
+
+  // A fork is a new idle thread with the source's history, project, model, and modes.
+  assert.deepEqual(await ok(call, "t3_thread_transfer", { threadId, action: "status" }), { transfers: [] });
+  mark = fake.calls.length;
+  const fork = await ok(call, "t3_thread_transfer", { threadId, action: "fork", title: "Transfer fork", environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "t3_thread_transfer", mark), [{ threadId, action: "fork", title: "Transfer fork" }]);
+  assert.deepEqual(sortedKeys(fork), ["sequence", "targetThreadId"]);
+  const forkId = String(fork.targetThreadId);
+  assert.notEqual(forkId, threadId);
+  const forkRead = await ok(call, "t3_thread_read", { threadId: forkId });
+  const forkThread = forkRead.thread as Json;
+  assert.deepEqual(
+    { title: forkThread.title, project: forkThread.project, status: forkThread.status, runtimeMode: forkThread.runtimeMode },
+    { title: "Transfer fork", project: "transfer-fixture", status: "idle", runtimeMode: "full-access" },
+  );
+  assert.deepEqual(records(forkRead.items).map((item) => item.text), ["Plan the migration", "Here is the plan"], "the fork carries the source's messages");
+  assert.deepEqual((await ok(call, "t3_thread_configure", { threadId: forkId })).modelSelection, sonnet, "the fork keeps the source's model");
+  for (const id of [threadId, forkId]) {
+    const transfers = records((await ok(call, "t3_thread_transfer", { threadId: id, action: "status" })).transfers);
+    assert.deepEqual(
+      transfers.map((transfer) => [transfer.sourceThreadId, transfer.targetThreadId, transfer.status]),
+      [[threadId, forkId, "pending"]],
+      "the transfer is listed for its source and its target",
+    );
+    assert.deepEqual(sortedKeys(transfers[0]!), ["id", "sourceThreadId", "status", "targetThreadId"]);
+  }
+
+  // merge_back needs a target and a finished run to merge from; T3's failures pass through.
+  const noTarget = JSON.parse(await fails(call, "t3_thread_transfer", { threadId, action: "merge_back" })) as Json;
+  assert.deepEqual([noTarget.code, noTarget.message], ["invalid_request", "This action needs `targetThreadId`."]);
+  const idleSource = JSON.parse(await fails(call, "t3_thread_transfer", { threadId: forkId, action: "merge_back", targetThreadId: threadId })) as Json;
+  assert.equal(idleSource.code, "orchestration_error", "an idle fork has no run to merge back");
+  const missing = JSON.parse(await fails(call, "t3_thread_transfer", { threadId, action: "merge_back", targetThreadId: "missing-thread" })) as Json;
+  assert.equal(missing.code, "thread_not_found");
+  const merged = await ok(call, "t3_thread_transfer", { threadId, action: "merge_back", targetThreadId: forkId });
+  assert.equal(merged.targetThreadId, forkId);
+  assert.equal(records((await ok(call, "t3_thread_transfer", { threadId, action: "status" })).transfers).length, 2);
+
+  for (const id of [threadId, forkId]) await ok(call, "t3_thread_organize", { threadId: id, action: "archive" });
+}
+
+/** B36: read one project, list a thread's branches and worktrees, and list linked environments. */
+export async function checkWorkspaceReads(call: T3Call, fake: FakeT3): Promise<void> {
+  // The full project record, as T3 returns it; reading it also teaches the bridge the project's title.
+  const read = fake.addProject({ title: "read-fixture", workspaceRoot: "/tmp/read-fixture", defaultModelSelection: HAIKU });
+  const inRead = fake.addThread({ projectId: read.projectId, title: "Read fixture thread", messages: [{ role: "user", text: "hi" }] });
+  let mark = fake.calls.length;
+  const project = await ok(call, "t3_project_read", { projectId: read.projectId, environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "t3_project_read", mark), [{ projectId: read.projectId }]);
+  assert.deepEqual(project, fake.project(read.projectId), "the project record passes through unchanged");
+  assert.deepEqual(
+    { id: project.id, title: project.title, workspaceRoot: project.workspaceRoot, defaultModelSelection: project.defaultModelSelection, scripts: project.scripts },
+    { id: read.projectId, title: "read-fixture", workspaceRoot: "/tmp/read-fixture", defaultModelSelection: HAIKU, scripts: [] },
+  );
+  mark = fake.calls.length;
+  const row = records((await ok(call, "t3_thread_list", { projectId: read.projectId })).threads).find((entry) => entry.threadId === inRead.threadId);
+  assert.equal(row?.project, "read-fixture");
+  assert.equal(forwarded(fake, "t3_project_list", mark).length, 0, "the title came from the project read, not a project-list reload");
+  const missing = JSON.parse(await fails(call, "t3_project_read", { projectId: "missing-project" })) as Json;
+  assert.deepEqual([missing.code, missing.message], ["invalid_request", "The project was not found."]);
+
+  // Branches and worktrees: 50 refs by default; a folder that is not a repository lists none.
+  const repo = fake.addProject({ title: "worktree-fixture", git: true, branches: Array.from({ length: 60 }, (_, index) => `feature/${String(index).padStart(2, "0")}`) });
+  const inRepo = fake.addThread({ projectId: repo.projectId, title: "Worktree fixture thread" });
+  mark = fake.calls.length;
+  const refs = await ok(call, "t3_worktree_list", { threadId: inRepo.threadId, environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "t3_worktree_list", mark), [{ threadId: inRepo.threadId, limit: 50 }]);
+  assert.deepEqual(sortedKeys(refs), ["hasPrimaryRemote", "isAtRepositoryRoot", "isRepo", "nextCursor", "refs", "totalCount"]);
+  assert.deepEqual([refs.isRepo, records(refs.refs).length, refs.nextCursor, refs.totalCount], [true, 50, 50, 61]);
+  assert.deepEqual(records(refs.refs)[0], {
+    name: "main",
+    isRemote: false,
+    current: true,
+    isDefault: true,
+    worktreePath: String(fake.project(repo.projectId)?.workspaceRoot),
+  });
+  mark = fake.calls.length;
+  const filtered = await ok(call, "t3_worktree_list", { threadId: inRepo.threadId, query: "feature/5", limit: 5, cursor: 5 });
+  assert.deepEqual(forwarded(fake, "t3_worktree_list", mark), [{ threadId: inRepo.threadId, query: "feature/5", limit: 5, cursor: 5 }]);
+  assert.deepEqual(records(filtered.refs).map((ref) => ref.name), ["feature/55", "feature/56", "feature/57", "feature/58", "feature/59"]);
+  assert.equal(filtered.nextCursor, null);
+  const noRepo = await ok(call, "t3_worktree_list", { threadId: inRead.threadId });
+  assert.deepEqual(noRepo, { refs: [], isRepo: false, hasPrimaryRemote: false, nextCursor: null, totalCount: 0 });
+
+  // Linked environments: this machine's id and the links; T3's pointer to its linking tool is dropped.
+  mark = fake.calls.length;
+  const before = await ok(call, "t3_environment_links", { environmentId: "environment-from-caller" });
+  assert.deepEqual(forwarded(fake, "t3_environment_links", mark), [{}], "a caller's environmentId is never forwarded");
+  assert.deepEqual(sortedKeys(before), ["environmentId", "links"]);
+  assert.equal(typeof before.environmentId, "string");
+  const known = records(before.links).length;
+  const laptop = fake.addEnvironmentLink({ label: "Laptop" });
+  const desktop = fake.addEnvironmentLink({ label: "Desktop", status: "unreachable" });
+  mark = fake.calls.length;
+  const links = records((await ok(call, "t3_environment_links")).links).slice(known);
+  assert.deepEqual(forwarded(fake, "t3_environment_links", mark), [{}]);
+  assert.deepEqual(
+    links.map((link) => [link.environmentId, link.label, link.status]),
+    [[laptop.environmentId, "Laptop", "reachable"], [desktop.environmentId, "Desktop", "unreachable"]],
+  );
+  for (const link of links) assert.deepEqual(sortedKeys(link), ["access", "environmentId", "expiresAt", "label", "lastError", "status"]);
+
+  for (const id of [inRead.threadId, inRepo.threadId]) await ok(call, "t3_thread_organize", { threadId: id, action: "archive" });
+}
+
+/**
+ * B37: retry classification for the expansion tools. Reads and writes that set a thread to given
+ * values are retried once after a lost response; unlinking and context transfers are reported.
+ */
+export async function checkExpansionRetries(call: T3Call, fake: FakeT3): Promise<void> {
+  const stamp = Date.now();
+  const { projectId } = fake.addProject({ title: `Expansion retry ${stamp}`, git: true });
+  const { threadId } = fake.addThread({
+    projectId,
+    title: `Expansion retry ${stamp}`,
+    messages: [{ role: "user", text: "hello" }, { role: "assistant", text: "hi" }],
+  });
+  const url = `https://github.com/octocat/Hello-World/pull/${stamp % 100_000}`;
+  const retried: Array<[string, Json]> = [
+    ["link_pull_requests", { threadId, urls: [url] }],
+    ["list_thread_pull_requests", { threadId }],
+    ["watch_pull_request", { threadId, url }],
+    ["unwatch_pull_request", { threadId, url }],
+    ["t3_thread_configure", { threadId }],
+    ["t3_thread_configure", { threadId, modelSelection: HAIKU }],
+    ["t3_thread_transfer", { threadId, action: "status" }],
+    ["t3_worktree_list", { threadId }],
+    ["t3_project_read", { projectId }],
+    ["t3_environment_links", {}],
+  ];
+  for (const [tool, args] of retried) {
+    const mark = fake.calls.length;
+    fake.dropNextResponse(tool);
+    await ok(call, tool, args);
+    assert.equal(forwarded(fake, tool, mark).length, 2, `${tool} ${JSON.stringify(Object.keys(args))} was retried once`);
+  }
+  assert.deepEqual(fake.pullRequests(threadId).map((entry) => entry.url), [url], "the retried link left one link");
+
+  const reported: Array<[string, Json]> = [
+    ["unlink_pull_requests", { threadId, states: ["open"] }],
+    ["t3_thread_transfer", { threadId, action: "fork", title: `Expansion retry ${stamp} fork` }],
+  ];
+  for (const [tool, args] of reported) {
+    const mark = fake.calls.length;
+    fake.dropNextResponse(tool);
+    assert.equal(await fails(call, tool, args), `T3 Code connection failed during ${tool}; it may or may not have run.`);
+    assert.equal(forwarded(fake, tool, mark).length, 1, `${tool} was sent exactly once`);
+  }
+  const transfers = records((await ok(call, "t3_thread_transfer", { threadId, action: "status" })).transfers);
+  assert.equal(transfers.length, 1, "the fork whose response was lost ran exactly once");
+  const forkId = String(transfers[0]!.targetThreadId);
+  const mergeMark = fake.calls.length;
+  fake.dropNextResponse("t3_thread_transfer");
+  assert.equal(
+    await fails(call, "t3_thread_transfer", { threadId, action: "merge_back", targetThreadId: forkId }),
+    "T3 Code connection failed during t3_thread_transfer; it may or may not have run.",
+  );
+  assert.equal(forwarded(fake, "t3_thread_transfer", mergeMark).length, 1, "merge_back was sent exactly once");
+  for (const id of [threadId, forkId]) await ok(call, "t3_thread_organize", { threadId: id, action: "archive" });
+}
+
+// ---------------------------------------------------------------------------------------------
 // Connection and credential resilience: B6, B8, B9, B10, B11
 // ---------------------------------------------------------------------------------------------
 
@@ -1101,6 +1509,9 @@ export async function checkUnavailable(call: T3Call, fake: FakeT3, listToolNames
       await fails(call, "t3_thread_launch", { scratch: true, title: "Launched while down", message: "Reply with exactly OK" }),
       T3_UNREACHABLE_MESSAGE,
     );
+    for (const [name, args] of Object.entries(EXPANSION_SAMPLE_ARGS)) {
+      assert.equal(await fails(call, name, args), T3_UNREACHABLE_MESSAGE, `${name} while T3 is down`);
+    }
     const names = await listToolNames();
     for (const name of T3_TOOL_NAMES) assert.ok(names.includes(name), `${name} stays listed while T3 is down`);
   } finally {

@@ -6258,6 +6258,1416 @@
         "idempotentHint": true,
         "openWorldHint": true
       }
+    },
+    {
+      "name": "watch_pull_request",
+      "description": "Watch an open PR for this thread, linking it first if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, or conflicts. Handle old comments first. Only later ones wake you. After this call, end your turn. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "With `repository`, when no `url`."
+          },
+          "host": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "url": {
+            "type": "string"
+          },
+          "watching": {
+            "type": "boolean"
+          },
+          "wasWatching": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "host",
+          "repository",
+          "number",
+          "url",
+          "watching",
+          "wasWatching"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "Watch pull request",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "unwatch_pull_request",
+      "description": "Stop watching a PR for this thread. It stays linked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "With `repository`, when no `url`."
+          },
+          "host": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "url": {
+            "type": "string"
+          },
+          "watching": {
+            "type": "boolean"
+          },
+          "wasWatching": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "host",
+          "repository",
+          "number",
+          "url",
+          "watching",
+          "wasWatching"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "Stop watching pull request",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "link_pull_requests",
+      "description": "Link several PRs to a thread. Use it instead of one `link_pull_request` per PR. URLs that are not PRs come back in `invalidUrls`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "urls"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "linked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "repository": {
+                  "type": "string"
+                },
+                "numbers": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "required": [
+                "host",
+                "repository",
+                "numbers"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "alreadyLinked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "repository": {
+                  "type": "string"
+                },
+                "numbers": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "required": [
+                "host",
+                "repository",
+                "numbers"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "linkedCount": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "invalidUrls": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "linked",
+          "alreadyLinked",
+          "linkedCount"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "Link pull requests to thread",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_thread_pull_requests",
+      "description": "List a thread's PRs, with last known state and stack order (bottom to top). Not an end-of-work check.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "open",
+                "closed",
+                "merged"
+              ]
+            }
+          },
+          "cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "pullRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "repository": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "url": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "manual",
+                    "created",
+                    "agent",
+                    "stack",
+                    "stack-dismissed"
+                  ]
+                },
+                "watching": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "closed",
+                        "merged"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "headBranch": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "baseBranch": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "isDraft": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stack": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "native",
+                            "derived"
+                          ]
+                        },
+                        "position": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "position",
+                        "size"
+                      ],
+                      "additionalProperties": true
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "host",
+                "repository",
+                "number",
+                "url",
+                "source",
+                "watching",
+                "state",
+                "title",
+                "headBranch",
+                "baseBranch",
+                "isDraft",
+                "stack"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "chains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "native",
+                    "derived"
+                  ]
+                },
+                "numbers": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "numbers"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pullRequests",
+          "chains",
+          "nextCursor"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "List thread pull requests",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "unlink_pull_requests",
+      "description": "Unlink a thread's PRs whose last known state is in `states`. Use it instead of one `unlink_pull_request` per PR. PRs with no known state stay linked.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "open",
+                "closed",
+                "merged"
+              ]
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "states"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "unlinked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "repository": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "closed",
+                    "merged"
+                  ]
+                },
+                "numbers": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "required": [
+                "host",
+                "repository",
+                "state",
+                "numbers"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "unlinkedCount": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "remaining": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "unlinked",
+          "unlinkedCount",
+          "remaining"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "Unlink pull requests by state",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "t3_thread_configure",
+      "description": "Read a thread's provider, model, and modes, or set its provider, model, and options with `modelSelection`. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "modelSelection": {
+            "type": "object",
+            "properties": {
+              "provider": {},
+              "instanceId": {},
+              "model": {},
+              "options": {}
+            },
+            "required": [
+              "model"
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "t3_thread_transfer",
+      "description": "Move context between threads. Omit `threadId` for this thread. fork: copy it from `sourcePoint` (default latest stable run) into a new thread with the same setup; no turn runs yet. merge_back: merge it from `sourcePoint` into a related `targetThreadId` in the same project. status: its context transfers.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "fork",
+              "merge_back",
+              "status"
+            ]
+          },
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "sourcePoint": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "latest_stable",
+                  "run",
+                  "checkpoint"
+                ]
+              },
+              "runId": {
+                "type": "string"
+              },
+              "checkpointId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "targetThreadId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "t3_worktree_list",
+      "description": "List branch refs and checkout paths for a thread's workspace. Omit `threadId` for this thread. Detached worktrees with no branch are left out.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "refKind": {
+            "type": "string",
+            "enum": [
+              "all",
+              "local",
+              "remote"
+            ]
+          },
+          "includeMatchingRemoteRefs": {
+            "type": "boolean"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "isAtRepositoryRoot": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "isRemote": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "remoteName": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "upstreamRef": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "current": {
+                  "type": "boolean"
+                },
+                "isDefault": {
+                  "type": "boolean"
+                },
+                "worktreePath": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "current",
+                "isDefault",
+                "worktreePath"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "isRepo": {
+            "type": "boolean"
+          },
+          "hasPrimaryRemote": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totalCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "refs",
+          "isRepo",
+          "hasPrimaryRemote",
+          "nextCursor",
+          "totalCount"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "t3_project_read",
+      "description": "Read one project: workspace and saved scripts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspaceRoot": {
+            "type": "string"
+          },
+          "repositoryIdentity": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "canonicalKey": {
+                    "type": "string"
+                  },
+                  "locator": {
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "git-remote"
+                        ]
+                      },
+                      "remoteName": {
+                        "type": "string"
+                      },
+                      "remoteUrl": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "remoteName",
+                      "remoteUrl"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "webUrl": {
+                    "type": "string"
+                  },
+                  "rootPath": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "type": "object",
+                    "properties": {
+                      "canonicalKey": {
+                        "type": "string"
+                      },
+                      "remoteUrl": {
+                        "type": "string"
+                      },
+                      "displayName": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "canonicalKey"
+                    ],
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "canonicalKey",
+                  "locator"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "faviconPath": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectIcon": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "lucide"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "gray",
+                      "red",
+                      "orange",
+                      "amber",
+                      "yellow",
+                      "lime",
+                      "green",
+                      "emerald",
+                      "teal",
+                      "cyan",
+                      "sky",
+                      "blue",
+                      "indigo",
+                      "violet",
+                      "purple",
+                      "fuchsia",
+                      "pink",
+                      "rose"
+                    ]
+                  },
+                  "monogramText": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "monogram": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name",
+                  "color"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "emoji"
+                    ]
+                  },
+                  "emoji": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "emoji"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "monogram"
+                    ]
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "color": {
+                    "type": "string",
+                    "enum": [
+                      "gray",
+                      "red",
+                      "orange",
+                      "amber",
+                      "yellow",
+                      "lime",
+                      "green",
+                      "emerald",
+                      "teal",
+                      "cyan",
+                      "sky",
+                      "blue",
+                      "indigo",
+                      "violet",
+                      "purple",
+                      "fuchsia",
+                      "pink",
+                      "rose"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "text",
+                  "color"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultModelSelection": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "instanceId": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "model": {},
+                  "options": {
+                    "anyOf": [
+                      {},
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "model"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultThreadEnvMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "worktree"
+                ]
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "autoPull": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scripts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "icon": {
+                  "type": "string",
+                  "enum": [
+                    "play",
+                    "test",
+                    "lint",
+                    "configure",
+                    "build",
+                    "debug"
+                  ]
+                },
+                "runOnWorktreeCreate": {
+                  "type": "boolean"
+                },
+                "runOnSettle": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stopOnSettle": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "async": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "previewUrl": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "autoOpenPreview": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "command",
+                "icon",
+                "runOnWorktreeCreate"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "pinnedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archivedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "deletedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "workspaceRoot",
+          "defaultModelSelection",
+          "scripts",
+          "createdAt",
+          "updatedAt",
+          "deletedAt"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "t3_environment_links",
+      "description": "List linked environments (the user's other machines) and whether each answers now. Pass one's `environmentId` to a tool to act there; `delegate_task` takes `target.environmentId`. Expired: link it again with `t3_environment_link`.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "reachable",
+                    "unreachable",
+                    "expired"
+                  ]
+                },
+                "access": {
+                  "type": "string",
+                  "enum": [
+                    "read-only",
+                    "approval-required",
+                    "auto-accept-edits",
+                    "auto",
+                    "full-access"
+                  ]
+                },
+                "expiresAt": {
+                  "type": "string"
+                },
+                "lastError": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "environmentId",
+                "label",
+                "status",
+                "access",
+                "expiresAt",
+                "lastError"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "notListed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "environmentId",
+          "links",
+          "notListed"
+        ],
+        "additionalProperties": true
+      },
+      "annotations": {
+        "title": "List linked environments",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
     }
   ]
 }

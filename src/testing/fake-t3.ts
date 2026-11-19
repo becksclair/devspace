@@ -79,6 +79,50 @@ interface ProjectRecord {
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Local branches besides `main`, for `t3_worktree_list` in a project that is a repository. */
+  branches: string[];
+}
+
+type PullRequestState = "open" | "closed" | "merged";
+
+/** What T3 knows about a pull request once it has read it from its host. */
+interface PullRequestFacts {
+  state: PullRequestState | null;
+  title: string | null;
+  headBranch: string | null;
+  baseBranch: string | null;
+  isDraft: boolean | null;
+}
+
+interface PullRequestTarget {
+  host: string;
+  /** Lower-cased `owner/name`, as T3 stores it. */
+  repository: string;
+  number: number;
+  /** As given by the caller; T3 keeps its casing. */
+  url: string;
+}
+
+interface PullRequestLink extends PullRequestTarget {
+  watching: boolean;
+  /** Link order, for the listing. */
+  linked: number;
+}
+
+interface ContextTransferRecord {
+  id: string;
+  sourceThreadId: string;
+  targetThreadId: string;
+  status: "pending" | "ready" | "failed" | "superseded";
+}
+
+interface EnvironmentLinkRecord {
+  environmentId: string;
+  label: string;
+  status: "reachable" | "unreachable" | "expired";
+  access: string;
+  expiresAt: string;
+  lastError: string | null;
 }
 
 type ScheduledRunStatus = "never" | "running" | "succeeded" | "failed";
@@ -172,6 +216,7 @@ interface ThreadRecord {
   unread: boolean;
   /** `{requestId, startedAt}` while a `regenerate_title` is in flight. */
   titleRegeneration: JsonObject | null;
+  pullRequests: PullRequestLink[];
   createdAt: string;
   updatedAt: string;
   touched: number;
@@ -242,6 +287,11 @@ const CREDENTIAL_ERROR_BODY = JSON.stringify({
   message: "A valid T3 Code MCP credential is required.",
 });
 const NOT_IN_THREAD = "this MCP client is not running inside a T3 thread.";
+const OTHER_ENVIRONMENT_HINT =
+  " Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.";
+const LINKS_NOT_LISTED = "Not listed: not linked yet. Call t3_environment_link with a hint from the user's words.";
+const PULL_REQUEST_PAGE_SIZE = 50;
+const PULL_REQUEST_URL = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/;
 const DEFAULT_MODEL_SELECTION = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
 const WEBHOOK_URL_PREFIX = "https://connect.example.invalid/hooks/";
 const REGENERATED_TITLE_FALLBACK = "Regenerated title";
@@ -360,6 +410,9 @@ class ToolFailure extends Error {
     super(message);
   }
 }
+
+/** A failure T3 returns as plain text, as its pull-request tools do. */
+class TextFailure extends Error {}
 
 /** A JSON-RPC error whose wire message carries no extra "MCP error" prefix, like T3's. */
 function rpcError(code: number, message: string): Error {
@@ -584,6 +637,27 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+function parsePullRequestUrl(url: string): PullRequestTarget | undefined {
+  const match = PULL_REQUEST_URL.exec(url.trim());
+  if (!match) return undefined;
+  return { host: match[1]!.toLowerCase(), repository: match[2]!.toLowerCase(), number: Number(match[3]), url: url.trim() };
+}
+
+function pullRequestKey(target: Pick<PullRequestTarget, "host" | "repository" | "number">): string {
+  return `${target.host}/${target.repository}#${target.number}`;
+}
+
+function numbersByRepository(targets: PullRequestTarget[]): JsonObject[] {
+  const groups = new Map<string, { host: string; repository: string; numbers: number[] }>();
+  for (const target of targets) {
+    const key = `${target.host}/${target.repository}`;
+    const group = groups.get(key) ?? { host: target.host, repository: target.repository, numbers: [] };
+    group.numbers.push(target.number);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, { "content-type": "application/json", ...headers });
   res.end(JSON.stringify(body));
@@ -672,6 +746,10 @@ export class FakeT3 {
   /** Threads removed with their project; reading one is `thread_not_found`. */
   private readonly deletedThreads = new Set<string>();
   private readonly tasks = new Map<string, ScheduledTaskRecord>();
+  private readonly pullRequestFacts = new Map<string, PullRequestFacts>();
+  private readonly contextTransfers: ContextTransferRecord[] = [];
+  private readonly environmentLinks: EnvironmentLinkRecord[] = [];
+  private linkCounter = 0;
   private readonly idempotent = new Map<string, JsonObject>();
   private readonly waiters = new Set<() => void>();
   /** Timers not owned by a run (title regeneration). */
@@ -764,10 +842,13 @@ export class FakeT3 {
     workspaceRoot?: string;
     defaultModelSelection?: { instanceId: string; model: string } | null;
     git?: boolean;
+    /** Local branches besides `main`; only listed when the project is a repository. */
+    branches?: string[];
   }): { projectId: string } {
     const id = randomUUID();
     const project = this.newProject(id, input.title, input.workspaceRoot ?? join(this.tempDir, "projects", slug(input.title)));
     project.defaultModelSelection = input.defaultModelSelection ? { ...input.defaultModelSelection } : null;
+    project.branches = [...(input.branches ?? [])];
     if (input.git) mkdirSync(join(project.workspaceRoot, ".git"), { recursive: true });
     this.projects.set(id, project);
     return { projectId: id };
@@ -893,6 +974,41 @@ export class FakeT3 {
     }
     thread.updatedAt = at;
     return { threadId: thread.threadId };
+  }
+
+  /**
+   * What T3 has read about a pull request from its host. An unseeded pull request reads as open;
+   * `state: null` is one T3 has not read yet (real T3 fills it in a few seconds after linking).
+   */
+  setPullRequest(url: string, facts: { state: "open" | "closed" | "merged" | null; title?: string }): void {
+    const target = parsePullRequestUrl(url);
+    if (!target) throw new Error(`FakeT3.setPullRequest: not a pull request URL: ${url}`);
+    this.pullRequestFacts.set(pullRequestKey(target), {
+      state: facts.state,
+      title: facts.state === null ? null : (facts.title ?? `Pull request ${target.number}`),
+      headBranch: facts.state === null ? null : `patch-${target.number}`,
+      baseBranch: facts.state === null ? null : "main",
+      isDraft: facts.state === null ? null : false,
+    });
+  }
+
+  /** The thread's pull-request links as `list_thread_pull_requests` shows them. */
+  pullRequests(threadId: string): Array<Record<string, unknown>> {
+    return this.sortedLinks(this.controlThread(threadId)).map((link) => this.pullRequestEntry(link));
+  }
+
+  /** Adds a linked environment (another machine) to `t3_environment_links`. */
+  addEnvironmentLink(input: { label: string; status?: "reachable" | "unreachable" | "expired" }): { environmentId: string } {
+    const link: EnvironmentLinkRecord = {
+      environmentId: randomUUID(),
+      label: input.label,
+      status: input.status ?? "reachable",
+      access: "full-access",
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      lastError: input.status === "unreachable" ? "The linked environment did not answer." : null,
+    };
+    this.environmentLinks.push(link);
+    return { environmentId: link.environmentId };
   }
 
   /** Adds a pending user question to the thread's active run (starting a running turn if there is none). */
@@ -1362,8 +1478,9 @@ export class FakeT3 {
       try {
         result = ok(await this.callTool(name, args, { clientId: session?.clientId ?? "unknown", signal: ctx.mcpReq.signal }));
       } catch (error) {
-        if (!(error instanceof ToolFailure)) throw error;
-        result = failure(error.code, error.message);
+        if (error instanceof TextFailure) result = { isError: true, content: [{ type: "text", text: error.message }] };
+        else if (error instanceof ToolFailure) result = failure(error.code, error.message);
+        else throw error;
       } finally {
         ctx.mcpReq.signal.removeEventListener("abort", onCancelled);
       }
@@ -1423,6 +1540,26 @@ export class FakeT3 {
         return this.deleteScheduledTask(args);
       case "run_scheduled_task_now":
         return this.runScheduledTaskNow(args);
+      case "link_pull_requests":
+        return this.linkPullRequests(args);
+      case "list_thread_pull_requests":
+        return this.listThreadPullRequests(args);
+      case "unlink_pull_requests":
+        return this.unlinkPullRequests(args);
+      case "watch_pull_request":
+        return this.setWatching(args, true);
+      case "unwatch_pull_request":
+        return this.setWatching(args, false);
+      case "t3_thread_configure":
+        return this.threadConfigure(args);
+      case "t3_thread_transfer":
+        return this.threadTransfer(args);
+      case "t3_worktree_list":
+        return this.worktreeList(args);
+      case "t3_project_read":
+        return this.projectRead(args);
+      case "t3_environment_links":
+        return { environmentId: this.environmentId, links: this.environmentLinks.map((link) => ({ ...link })), notListed: LINKS_NOT_LISTED };
       default:
         throw new ToolFailure("not_implemented", `${name} is not implemented in fake T3.`);
     }
@@ -2155,6 +2292,268 @@ export class FakeT3 {
   // Project and scheduled-task model
   // ---------------------------------------------------------------------------
 
+  // -- pull requests ---------------------------------------------------------
+
+  /** T3's pull-request tools answer in plain text, not with its failure JSON. */
+  private pullRequestThread(threadId: unknown): ThreadRecord {
+    if (typeof threadId !== "string") throw new TextFailure(`Pass threadId: ${NOT_IN_THREAD}`);
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new TextFailure(`Thread ${threadId} was not found.${OTHER_ENVIRONMENT_HINT}`);
+    return thread;
+  }
+
+  /** A pull request named by `url`, or by `repository`, `number`, and `host` (fake projects have no remote). */
+  private pullRequestTarget(args: JsonObject): PullRequestTarget {
+    const url = optString(args.url);
+    if (url !== undefined) {
+      const target = parsePullRequestUrl(url);
+      if (!target) throw new TextFailure("This is not a recognised pull request URL. Pass repository and number instead.");
+      return target;
+    }
+    const repository = optString(args.repository);
+    const number = optInt(args.number);
+    if (repository === undefined || number === undefined) throw new TextFailure("Pass either url, or both repository and number.");
+    const host = optString(args.host);
+    if (host === undefined) throw new TextFailure("This thread's project has no recognised remote. Pass host or url.");
+    return { host, repository: repository.toLowerCase(), number, url: `https://${host}/${repository}/pull/${number}` };
+  }
+
+  private factsOf(target: PullRequestTarget): PullRequestFacts {
+    return (
+      this.pullRequestFacts.get(pullRequestKey(target)) ?? {
+        state: "open",
+        title: `Pull request ${target.number}`,
+        headBranch: `patch-${target.number}`,
+        baseBranch: "main",
+        isDraft: false,
+      }
+    );
+  }
+
+  private sortedLinks(thread: ThreadRecord): PullRequestLink[] {
+    return [...thread.pullRequests].sort((a, b) => a.linked - b.linked);
+  }
+
+  private pullRequestEntry(link: PullRequestLink): JsonObject {
+    return {
+      host: link.host,
+      repository: link.repository,
+      number: link.number,
+      url: link.url,
+      source: "agent",
+      watching: link.watching,
+      ...this.factsOf(link),
+      stack: null,
+    };
+  }
+
+  private linkPullRequests(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const targets: PullRequestTarget[] = [];
+    const invalidUrls: string[] = [];
+    for (const url of Array.isArray(args.urls) ? args.urls : []) {
+      const target = typeof url === "string" ? parsePullRequestUrl(url) : undefined;
+      if (!target) invalidUrls.push(String(url));
+      else if (!targets.some((seen) => pullRequestKey(seen) === pullRequestKey(target))) targets.push(target);
+    }
+    const isLinked = (target: PullRequestTarget): boolean =>
+      thread.pullRequests.some((link) => pullRequestKey(link) === pullRequestKey(target));
+    const alreadyLinked = targets.filter(isLinked);
+    const fresh = targets.filter((target) => !isLinked(target));
+    for (const target of fresh) thread.pullRequests.push({ ...target, watching: false, linked: ++this.linkCounter });
+    return {
+      linked: numbersByRepository(fresh),
+      alreadyLinked: numbersByRepository(alreadyLinked),
+      linkedCount: targets.length,
+      ...(invalidUrls.length > 0 ? { invalidUrls } : {}),
+      // What T3 tells a delegated child to report to its parent.
+      ...(thread.relationshipToParent === "subagent"
+        ? { next: "End your reply with: PR <full URL>, head <SHA>, checks and reviews <state>." }
+        : {}),
+    };
+  }
+
+  private listThreadPullRequests(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const states = Array.isArray(args.states) ? args.states : undefined;
+    const cursor = optString(args.cursor);
+    // T3 lists a pull request it has not read yet as open for the `states` filter.
+    const after = this.sortedLinks(thread)
+      .filter((link) => states === undefined || states.includes(this.factsOf(link).state ?? "open"))
+      .filter((link) => cursor === undefined || link.linked > Number(cursor));
+    const page = after.slice(0, PULL_REQUEST_PAGE_SIZE);
+    return {
+      pullRequests: page.map((link) => this.pullRequestEntry(link)),
+      chains: page.map((link) => ({ kind: "derived", numbers: [link.number] })),
+      nextCursor: after.length > page.length ? String(page.at(-1)!.linked) : null,
+    };
+  }
+
+  private unlinkPullRequests(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const states = Array.isArray(args.states) ? args.states : [];
+    const matching = this.sortedLinks(thread).flatMap((link) => {
+      const state = this.factsOf(link).state;
+      return state !== null && states.includes(state) ? [{ link, state }] : [];
+    });
+    const removed = new Set(matching.map(({ link }) => link));
+    const before = thread.pullRequests.length;
+    thread.pullRequests = thread.pullRequests.filter((link) => !removed.has(link));
+    const groups = new Map<string, { host: string; repository: string; state: PullRequestState; numbers: number[] }>();
+    for (const { link, state } of matching) {
+      const key = `${link.host}/${link.repository}/${state}`;
+      const group = groups.get(key) ?? { host: link.host, repository: link.repository, state, numbers: [] };
+      group.numbers.push(link.number);
+      groups.set(key, group);
+    }
+    return { unlinked: [...groups.values()], unlinkedCount: matching.length, remaining: before - matching.length };
+  }
+
+  /** Watching links the pull request first; a merged one is refused. Unwatching never links. */
+  private setWatching(args: JsonObject, watching: boolean): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const target = this.pullRequestTarget(args);
+    if (watching && thread.relationshipToParent === "subagent") {
+      throw new TextFailure(
+        "This thread is a subagent, so it cannot watch pull requests. Its parent thread owns the pull request: finish your task and report back instead.",
+      );
+    }
+    let link = thread.pullRequests.find((entry) => pullRequestKey(entry) === pullRequestKey(target));
+    const wasWatching = link?.watching === true;
+    if (watching) {
+      if (this.factsOf(target).state === "merged") throw new TextFailure("The pull request is merged, so there is nothing to watch.");
+      if (!link) {
+        link = { ...target, watching: false, linked: ++this.linkCounter };
+        thread.pullRequests.push(link);
+      }
+    }
+    if (link) link.watching = watching;
+    return { host: target.host, repository: target.repository, number: target.number, url: target.url, watching: link?.watching === true, wasWatching };
+  }
+
+  // -- thread configuration and context transfer -----------------------------
+
+  /** T3 checks the provider instance but not the model id. */
+  private threadConfigure(args: JsonObject): JsonObject {
+    const thread = this.requireTargetThread(args.threadId);
+    if (args.modelSelection === undefined) {
+      return {
+        threadId: thread.threadId,
+        modelSelection: structuredClone(thread.modelSelection),
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+      };
+    }
+    const selection = args.modelSelection as JsonObject;
+    const instanceId = selection.instanceId ?? selection.provider ?? thread.providerInstanceId;
+    if (!CAPABILITY_PROVIDERS.some((provider) => provider.providerInstanceId === instanceId)) {
+      throw new ToolFailure("orchestration_error", "The operation could not be completed.");
+    }
+    thread.modelSelection = {
+      instanceId,
+      model: String(selection.model),
+      ...(selection.options !== undefined ? { options: structuredClone(selection.options) } : {}),
+    };
+    thread.providerInstanceId = String(instanceId);
+    thread.model = String(selection.model);
+    this.touch(thread);
+    return { sequence: this.nextSequence() };
+  }
+
+  private threadTransfer(args: JsonObject): JsonObject {
+    const source = this.requireTargetThread(args.threadId);
+    if (args.action === "status") {
+      return {
+        transfers: this.contextTransfers
+          .filter((transfer) => transfer.sourceThreadId === source.threadId || transfer.targetThreadId === source.threadId)
+          .map((transfer) => ({ ...transfer })),
+      };
+    }
+    const record = (type: "fork" | "merge_back", targetThreadId: string): void => {
+      const part = (id: string): string => encodeURIComponent(id);
+      this.contextTransfers.push({
+        id: `context-transfer:type:${type}:source-thread:${part(source.threadId)}:target-thread:${part(targetThreadId)}:${randomUUID()}`,
+        sourceThreadId: source.threadId,
+        targetThreadId,
+        status: "pending",
+      });
+    };
+    if (args.action === "merge_back") {
+      const targetThreadId = optString(args.targetThreadId);
+      if (targetThreadId === undefined) throw new ToolFailure("invalid_request", "This action needs `targetThreadId`.");
+      const target = this.threads.get(targetThreadId);
+      if (!target) throw new ToolFailure("thread_not_found", `The thread was not found.${OTHER_ENVIRONMENT_HINT}`);
+      if (!source.runs.some((run) => TERMINAL_RUN_STATUSES.has(run.status))) {
+        throw new ToolFailure("orchestration_error", "No stable source run was found for merge-back source latest_stable.");
+      }
+      if (target.projectId !== source.projectId) throw new ToolFailure("orchestration_error", "The operation could not be completed.");
+      record("merge_back", target.threadId);
+      this.touch(target);
+      return { sequence: this.nextSequence(), targetThreadId: target.threadId };
+    }
+    // A fork copies the source's history and setup; it is idle until it gets a message.
+    const fork = this.createThread({
+      threadId: `mcp:${randomUUID()}:fork`,
+      projectId: source.projectId,
+      title: optString(args.title) ?? source.title,
+      createdBy: "agent",
+      creationSource: "mcp",
+      modelSelection: structuredClone(source.modelSelection),
+      runtimeMode: source.runtimeMode,
+      interactionMode: source.interactionMode,
+      worktreePath: source.worktreePath,
+      createdAt: nowIso(),
+    });
+    fork.branch = source.branch;
+    fork.parentThreadId = source.threadId;
+    fork.relationshipToParent = "fork";
+    fork.items = source.items.map((item) => ({ ...item, runId: null }));
+    record("fork", fork.threadId);
+    return { sequence: this.nextSequence(), targetThreadId: fork.threadId };
+  }
+
+  // -- worktrees and projects ------------------------------------------------
+
+  private worktreeList(args: JsonObject): JsonObject {
+    const thread = this.requireTargetThread(args.threadId);
+    const project = this.projects.get(thread.projectId);
+    if (!project) throw new ToolFailure("invalid_request", "The project was not found.");
+    if (!existsSync(join(project.workspaceRoot, ".git"))) {
+      return { refs: [], isRepo: false, hasPrimaryRemote: false, nextCursor: null, totalCount: 0 };
+    }
+    const names = [...new Set(["main", ...project.branches, ...(thread.branch ? [thread.branch] : [])])];
+    const query = optString(args.query)?.toLowerCase();
+    const refs = names
+      .filter((name) => query === undefined || name.toLowerCase().includes(query))
+      .map((name) => {
+        const own = name === thread.branch;
+        const current = own || (thread.branch === null && name === "main");
+        return {
+          name,
+          isRemote: false,
+          current,
+          isDefault: name === "main",
+          worktreePath: own ? thread.worktreePath : name === "main" ? project.workspaceRoot : null,
+        };
+      });
+    const cursor = optInt(args.cursor) ?? 0;
+    const limit = clamp(optInt(args.limit) ?? 100, 1, 200);
+    return {
+      isAtRepositoryRoot: true,
+      refs: refs.slice(cursor, cursor + limit),
+      isRepo: true,
+      hasPrimaryRemote: false,
+      nextCursor: cursor + limit < refs.length ? cursor + limit : null,
+      totalCount: refs.length,
+    };
+  }
+
+  private projectRead(args: JsonObject): JsonObject {
+    const project = this.projects.get(String(args.projectId));
+    if (!project) throw new ToolFailure("invalid_request", "The project was not found.");
+    return this.projectRow(project);
+  }
+
   private newProject(id: string, title: string, workspaceRoot: string): ProjectRecord {
     const at = nowIso();
     return {
@@ -2171,6 +2570,7 @@ export class FakeT3 {
       archivedAt: null,
       createdAt: at,
       updatedAt: at,
+      branches: [],
     };
   }
 
@@ -2308,6 +2708,7 @@ export class FakeT3 {
       pinnedAt: null,
       unread: false,
       titleRegeneration: null,
+      pullRequests: [],
       createdAt: input.createdAt,
       updatedAt: input.createdAt,
       touched: ++this.touchCounter,
