@@ -465,8 +465,8 @@ dropped.
 
 | Tool | Shaping | Read-only | Retried |
 |------|---------|:---------:|:-------:|
-| `watch_pull_request` | `threadId` required; DevSpace's own description (T3's is written for the watching agent) | no | yes (sets the watch) |
-| `unwatch_pull_request` | `threadId` required; DevSpace's own description | no | yes (sets the watch) |
+| `watch_pull_request` | `threadId` required; DevSpace's own description (T3's is written for the watching agent); refused unless the pull request is in the repository of the thread's project; only `url`, or `repository`, `number`, and `host`, forwarded | no | no (a repeat could restore a trigger another session removed) |
+| `unwatch_pull_request` | `threadId` required; DevSpace's own description | no | no (same) |
 | `link_pull_requests` | `threadId` required; T3's `next` (an instruction to the agent inside a subagent thread) removed from the result | no | yes (links are a set) |
 | `list_thread_pull_requests` | `threadId` required | yes | yes (read) |
 | `unlink_pull_requests` | `threadId` required | no | no (its result is the only record of which pull requests matched) |
@@ -506,6 +506,25 @@ dropped.
   turns in the watched thread. It is exposed because it is bound to one pull
   request on a host T3 already reads and is the tool orchestrator agents most
   need; `docs/security.md` states the exposure.
+- Watch scope (added in review): the bridge arms a watch only on a pull request
+  of the thread's own repository, the primary remote of its project or the
+  `origin` of a fork, and refuses every other, a scratch thread's included.
+  It is a guardrail on DevSpace's tool: a client cannot, directly or by
+  mistake, subscribe a thread that works on something else to an unrelated
+  pull request. It is not a boundary. A client can ask a thread's agent to
+  watch any pull request with T3's own tool, change a checkout's remotes, or
+  start a thread in a clone of a public repository; `docs/security.md` lists
+  these. The repository comes from T3's `repositoryIdentity`
+  (`canonicalKey`, and `origin.canonicalKey` for a fork), read from the project
+  and, when T3 has not resolved it yet, from the project listing. A `url` must
+  equal its own normalized `https` form and end in a pull-request path, so the
+  bridge and T3 cannot read two pull requests out of one string.
+- T3's failure for a thread it cannot find ends with advice to pass
+  `environmentId`. The bridge replaces that sentence in every failure it
+  returns with what an outside caller can do; T3 failures otherwise pass
+  through unchanged.
+- A slow `t3_project_read` no longer overwrites a project title that a rename
+  cached while the read was in flight.
 
 ## Implementation contract
 
@@ -735,8 +754,9 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 | B34 | Pull requests: link (with `invalidUrls` and `alreadyLinked`), list (state, watch flag, `states` filter, paging), watch (links first, refuses a merged PR), unwatch, unlink by state, and unlink one by URL or number whatever its state (ending its watch); only the caller's arguments reach T3 and T3's results and plain-text failures pass through | ✓ | ✓ | | |
 | B35 | `t3_thread_configure` reads and sets the model and leaves the modes; `t3_thread_transfer` forks into an idle thread with the source's history and setup, merges back, and lists transfers for source and target | ✓ | ✓ | | |
 | B36 | `t3_project_read` passes the record through without remote-URL credentials and teaches the bridge the project title; `t3_worktree_list` defaults `limit` to 50; `t3_environment_links` returns `{ environmentId, links }` | ✓ | ✓ | | |
-| B37 | Retry classification per the Phase 3 table; a retried link leaves one link, and a `fork` or `merge_back` whose response was lost is sent once | ✓ | ✓ | | |
+| B37 | Retry classification per the Phase 3 table; a retried link leaves one link, and a `watch`, `unwatch`, `fork`, or `merge_back` whose response was lost is sent once | ✓ | ✓ | | |
 | B38 | Every tool, `t3_inbox` included, refuses a call that passes `environmentId` with one message that says the bridge acts on its own machine only and that `t3_environment_links` only lists links; nothing reaches T3 and `t3_thread_launch` starts no thread; an explicit `null` is accepted and not forwarded | ✓ | ✓ | ✓ | ✓ |
+| B39 | `watch_pull_request` is refused before it reaches T3 unless the pull request is in the repository of the thread's project (primary remote, or `origin` of a fork): another repository, a thread without a remote, and every URL that is not the plain `https` pull-request address; the identity falls back to the project listing; `unwatch_pull_request` is unrestricted. T3's advice to pass `environmentId` is replaced in every failure | ✓ | ✓ | | |
 
 The live suite also compares T3 with the fake for these tools: failures without
 a thread, and the fields of every result, sampled on one scratch thread.
@@ -755,7 +775,7 @@ a thread, and the fields of every result, sampled on one scratch thread.
 | S8 | Rename a scratch thread, then regenerate its title | ✓ | ✓ | ✓ |
 | S9 | Clone a small public repository into a temporary folder, register it as a project, pick a model from `orchestrator_capabilities`, and set it as the project default | ✓ | ✓ | ✓ |
 | S10 | In S9's project, schedule a far-future one-time task, list it, run it now, confirm the run thread is `full-access` and replies, delete the task, and confirm it is gone | ✓ | ✓ | ✓ |
-| S11 | On a scratch thread: read its model and set the same one, fork it and find the transfer on both threads, link two public pull requests and unlink one by URL at once, wait for T3 to read the other's state, watch and unwatch it, unlink it by state, then list the thread's branches, read its project, and list linked machines | ✓ | ✓ | ✓ |
+| S11 | On a scratch thread: read its model and set the same one, fork it and find the transfer on both threads, link two public pull requests and unlink one by URL at once, wait for T3 to read the other's state, be refused a watch on it, unlink it with the batch tool. Then clone that repository, start a thread in the clone, watch and unwatch the pull request from there, and unlink it. Finally list the thread's branches, read its project, and list linked machines | ✓ | ✓ | ✓ |
 
 The live and deployed harnesses remove the S9 project through their own direct
 T3 client (`t3_project_delete`; deletion is never exposed through DevSpace),
