@@ -306,6 +306,7 @@ export function checkExpansionDescription(name: string, description: string): vo
   }
   if (name === "watch_pull_request") {
     assert.match(description, /wakes that thread's agent, not you/, "watch_pull_request must say who is woken");
+    assert.match(description, /untrusted text/, "watch_pull_request must say that PR comments are untrusted input to the agent");
   }
   if (name === "t3_project_read") assert.match(description, /`projectId`/);
   if (name === "t3_environment_links") assert.match(description, /take no `environmentId`/);
@@ -1379,6 +1380,8 @@ export async function checkWorkspaceReads(call: T3Call, fake: FakeT3): Promise<v
     [`https://${token}@github.com/octocat/private.git`, "https://github.com/octocat/private.git"],
     [`ssh://git:${token}@github.com/octocat/private.git`, "ssh://git@github.com/octocat/private.git"],
     ["ssh://git@github.com/octocat/private.git", "ssh://git@github.com/octocat/private.git"],
+    // Not a URL the parser accepts (the port), so the whole user part goes.
+    [`https://x-access-token:${token}@github.com:notaport/octocat/private.git`, "https://github.com:notaport/octocat/private.git"],
     ["git@github.com:octocat/private.git", "git@github.com:octocat/private.git"],
   ] as const) {
     const remote = fake.addProject({ title: `remote-fixture ${remoteUrl.length}`, remoteUrl });
