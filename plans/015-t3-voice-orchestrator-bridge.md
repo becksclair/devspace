@@ -467,10 +467,10 @@ dropped.
 |------|---------|:---------:|:-------:|
 | `watch_pull_request` | `threadId` required; DevSpace's own description (T3's is written for the watching agent); refused unless the pull request is in the repository of the thread's project; only `url`, or `repository`, `number`, and `host`, forwarded | no | no (a repeat could restore a trigger another session removed) |
 | `unwatch_pull_request` | `threadId` required; DevSpace's own description | no | no (same) |
-| `link_pull_requests` | `threadId` required; T3's `next` (an instruction to the agent inside a subagent thread) removed from the result | no | yes (links are a set) |
+| `link_pull_requests` | `threadId` required; T3's `next` (an instruction to the agent inside a subagent thread) removed from the result | no | no (a repeat would answer `alreadyLinked` although the first attempt linked them) |
 | `list_thread_pull_requests` | `threadId` required | yes | yes (read) |
 | `unlink_pull_requests` | `threadId` required | no | no (its result is the only record of which pull requests matched) |
-| `unlink_pull_request` | `threadId` required | no | yes (the named link is gone either way; `wasLinked` can describe the first attempt) |
+| `unlink_pull_request` | `threadId` required | no | no (a repeat would answer `wasLinked: false` although the first attempt removed the link) |
 | `t3_thread_configure` | `threadId` required | no | yes (read, or sets the model) |
 | `t3_thread_transfer` | `threadId` required | no | `status` only |
 | `t3_worktree_list` | `threadId` required; `limit` defaults to 50 | yes | yes (read) |
@@ -488,7 +488,7 @@ dropped.
 - `unlink_pull_request` was added after the first review of the pull request:
   `unlink_pull_requests` goes by state, so it could not remove one pull request
   among several in the same state, nor one whose state T3 had not read yet.
-- A call that passes `environmentId` is refused by every tool, including
+- A call that passes a non-null `environmentId` is refused by every tool, including
   `t3_inbox`, before anything reaches T3. Until Phase 3 the field was dropped
   silently; with `t3_environment_links` handing out other machines' ids, a
   dropped field would start a thread here while the caller believed it started
@@ -754,7 +754,7 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 | B34 | Pull requests: link (with `invalidUrls` and `alreadyLinked`), list (state, watch flag, `states` filter, paging), watch (links first, refuses a merged PR), unwatch, unlink by state, and unlink one by URL or number whatever its state (ending its watch); only the caller's arguments reach T3 and T3's results and plain-text failures pass through | ✓ | ✓ | | |
 | B35 | `t3_thread_configure` reads and sets the model and leaves the modes; `t3_thread_transfer` forks into an idle thread with the source's history and setup, merges back, and lists transfers for source and target | ✓ | ✓ | | |
 | B36 | `t3_project_read` passes the record through without remote-URL credentials and teaches the bridge the project title; `t3_worktree_list` defaults `limit` to 50; `t3_environment_links` returns `{ environmentId, links }` | ✓ | ✓ | | |
-| B37 | Retry classification per the Phase 3 table; a retried link leaves one link, and a `watch`, `unwatch`, `fork`, or `merge_back` whose response was lost is sent once | ✓ | ✓ | | |
+| B37 | Retry classification per the Phase 3 table: reads, `t3_thread_configure`, and `t3_thread_transfer` `status` are retried once; a `link`, `unlink`, `watch`, `unwatch`, `fork`, or `merge_back` whose response was lost is sent once; a lost lookup before a watch is reported as not sent | ✓ | ✓ | | |
 | B38 | Every tool, `t3_inbox` included, refuses a call that passes `environmentId` with one message that says the bridge acts on its own machine only and that `t3_environment_links` only lists links; nothing reaches T3 and `t3_thread_launch` starts no thread; an explicit `null` is accepted and not forwarded | ✓ | ✓ | ✓ | ✓ |
 | B39 | `watch_pull_request` is refused before it reaches T3 unless the pull request is in the repository of the thread's project (primary remote, or `origin` of a fork): another repository, a thread without a remote, and every URL that is not the plain `https` pull-request address; the identity falls back to the project listing; `unwatch_pull_request` is unrestricted. T3's advice to pass `environmentId` is replaced in every failure | ✓ | ✓ | | |
 
