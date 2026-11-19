@@ -41,6 +41,7 @@ import {
   captureConsole,
   checkCatalog,
   checkDescriptionRewrites,
+  checkEnvironmentRejected,
   FULL_ACCESS_SCOPES,
   NEVER_EXPOSED_T3_TOOLS,
   ok,
@@ -60,9 +61,9 @@ const SCENARIO_TIMEOUT_MS = 5 * 60_000;
 const WAIT_SLICE_MS = 25_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 const DEVSPACE_ACCESS_TOKEN = `t3-live-${randomBytes(24).toString("base64url")}`;
-const LOCAL_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10"];
+const LOCAL_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11"];
 // The deployed gateway runs on this machine, so S9 and S10 can clone into a local folder.
-const DEPLOYED_SCENARIOS = ["S1", "S2", "S3", "S7", "S8", "S9", "S10"];
+const DEPLOYED_SCENARIOS = ["S1", "S2", "S3", "S7", "S8", "S9", "S10", "S11"];
 /** Where T3 keeps worktrees for project threads (scheduled runs create them). */
 const T3_WORKTREES_DIR = join(homedir(), ".t3", "worktrees");
 // Row keys real T3 includes only for some threads.
@@ -139,6 +140,25 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
   },
   run_scheduled_task_now: { environmentId: "string", taskId: "string" },
   delete_scheduled_task: { environmentId: "string", scheduledTaskId: "string" },
+  watch_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string" },
+  unwatch_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string" },
+  link_pull_requests: { environmentId: "string", threadId: "string", urls: "array" },
+  list_thread_pull_requests: { environmentId: "string", threadId: "string", states: "array", cursor: "string" },
+  unlink_pull_requests: { environmentId: "string", threadId: "string", states: "array" },
+  unlink_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string" },
+  t3_thread_configure: { environmentId: "string", threadId: "string", modelSelection: "object" },
+  t3_thread_transfer: {
+    environmentId: "string",
+    action: "string",
+    threadId: "string",
+    sourcePoint: "object",
+    targetThreadId: "string",
+    title: "string",
+  },
+  t3_worktree_list: { environmentId: "string", threadId: "string", query: "string", cursor: "integer", limit: "integer" },
+  t3_project_read: { environmentId: "string", projectId: "string" },
+  // It takes no arguments.
+  t3_environment_links: {},
 };
 /** `schedule` fields the bridge removes (webhook triggers); T3 must still call them this. */
 const WEBHOOK_SCHEDULE_FIELDS = ["signature", "maxDeliveryAgeMinutes", "dedupe", "filters"];
@@ -150,6 +170,7 @@ const REQUIRED_ENUM_VALUES: Record<string, string[]> = {
   "t3_thread_organize.action": ["settle", "archive"],
   "t3_queue.action": ["list", "read", "edit", "cancel"],
   "t3_thread_update.action": ["rename", "regenerate_title"],
+  "t3_thread_transfer.action": ["fork", "merge_back", "status"],
 };
 /** Fields the bridge reads from T3's results; every real result must carry them. */
 const BRIDGE_READS = {
@@ -183,6 +204,36 @@ const ERROR_CASES: Array<{ tool: string; args: Json; code: string }> = [
 const THREAD_ONLY_TOOLS: Array<{ tool: string; args: Json }> = [
   { tool: "task_status", args: { taskId: "devspace-contract-probe" } },
   { tool: "create_threads", args: { threads: [{ prompt: "Reply with exactly OK" }] } },
+];
+/** The same without a thread for the tools added after Phase 2; T3's pull-request tools answer in plain text. */
+const EXPANSION_ERROR_CASES: Array<{ tool: string; args: Json; code: string }> = [
+  { tool: "t3_thread_configure", args: {}, code: "target_required" },
+  { tool: "t3_thread_transfer", args: { action: "status" }, code: "target_required" },
+  { tool: "t3_worktree_list", args: {}, code: "target_required" },
+  { tool: "t3_project_read", args: { projectId: "devspace-contract-probe" }, code: "invalid_request" },
+];
+const CONTRACT_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/1";
+// Linked with the first and unlinked by URL straight away, before T3 can have read its state.
+const CONTRACT_SECOND_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/2";
+const EXPANSION_TEXT_FAILURES: Array<{ tool: string; args: Json }> = [
+  { tool: "list_thread_pull_requests", args: {} },
+  { tool: "link_pull_requests", args: { urls: [CONTRACT_PULL_REQUEST] } },
+  { tool: "unlink_pull_requests", args: { states: ["merged"] } },
+  { tool: "unlink_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
+  { tool: "watch_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
+  { tool: "unwatch_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
+];
+const THREAD_REQUIRED_TEXT = "Pass threadId: this MCP client is not running inside a T3 thread.";
+/** One tool for each of T3's three wordings of an unknown thread, and the tools added after Phase 2. */
+const UNKNOWN_THREAD_CASES: Array<{ tool: string; args: Json }> = [
+  { tool: "t3_thread_read", args: { threadId: "devspace-contract-probe" } },
+  { tool: "t3_thread_wait", args: { threadId: "devspace-contract-probe", timeoutMs: 100 } },
+  { tool: "t3_thread_organize", args: { threadId: "devspace-contract-probe", action: "pin" } },
+  { tool: "t3_pending_request", args: { threadId: "devspace-contract-probe", action: "list" } },
+  { tool: "t3_queue", args: { threadId: "devspace-contract-probe", action: "list" } },
+  { tool: "t3_thread_configure", args: { threadId: "devspace-contract-probe" } },
+  { tool: "t3_thread_transfer", args: { threadId: "devspace-contract-probe", action: "status" } },
+  { tool: "t3_worktree_list", args: { threadId: "devspace-contract-probe" } },
 ];
 
 class LiveFailure extends Error {}
@@ -524,6 +575,128 @@ async function readPaging(call: T3Call, sample: ShapeSample): Promise<Json> {
   };
 }
 
+interface ExpansionSample {
+  configuration: Json;
+  configured: Json;
+  fork: Json;
+  transfers: Json[];
+  linked: Json;
+  listing: Json;
+  watched: Json;
+  unwatched: Json;
+  unlinkedOne: Json;
+  unlinked: Json;
+  refs: Json;
+  project: Json;
+  links: Json;
+}
+
+/**
+ * Runs the pull-request, thread-configuration, context-transfer, worktree, project-read, and
+ * linked-environment tools on one scratch thread of a T3 (real or fake), then archives the thread
+ * and its fork.
+ */
+async function sampleExpansionShapes(call: T3Call, title: string, modelSelection: Json): Promise<ExpansionSample> {
+  const launch = await ok(call, "t3_thread_launch", {
+    scratch: true,
+    title,
+    message: "Reply with exactly OK",
+    modelSelection,
+    runtimeMode: "full-access",
+    clientRequestId: randomUUID(),
+  });
+  const threadId = String(launch.threadId);
+  const threadIds = [threadId];
+  let watchAttempted = false;
+  try {
+    await waitDone(call, threadId, SCENARIO_TIMEOUT_MS);
+    const configuration = await ok(call, "t3_thread_configure", { threadId });
+    const configured = await ok(call, "t3_thread_configure", { threadId, modelSelection });
+    const fork = await ok(call, "t3_thread_transfer", { threadId, action: "fork", title: `${title} fork` });
+    threadIds.push(String(fork.targetThreadId));
+    const transfers = records((await ok(call, "t3_thread_transfer", { threadId, action: "status" })).transfers);
+    const linked = await ok(call, "link_pull_requests", {
+      threadId,
+      urls: [CONTRACT_PULL_REQUEST, CONTRACT_SECOND_PULL_REQUEST, "https://example.com/not-a-pull-request"],
+    });
+    const unlinkedOne = await ok(call, "unlink_pull_request", { threadId, url: CONTRACT_SECOND_PULL_REQUEST });
+    const listing = await poll(
+      "T3 to read the linked pull request's state",
+      async () => {
+        const result = await ok(call, "list_thread_pull_requests", { threadId });
+        const entries = records(result.pullRequests);
+        return entries.length > 0 && entries.every((entry) => typeof entry.state === "string") ? result : undefined;
+      },
+      60_000,
+    );
+    watchAttempted = true;
+    const watched = await ok(call, "watch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST });
+    const unwatched = await ok(call, "unwatch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST });
+    watchAttempted = false;
+    // Every state: the pull request may have changed state since the listing above.
+    const unlinked = await ok(call, "unlink_pull_requests", { threadId, states: ["open", "closed", "merged"] });
+    const refs = await ok(call, "t3_worktree_list", { threadId });
+    const project = await ok(call, "t3_project_read", { projectId: launch.projectId });
+    const links = await ok(call, "t3_environment_links", {});
+    return { configuration, configured, fork, transfers, linked, listing, watched, unwatched, unlinkedOne, unlinked, refs, project, links };
+  } finally {
+    // Archiving does not end a watch, so one that may be on is removed first (two attempts); a
+    // watch that could not be removed fails the check instead of staying behind unnoticed.
+    let watchLeft = watchAttempted;
+    for (let attempt = 0; watchLeft && attempt < 2; attempt += 1) {
+      const removed = await call("unwatch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST }).catch(() => undefined);
+      watchLeft = removed === undefined || removed.isError === true;
+    }
+    for (const id of threadIds) {
+      await call("t3_thread_organize", { threadId: id, action: "settle" });
+      await call("t3_thread_organize", { threadId: id, action: "archive" });
+    }
+    if (watchLeft) fail(`the watch on ${CONTRACT_PULL_REQUEST} could not be removed from thread ${threadId}`);
+  }
+}
+
+/**
+ * What the bridge and the fake rely on for the tools added after Phase 2: T3's failures without a
+ * thread, and the fields of every result, compared between real T3 and the fake.
+ */
+async function expansionContract(realCall: T3Call, fakeCall: T3Call, stamp: string): Promise<void> {
+  for (const { tool, args, code } of EXPANSION_ERROR_CASES) {
+    const real = await failureCode(realCall, tool, args);
+    const fake = await failureCode(fakeCall, tool, args);
+    assert.deepEqual([real._tag, real.code], ["OrchestratorMcpFailure", code], `${tool} real failure`);
+    assert.deepEqual([fake._tag, fake.code], [real._tag, real.code], `${tool} fake failure`);
+  }
+  for (const { tool, args } of EXPANSION_TEXT_FAILURES) {
+    for (const [side, call] of [["T3", realCall], ["the fake", fakeCall]] as const) {
+      const result = await call(tool, args);
+      assert.equal(result.isError, true, `${tool} without threadId must fail in ${side}`);
+      assert.equal(resultText(result), THREAD_REQUIRED_TEXT, `${tool} without threadId in ${side}`);
+    }
+  }
+
+  const title = `DevSpace bridge check ${stamp} contract tools`;
+  const real = await sampleExpansionShapes(realCall, title, LIVE_MODEL);
+  const fake = await sampleExpansionShapes(fakeCall, title, LIVE_MODEL);
+  compareKeys("thread configuration", [real.configuration], [fake.configuration], ["threadId", "modelSelection", "runtimeMode", "interactionMode"]);
+  compareKeys("model change", [real.configured], [fake.configured], ["sequence"]);
+  compareKeys("fork result", [real.fork], [fake.fork], ["sequence", "targetThreadId"]);
+  compareKeys("context transfers", real.transfers, fake.transfers, ["id", "sourceThreadId", "targetThreadId", "status"]);
+  compareKeys("link result", [real.linked], [fake.linked], ["linked", "alreadyLinked", "linkedCount", "invalidUrls"]);
+  compareKeys("pull request listing", [real.listing], [fake.listing], ["pullRequests", "chains", "nextCursor"]);
+  compareKeys("pull request entries", records(real.listing.pullRequests), records(fake.listing.pullRequests), ["url", "repository", "number", "state", "watching"]);
+  compareKeys("watch results", [real.watched, real.unwatched], [fake.watched, fake.unwatched], ["url", "number", "watching", "wasWatching"]);
+  compareKeys("unlink result", [real.unlinked], [fake.unlinked], ["unlinked", "unlinkedCount", "remaining"]);
+  compareKeys("single unlink result", [real.unlinkedOne], [fake.unlinkedOne], ["host", "repository", "number", "wasLinked"]);
+  assert.equal(real.unlinkedOne.wasLinked, true, "T3 unlinks one pull request by URL before it has read its state");
+  compareKeys("worktree listing outside a repository", [real.refs], [fake.refs], ["refs", "isRepo", "nextCursor", "totalCount"]);
+  compareKeys("project record", [real.project], [fake.project], BRIDGE_READS.projectRecord);
+  // The bridge returns `environmentId` and `links` and drops `notListed`.
+  compareKeys("linked environments", [real.links], [fake.links], ["environmentId", "links", "notListed"]);
+  assert.equal(real.configuration.runtimeMode, "full-access");
+  assert.deepEqual([real.watched.watching, real.unwatched.watching], [true, false], "T3 watches a pull request that is not merged");
+  assert.deepEqual([real.unlinked.unlinkedCount, real.unlinked.remaining], [1, 0]);
+}
+
 async function poll<T>(what: string, probe: () => Promise<T | undefined>, timeoutMs = 30_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -584,6 +757,18 @@ async function contractAssertions(options: {
     }
   });
 
+  await check("contract: an unknown thread is thread_not_found, in the wording the fake uses", async () => {
+    // T3 appends its advice about linked environments only while that feature is on; the bridge
+    // replaces the sentence, so the comparison leaves it out on both sides.
+    const withoutHint = (message: unknown): string => String(message).replace(/\s*Thread ids belong to one environment:[^.]*\./, "");
+    for (const { tool, args } of UNKNOWN_THREAD_CASES) {
+      const real = await failureCode(realCall, tool, args);
+      const fake = await failureCode(fakeCall, tool, args);
+      assert.deepEqual([real._tag, real.code], ["OrchestratorMcpFailure", "thread_not_found"], `${tool} real failure`);
+      assert.deepEqual([fake._tag, fake.code, withoutHint(fake.message)], [real._tag, real.code, withoutHint(real.message)], `${tool} fake failure`);
+    }
+  });
+
   await check("contract: HTTP failure modes", async () => {
     const real = await httpFailureModes(options.realOrigin, options.realToken);
     const fake = await httpFailureModes(options.fake.origin, options.fakeToken);
@@ -637,6 +822,10 @@ async function contractAssertions(options: {
 
   await check("contract: Phase 2 schemas and result shapes (projects, scheduled tasks, models)", async () => {
     await phase2Contract(options.realClient, options.fakeClient, realCall, fakeCall, stamp, options.workDir, options.fake);
+  });
+
+  await check("contract: pull-request, thread-configuration, context-transfer, worktree, project-read, and link tools", async () => {
+    await expansionContract(realCall, fakeCall, stamp);
   });
 
   return contractThreadId;
@@ -982,6 +1171,10 @@ async function runLocal(stamp: string): Promise<void> {
       checkCatalog((await listAllTools(client!)) as CatalogTool[], { baseline: new Set(baseline) });
     });
 
+    await check("B38: every tool refuses a call that names another machine, and no thread is started", async () => {
+      await checkEnvironmentRejected(call);
+    });
+
     await check("B4: the bridge minted through the CLI pairing flow at full access", async () => {
       const pairing = cliLog.find((entry) => entry.args.slice(0, 3).join(" ") === "auth pairing create" && entry.args.includes(label));
       assert.ok(pairing, "the bridge created a pairing code");
@@ -1286,6 +1479,10 @@ async function runDeployedChecks(endpoint: string, accessToken: string, stamp: s
     await check("B2/B3/B12/B17/B26: the deployed gateway exposes exactly the DevSpace T3 tools", async () => {
       const baseline = await toolNames(endpoint, accessToken, { "x-disabled-capabilities": "t3" });
       checkCatalog((await listAllTools(client)) as CatalogTool[], { baseline: new Set(baseline) });
+    });
+
+    await check("B38: every tool refuses a call that names another machine, and no thread is started", async () => {
+      await checkEnvironmentRejected(call);
     });
 
     await check("B16: compact list and project rows", async () => {

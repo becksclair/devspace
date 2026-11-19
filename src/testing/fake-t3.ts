@@ -79,6 +79,57 @@ interface ProjectRecord {
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Local branches besides `main`, for `t3_worktree_list` in a project that is a repository. */
+  branches: string[];
+  /** `git remote -v` URL of the primary remote, exactly as T3 stores it (credentials included). */
+  remoteUrl: string | null;
+  /** The fork's own remote when the primary remote is its upstream. */
+  originUrl: string | null;
+  /** T3 resolves a project's repository identity when it lists projects; a read before that has none. */
+  identityResolved: boolean;
+  unparsedRemote: boolean;
+}
+
+type PullRequestState = "open" | "closed" | "merged";
+
+/** What T3 knows about a pull request once it has read it from its host. */
+interface PullRequestFacts {
+  state: PullRequestState | null;
+  title: string | null;
+  headBranch: string | null;
+  baseBranch: string | null;
+  isDraft: boolean | null;
+}
+
+interface PullRequestTarget {
+  host: string;
+  /** Lower-cased `owner/name`, as T3 stores it. */
+  repository: string;
+  number: number;
+  /** As given by the caller; T3 keeps its casing. */
+  url: string;
+}
+
+interface PullRequestLink extends PullRequestTarget {
+  watching: boolean;
+  /** Link order, for the listing. */
+  linked: number;
+}
+
+interface ContextTransferRecord {
+  id: string;
+  sourceThreadId: string;
+  targetThreadId: string;
+  status: "pending" | "ready" | "failed" | "superseded";
+}
+
+interface EnvironmentLinkRecord {
+  environmentId: string;
+  label: string;
+  status: "reachable" | "unreachable" | "expired";
+  access: string;
+  expiresAt: string;
+  lastError: string | null;
 }
 
 type ScheduledRunStatus = "never" | "running" | "succeeded" | "failed";
@@ -172,6 +223,7 @@ interface ThreadRecord {
   unread: boolean;
   /** `{requestId, startedAt}` while a `regenerate_title` is in flight. */
   titleRegeneration: JsonObject | null;
+  pullRequests: PullRequestLink[];
   createdAt: string;
   updatedAt: string;
   touched: number;
@@ -242,6 +294,11 @@ const CREDENTIAL_ERROR_BODY = JSON.stringify({
   message: "A valid T3 Code MCP credential is required.",
 });
 const NOT_IN_THREAD = "this MCP client is not running inside a T3 thread.";
+const OTHER_ENVIRONMENT_HINT =
+  " Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.";
+const LINKS_NOT_LISTED = "Not listed: not linked yet. Call t3_environment_link with a hint from the user's words.";
+const PULL_REQUEST_PAGE_SIZE = 50;
+const PULL_REQUEST_URL = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)\/?$/;
 const DEFAULT_MODEL_SELECTION = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
 const WEBHOOK_URL_PREFIX = "https://connect.example.invalid/hooks/";
 const REGENERATED_TITLE_FALLBACK = "Regenerated title";
@@ -360,6 +417,9 @@ class ToolFailure extends Error {
     super(message);
   }
 }
+
+/** A failure T3 returns as plain text, as its pull-request tools do. */
+class TextFailure extends Error {}
 
 /** A JSON-RPC error whose wire message carries no extra "MCP error" prefix, like T3's. */
 function rpcError(code: number, message: string): Error {
@@ -584,6 +644,48 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * T3's identity of a GitHub checkout: the remote URL is stored as `git remote -v` prints it and
+ * the key is lower-cased. With `originUrl` the primary remote is the upstream of a fork.
+ */
+function repositoryIdentity(remoteUrl: string, rootPath: string, originUrl: string | null = null): JsonObject {
+  const ownerAndName = (url: string): string => url.replace(/\.git$/, "").split(/[/:]/).slice(-2).join("/");
+  const [owner = "owner", name = "repository"] = ownerAndName(remoteUrl).split("/");
+  return {
+    canonicalKey: `github.com/${owner}/${name}`.toLowerCase(),
+    locator: { source: "git-remote", remoteName: originUrl === null ? "origin" : "upstream", remoteUrl },
+    rootPath,
+    displayName: `${owner}/${name}`,
+    provider: "github",
+    owner,
+    name,
+    ...(originUrl === null
+      ? {}
+      : { origin: { canonicalKey: `github.com/${ownerAndName(originUrl)}`.toLowerCase(), remoteUrl: originUrl, displayName: ownerAndName(originUrl) } }),
+  };
+}
+
+function parsePullRequestUrl(url: string): PullRequestTarget | undefined {
+  const match = PULL_REQUEST_URL.exec(url.trim());
+  if (!match) return undefined;
+  return { host: match[1]!.toLowerCase(), repository: match[2]!.toLowerCase(), number: Number(match[3]), url: url.trim() };
+}
+
+function pullRequestKey(target: Pick<PullRequestTarget, "host" | "repository" | "number">): string {
+  return `${target.host}/${target.repository}#${target.number}`;
+}
+
+function numbersByRepository(targets: PullRequestTarget[]): JsonObject[] {
+  const groups = new Map<string, { host: string; repository: string; numbers: number[] }>();
+  for (const target of targets) {
+    const key = `${target.host}/${target.repository}`;
+    const group = groups.get(key) ?? { host: target.host, repository: target.repository, numbers: [] };
+    group.numbers.push(target.number);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, { "content-type": "application/json", ...headers });
   res.end(JSON.stringify(body));
@@ -667,11 +769,18 @@ export class FakeT3 {
   private readonly mcpSessions = new Map<string, McpSessionEntry>();
   private readonly requestSockets = new Map<string, Socket>();
   private readonly drops = new Map<string, number>();
+  private readonly holds = new Map<string, Promise<void>>();
+  /** Folders `t3_project_clone` filled, with the remote each was cloned from. */
+  private readonly clones = new Map<string, string>();
   private readonly projects = new Map<string, ProjectRecord>();
   private readonly threads = new Map<string, ThreadRecord>();
   /** Threads removed with their project; reading one is `thread_not_found`. */
   private readonly deletedThreads = new Set<string>();
   private readonly tasks = new Map<string, ScheduledTaskRecord>();
+  private readonly pullRequestFacts = new Map<string, PullRequestFacts>();
+  private readonly contextTransfers: ContextTransferRecord[] = [];
+  private readonly environmentLinks: EnvironmentLinkRecord[] = [];
+  private linkCounter = 0;
   private readonly idempotent = new Map<string, JsonObject>();
   private readonly waiters = new Set<() => void>();
   /** Timers not owned by a run (title regeneration). */
@@ -764,10 +873,23 @@ export class FakeT3 {
     workspaceRoot?: string;
     defaultModelSelection?: { instanceId: string; model: string } | null;
     git?: boolean;
+    /** Local branches besides `main`; only listed when the project is a repository. */
+    branches?: string[];
+    /** Primary remote URL for `repositoryIdentity`; T3 keeps it as git prints it, credentials included. */
+    remoteUrl?: string;
+    /** With `remoteUrl` as the upstream: the fork's own remote (`repositoryIdentity.origin`). */
+    originUrl?: string;
+    /** A remote T3 cannot parse: its `canonicalKey` is then the lower-cased remote URL itself. */
+    unparsedRemote?: boolean;
   }): { projectId: string } {
     const id = randomUUID();
     const project = this.newProject(id, input.title, input.workspaceRoot ?? join(this.tempDir, "projects", slug(input.title)));
     project.defaultModelSelection = input.defaultModelSelection ? { ...input.defaultModelSelection } : null;
+    project.branches = [...(input.branches ?? [])];
+    project.remoteUrl = input.remoteUrl ?? null;
+    project.originUrl = input.originUrl ?? null;
+    project.unparsedRemote = input.unparsedRemote === true;
+    project.identityResolved = true;
     if (input.git) mkdirSync(join(project.workspaceRoot, ".git"), { recursive: true });
     this.projects.set(id, project);
     return { projectId: id };
@@ -778,10 +900,17 @@ export class FakeT3 {
     if (!this.projects.delete(projectId)) throw new Error(`FakeT3.removeProject: unknown project ${projectId}`);
   }
 
+  /** Renames a project the way the T3 app would, without a call the bridge could see. */
+  renameProject(projectId: string, title: string): void {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`FakeT3.renameProject: unknown project ${projectId}`);
+    project.title = title;
+  }
+
   /** The project row exactly as `t3_project_list` shows it, or `undefined` once removed or deleted. */
   project(projectId: string): Record<string, unknown> | undefined {
     const project = this.projects.get(projectId);
-    return project ? this.projectRow(project) : undefined;
+    return project ? this.projectRow(project, null, true) : undefined;
   }
 
   /** Every scheduled task, newest first, as `schedule_task` returned it on creation (`webhookUrl` included). */
@@ -895,6 +1024,41 @@ export class FakeT3 {
     return { threadId: thread.threadId };
   }
 
+  /**
+   * What T3 has read about a pull request from its host. An unseeded pull request reads as open;
+   * `state: null` is one T3 has not read yet (real T3 fills it in a few seconds after linking).
+   */
+  setPullRequest(url: string, facts: { state: "open" | "closed" | "merged" | null; title?: string }): void {
+    const target = parsePullRequestUrl(url);
+    if (!target) throw new Error(`FakeT3.setPullRequest: not a pull request URL: ${url}`);
+    this.pullRequestFacts.set(pullRequestKey(target), {
+      state: facts.state,
+      title: facts.state === null ? null : (facts.title ?? `Pull request ${target.number}`),
+      headBranch: facts.state === null ? null : `patch-${target.number}`,
+      baseBranch: facts.state === null ? null : "main",
+      isDraft: facts.state === null ? null : false,
+    });
+  }
+
+  /** The thread's pull-request links as `list_thread_pull_requests` shows them. */
+  pullRequests(threadId: string): Array<Record<string, unknown>> {
+    return this.sortedLinks(this.controlThread(threadId)).map((link) => this.pullRequestEntry(link));
+  }
+
+  /** Adds a linked environment (another machine) to `t3_environment_links`. */
+  addEnvironmentLink(input: { label: string; status?: "reachable" | "unreachable" | "expired" }): { environmentId: string } {
+    const link: EnvironmentLinkRecord = {
+      environmentId: randomUUID(),
+      label: input.label,
+      status: input.status ?? "reachable",
+      access: "full-access",
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      lastError: input.status === "unreachable" ? "The linked environment did not answer." : null,
+    };
+    this.environmentLinks.push(link);
+    return { environmentId: link.environmentId };
+  }
+
   /** Adds a pending user question to the thread's active run (starting a running turn if there is none). */
   addQuestion(threadId: string, question: { question: string; options: string[] }): { requestId: string } {
     const thread = this.controlThread(threadId);
@@ -943,6 +1107,13 @@ export class FakeT3 {
   /** The next call to `tool` is processed, then its socket is destroyed before the response is written. */
   dropNextResponse(tool: string): void {
     this.drops.set(tool, (this.drops.get(tool) ?? 0) + 1);
+  }
+
+  /** Holds the next response of `tool` back, after the tool has run, until the returned function is called. */
+  holdNextResponse(tool: string): () => void {
+    let release!: () => void;
+    this.holds.set(tool, new Promise<void>((resolve) => (release = resolve)));
+    return release;
   }
 
   async stop(): Promise<void> {
@@ -1362,12 +1533,18 @@ export class FakeT3 {
       try {
         result = ok(await this.callTool(name, args, { clientId: session?.clientId ?? "unknown", signal: ctx.mcpReq.signal }));
       } catch (error) {
-        if (!(error instanceof ToolFailure)) throw error;
-        result = failure(error.code, error.message);
+        if (error instanceof TextFailure) result = { isError: true, content: [{ type: "text", text: error.message }] };
+        else if (error instanceof ToolFailure) result = failure(error.code, error.message);
+        else throw error;
       } finally {
         ctx.mcpReq.signal.removeEventListener("abort", onCancelled);
       }
 
+      const hold = this.holds.get(name);
+      if (hold) {
+        this.holds.delete(name);
+        await hold;
+      }
       const pendingDrops = this.drops.get(name) ?? 0;
       const socket = this.requestSockets.get(`${ctx.sessionId}:${String(ctx.mcpReq.id)}`);
       if (pendingDrops > 0 && socket) {
@@ -1423,6 +1600,28 @@ export class FakeT3 {
         return this.deleteScheduledTask(args);
       case "run_scheduled_task_now":
         return this.runScheduledTaskNow(args);
+      case "link_pull_requests":
+        return this.linkPullRequests(args);
+      case "list_thread_pull_requests":
+        return this.listThreadPullRequests(args);
+      case "unlink_pull_requests":
+        return this.unlinkPullRequests(args);
+      case "unlink_pull_request":
+        return this.unlinkPullRequest(args);
+      case "watch_pull_request":
+        return this.setWatching(args, true);
+      case "unwatch_pull_request":
+        return this.setWatching(args, false);
+      case "t3_thread_configure":
+        return this.threadConfigure(args);
+      case "t3_thread_transfer":
+        return this.threadTransfer(args);
+      case "t3_worktree_list":
+        return this.worktreeList(args);
+      case "t3_project_read":
+        return this.projectRead(args);
+      case "t3_environment_links":
+        return { environmentId: this.environmentId, links: this.environmentLinks.map((link) => ({ ...link })), notListed: LINKS_NOT_LISTED };
       default:
         throw new ToolFailure("not_implemented", `${name} is not implemented in fake T3.`);
     }
@@ -1436,8 +1635,10 @@ export class FakeT3 {
     const projects = [...this.projects.values()];
     const cursor = optInt(args.cursor) ?? 0;
     const limit = clamp(optInt(args.limit) ?? 50, 1, 100);
+    const page = projects.slice(cursor, cursor + limit);
+    for (const project of page) project.identityResolved = true;
     return {
-      projects: projects.slice(cursor, cursor + limit).map((project) => this.projectRow(project)),
+      projects: page.map((project) => this.projectRow(project, null, true)),
       nextCursor: cursor + limit < projects.length ? cursor + limit : null,
     };
   }
@@ -1471,6 +1672,7 @@ export class FakeT3 {
       }
     }
     const project = this.newProject(id, title, root);
+    project.remoteUrl = this.clones.get(root) ?? null;
     if (Array.isArray(args.scripts)) project.scripts = structuredClone(args.scripts) as JsonObject[];
     this.projects.set(id, project);
     return this.projectRow(project);
@@ -1534,6 +1736,7 @@ export class FakeT3 {
     }
     mkdirSync(join(cwd, ".git"), { recursive: true });
     writeFileSync(join(cwd, "README"), `Cloned from ${String(result.remoteUrl)}\n`);
+    this.clones.set(cwd, String(result.remoteUrl));
     return result;
   }
 
@@ -1565,7 +1768,8 @@ export class FakeT3 {
     if ((action === "rename") !== (title !== undefined)) {
       throw invalidParams("t3_thread_update", "rename requires title; regenerate_title does not accept one.");
     }
-    const thread = this.requireTargetThread(args.threadId);
+    if (typeof args.threadId !== "string") throw new ToolFailure("target_required", `Pass threadId: ${NOT_IN_THREAD}`);
+    const thread = this.requireThread(args.threadId);
     const commandId = `command:mcp:${encodeURIComponent(`client:${context.clientId}`)}:thread-update:${encodeURIComponent(thread.threadId)}:${action}:${optString(args.clientRequestId) ?? randomUUID()}`;
     const previous = this.idempotent.get(commandId);
     if (previous) return previous;
@@ -1791,7 +1995,7 @@ export class FakeT3 {
   }
 
   private threadRead(args: JsonObject): JsonObject {
-    const thread = this.requireThread(args.threadId);
+    const thread = this.requireThread(args.threadId, true);
     const view = args.view === "activity" ? "activity" : "messages";
     const limit = clamp(optInt(args.limit) ?? 20, 1, 100);
     const runLimit = clamp(optInt(args.runLimit) ?? 5, 1, 50);
@@ -2155,6 +2359,284 @@ export class FakeT3 {
   // Project and scheduled-task model
   // ---------------------------------------------------------------------------
 
+  // -- pull requests ---------------------------------------------------------
+
+  /** T3's pull-request tools answer in plain text, not with its failure JSON. */
+  private pullRequestThread(threadId: unknown): ThreadRecord {
+    if (typeof threadId !== "string") throw new TextFailure(`Pass threadId: ${NOT_IN_THREAD}`);
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new TextFailure(`Thread ${threadId} was not found.${OTHER_ENVIRONMENT_HINT}`);
+    return thread;
+  }
+
+  /**
+   * A pull request named by `url`, or by `repository` and `number` with `host`. Without `host` the
+   * fake answers `github.com` for any project with a remote: like `repositoryIdentity`, it models
+   * GitHub remotes only.
+   */
+  private pullRequestTarget(args: JsonObject, thread?: ThreadRecord): PullRequestTarget {
+    const url = optString(args.url);
+    if (url !== undefined) {
+      const target = parsePullRequestUrl(url);
+      if (!target) throw new TextFailure("This is not a recognised pull request URL. Pass repository and number instead.");
+      return target;
+    }
+    const repository = optString(args.repository);
+    const number = optInt(args.number);
+    if (repository === undefined || number === undefined) throw new TextFailure("Pass either url, or both repository and number.");
+    const remote = thread ? this.projects.get(thread.projectId)?.remoteUrl : null;
+    // T3 keys a link by its lower-cased host, as `parsePullRequestUrl` does for a URL.
+    const host = (optString(args.host) ?? (remote ? "github.com" : undefined))?.toLowerCase();
+    if (host === undefined) throw new TextFailure("This thread's project has no recognised remote. Pass host or url.");
+    return { host, repository: repository.toLowerCase(), number, url: `https://${host}/${repository}/pull/${number}` };
+  }
+
+  private factsOf(target: PullRequestTarget): PullRequestFacts {
+    return (
+      this.pullRequestFacts.get(pullRequestKey(target)) ?? {
+        state: "open",
+        title: `Pull request ${target.number}`,
+        headBranch: `patch-${target.number}`,
+        baseBranch: "main",
+        isDraft: false,
+      }
+    );
+  }
+
+  private sortedLinks(thread: ThreadRecord): PullRequestLink[] {
+    return [...thread.pullRequests].sort((a, b) => a.linked - b.linked);
+  }
+
+  private pullRequestEntry(link: PullRequestLink): JsonObject {
+    return {
+      host: link.host,
+      repository: link.repository,
+      number: link.number,
+      url: link.url,
+      source: "agent",
+      watching: link.watching,
+      ...this.factsOf(link),
+      stack: null,
+    };
+  }
+
+  private linkPullRequests(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const targets: PullRequestTarget[] = [];
+    const invalidUrls: string[] = [];
+    for (const url of Array.isArray(args.urls) ? args.urls : []) {
+      const target = typeof url === "string" ? parsePullRequestUrl(url) : undefined;
+      if (!target) invalidUrls.push(String(url));
+      else if (!targets.some((seen) => pullRequestKey(seen) === pullRequestKey(target))) targets.push(target);
+    }
+    const isLinked = (target: PullRequestTarget): boolean =>
+      thread.pullRequests.some((link) => pullRequestKey(link) === pullRequestKey(target));
+    const alreadyLinked = targets.filter(isLinked);
+    const fresh = targets.filter((target) => !isLinked(target));
+    for (const target of fresh) thread.pullRequests.push({ ...target, watching: false, linked: ++this.linkCounter });
+    return {
+      linked: numbersByRepository(fresh),
+      alreadyLinked: numbersByRepository(alreadyLinked),
+      linkedCount: targets.length,
+      ...(invalidUrls.length > 0 ? { invalidUrls } : {}),
+      // What T3 tells a delegated child to report to its parent.
+      ...(thread.relationshipToParent === "subagent"
+        ? { next: "End your reply with: PR <full URL>, head <SHA>, checks and reviews <state>." }
+        : {}),
+    };
+  }
+
+  private listThreadPullRequests(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const states = Array.isArray(args.states) ? args.states : undefined;
+    const cursor = optString(args.cursor);
+    // T3 lists a pull request it has not read yet as open for the `states` filter.
+    const after = this.sortedLinks(thread)
+      .filter((link) => states === undefined || states.includes(this.factsOf(link).state ?? "open"))
+      .filter((link) => cursor === undefined || link.linked > Number(cursor));
+    const page = after.slice(0, PULL_REQUEST_PAGE_SIZE);
+    return {
+      pullRequests: page.map((link) => this.pullRequestEntry(link)),
+      chains: page.map((link) => ({ kind: "derived", numbers: [link.number] })),
+      nextCursor: after.length > page.length ? String(page.at(-1)!.linked) : null,
+    };
+  }
+
+  private unlinkPullRequests(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const states = Array.isArray(args.states) ? args.states : [];
+    const matching = this.sortedLinks(thread).flatMap((link) => {
+      const state = this.factsOf(link).state;
+      return state !== null && states.includes(state) ? [{ link, state }] : [];
+    });
+    const removed = new Set(matching.map(({ link }) => link));
+    const before = thread.pullRequests.length;
+    thread.pullRequests = thread.pullRequests.filter((link) => !removed.has(link));
+    const groups = new Map<string, { host: string; repository: string; state: PullRequestState; numbers: number[] }>();
+    for (const { link, state } of matching) {
+      const key = `${link.host}/${link.repository}/${state}`;
+      const group = groups.get(key) ?? { host: link.host, repository: link.repository, state, numbers: [] };
+      group.numbers.push(link.number);
+      groups.set(key, group);
+    }
+    return { unlinked: [...groups.values()], unlinkedCount: matching.length, remaining: before - matching.length };
+  }
+
+  /** Unlinks one pull request whatever its state; its watch goes with the link. */
+  private unlinkPullRequest(args: JsonObject): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const target = this.pullRequestTarget(args, thread);
+    const remaining = thread.pullRequests.filter((link) => pullRequestKey(link) !== pullRequestKey(target));
+    const wasLinked = remaining.length < thread.pullRequests.length;
+    thread.pullRequests = remaining;
+    return { host: target.host, repository: target.repository, number: target.number, wasLinked };
+  }
+
+  /** Watching links the pull request first; a merged one is refused. Unwatching never links. */
+  private setWatching(args: JsonObject, watching: boolean): JsonObject {
+    const thread = this.pullRequestThread(args.threadId);
+    const target = this.pullRequestTarget(args, thread);
+    if (watching && thread.relationshipToParent === "subagent") {
+      throw new TextFailure(
+        "This thread is a subagent, so it cannot watch pull requests. Its parent thread owns the pull request: finish your task and report back instead.",
+      );
+    }
+    let link = thread.pullRequests.find((entry) => pullRequestKey(entry) === pullRequestKey(target));
+    const wasWatching = link?.watching === true;
+    if (watching) {
+      if (this.factsOf(target).state === "merged") throw new TextFailure("The pull request is merged, so there is nothing to watch.");
+      if (!link) {
+        link = { ...target, watching: false, linked: ++this.linkCounter };
+        thread.pullRequests.push(link);
+      }
+    }
+    if (link) link.watching = watching;
+    return { host: target.host, repository: target.repository, number: target.number, url: target.url, watching: link?.watching === true, wasWatching };
+  }
+
+  // -- thread configuration and context transfer -----------------------------
+
+  /** T3 checks the provider instance but not the model id. */
+  private threadConfigure(args: JsonObject): JsonObject {
+    const thread = this.requireTargetThread(args.threadId);
+    if (args.modelSelection === undefined) {
+      return {
+        threadId: thread.threadId,
+        modelSelection: structuredClone(thread.modelSelection),
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+      };
+    }
+    const selection = args.modelSelection as JsonObject;
+    const instanceId = selection.instanceId ?? selection.provider ?? thread.providerInstanceId;
+    if (!CAPABILITY_PROVIDERS.some((provider) => provider.providerInstanceId === instanceId)) {
+      throw new ToolFailure("orchestration_error", "The operation could not be completed.");
+    }
+    thread.modelSelection = {
+      instanceId,
+      model: String(selection.model),
+      ...(selection.options !== undefined ? { options: structuredClone(selection.options) } : {}),
+    };
+    thread.providerInstanceId = String(instanceId);
+    thread.model = String(selection.model);
+    this.touch(thread);
+    return { sequence: this.nextSequence() };
+  }
+
+  private threadTransfer(args: JsonObject): JsonObject {
+    const source = this.requireTargetThread(args.threadId);
+    if (args.action === "status") {
+      return {
+        transfers: this.contextTransfers
+          .filter((transfer) => transfer.sourceThreadId === source.threadId || transfer.targetThreadId === source.threadId)
+          .map((transfer) => ({ ...transfer })),
+      };
+    }
+    const record = (type: "fork" | "merge_back", targetThreadId: string): void => {
+      const part = (id: string): string => encodeURIComponent(id);
+      this.contextTransfers.push({
+        id: `context-transfer:type:${type}:source-thread:${part(source.threadId)}:target-thread:${part(targetThreadId)}:${randomUUID()}`,
+        sourceThreadId: source.threadId,
+        targetThreadId,
+        status: "pending",
+      });
+    };
+    if (args.action === "merge_back") {
+      const targetThreadId = optString(args.targetThreadId);
+      if (targetThreadId === undefined) throw new ToolFailure("invalid_request", "This action needs `targetThreadId`.");
+      const target = this.threads.get(targetThreadId);
+      if (!target) throw new ToolFailure("thread_not_found", `The thread was not found.${OTHER_ENVIRONMENT_HINT}`);
+      if (!source.runs.some((run) => TERMINAL_RUN_STATUSES.has(run.status))) {
+        throw new ToolFailure("orchestration_error", "No stable source run was found for merge-back source latest_stable.");
+      }
+      if (target.projectId !== source.projectId) throw new ToolFailure("orchestration_error", "The operation could not be completed.");
+      record("merge_back", target.threadId);
+      this.touch(target);
+      return { sequence: this.nextSequence(), targetThreadId: target.threadId };
+    }
+    // A fork copies the source's history and setup; it is idle until it gets a message.
+    const fork = this.createThread({
+      threadId: `mcp:${randomUUID()}:fork`,
+      projectId: source.projectId,
+      title: optString(args.title) ?? source.title,
+      createdBy: "agent",
+      creationSource: "mcp",
+      modelSelection: structuredClone(source.modelSelection),
+      runtimeMode: source.runtimeMode,
+      interactionMode: source.interactionMode,
+      worktreePath: source.worktreePath,
+      createdAt: nowIso(),
+    });
+    fork.branch = source.branch;
+    fork.parentThreadId = source.threadId;
+    fork.relationshipToParent = "fork";
+    fork.items = source.items.map((item) => ({ ...item, runId: null }));
+    record("fork", fork.threadId);
+    return { sequence: this.nextSequence(), targetThreadId: fork.threadId };
+  }
+
+  // -- worktrees and projects ------------------------------------------------
+
+  private worktreeList(args: JsonObject): JsonObject {
+    const thread = this.requireTargetThread(args.threadId);
+    const project = this.projects.get(thread.projectId);
+    if (!project) throw new ToolFailure("invalid_request", "The project was not found.");
+    if (!existsSync(join(project.workspaceRoot, ".git"))) {
+      return { refs: [], isRepo: false, hasPrimaryRemote: false, nextCursor: null, totalCount: 0 };
+    }
+    const names = [...new Set(["main", ...project.branches, ...(thread.branch ? [thread.branch] : [])])];
+    const query = optString(args.query)?.toLowerCase();
+    const refs = names
+      .filter((name) => query === undefined || name.toLowerCase().includes(query))
+      .map((name) => {
+        const own = name === thread.branch;
+        const current = own || (thread.branch === null && name === "main");
+        return {
+          name,
+          isRemote: false,
+          current,
+          isDefault: name === "main",
+          worktreePath: own ? thread.worktreePath : name === "main" ? project.workspaceRoot : null,
+        };
+      });
+    const cursor = optInt(args.cursor) ?? 0;
+    const limit = clamp(optInt(args.limit) ?? 100, 1, 200);
+    return {
+      isAtRepositoryRoot: true,
+      refs: refs.slice(cursor, cursor + limit),
+      isRepo: true,
+      hasPrimaryRemote: false,
+      nextCursor: cursor + limit < refs.length ? cursor + limit : null,
+      totalCount: refs.length,
+    };
+  }
+
+  private projectRead(args: JsonObject): JsonObject {
+    const project = this.projects.get(String(args.projectId));
+    if (!project) throw new ToolFailure("invalid_request", "The project was not found.");
+    return this.projectRow(project);
+  }
+
   private newProject(id: string, title: string, workspaceRoot: string): ProjectRecord {
     const at = nowIso();
     return {
@@ -2171,15 +2653,27 @@ export class FakeT3 {
       archivedAt: null,
       createdAt: at,
       updatedAt: at,
+      branches: [],
+      remoteUrl: null,
+      originUrl: null,
+      identityResolved: false,
+      unparsedRemote: false,
     };
   }
 
-  private projectRow(project: ProjectRecord, deletedAt: string | null = null): JsonObject {
+  /** `listed`: the row of a project listing, which carries the resolved repository identity. */
+  private projectRow(project: ProjectRecord, deletedAt: string | null = null, listed = false): JsonObject {
+    const identified = project.remoteUrl !== null && (listed || project.identityResolved);
     return {
       id: project.id,
       title: project.title,
       workspaceRoot: project.workspaceRoot,
-      repositoryIdentity: null,
+      repositoryIdentity: identified
+        ? {
+            ...repositoryIdentity(project.remoteUrl!, project.workspaceRoot, project.originUrl),
+            ...(project.unparsedRemote ? { canonicalKey: project.remoteUrl!.toLowerCase().replace(/\.git$/, ""), provider: "unknown" } : {}),
+          }
+        : null,
       faviconPath: project.faviconPath,
       projectIcon: project.projectIcon ? { ...project.projectIcon } : null,
       defaultModelSelection: project.defaultModelSelection ? structuredClone(project.defaultModelSelection) : null,
@@ -2308,6 +2802,7 @@ export class FakeT3 {
       pinnedAt: null,
       unread: false,
       titleRegeneration: null,
+      pullRequests: [],
       createdAt: input.createdAt,
       updatedAt: input.createdAt,
       touched: ++this.touchCounter,
@@ -2648,19 +3143,25 @@ export class FakeT3 {
     return `https://app.t3.codes/threads/${this.environmentId}/${encodeURIComponent(threadId)}`;
   }
 
-  private requireThread(threadId: unknown): ThreadRecord {
+  /**
+   * T3 0.1.11 answers a thread it does not have with `thread_not_found` and its hint about linked
+   * environments, in three wordings: `t3_thread_read` says the thread "is no longer available"
+   * (`gone`), the tools that name the thread say "Thread <id> was not found", and the tools that
+   * default to the calling thread say "The thread was not found" (`requireTargetThread`).
+   */
+  private requireThread(threadId: unknown, gone = false): ThreadRecord {
     const thread = this.threads.get(String(threadId));
     if (thread) return thread;
-    if (this.deletedThreads.has(String(threadId))) {
-      throw new ToolFailure("thread_not_found", `Thread ${String(threadId)} is no longer available.`);
-    }
-    throw new ToolFailure("not_found", `Thread ${String(threadId)} was not found.`);
+    const what = gone || this.deletedThreads.has(String(threadId)) ? "is no longer available" : "was not found";
+    throw new ToolFailure("thread_not_found", `Thread ${String(threadId)} ${what}.${OTHER_ENVIRONMENT_HINT}`);
   }
 
   /** Tools whose `threadId` is optional inside T3 refuse outside callers without it. */
   private requireTargetThread(threadId: unknown): ThreadRecord {
     if (typeof threadId !== "string") throw new ToolFailure("target_required", `Pass threadId: ${NOT_IN_THREAD}`);
-    return this.requireThread(threadId);
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new ToolFailure("thread_not_found", `The thread was not found.${OTHER_ENVIRONMENT_HINT}`);
+    return thread;
   }
 
   private controlThread(threadId: string): ThreadRecord {

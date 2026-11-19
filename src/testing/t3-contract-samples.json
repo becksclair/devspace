@@ -19,7 +19,17 @@
     "run_scheduled_task_now works on disabled tasks, starts a new full-access thread in the task's project, and reports lastRunStatus 'succeeded' with lastRunError null once started. In a git project the run gets a new worktree under ~/.t3/worktrees/<project>/; in a project whose folder is not a git repository it ran in place (worktreePath null) and completed.",
     "t3_project_clone with provider and repository cloned over SSH (remoteUrl is the SSH URL) with protocol left at auto.",
     "orchestrator_capabilities providers and models are trimmed here; the real catalog lists more of both.",
-    "Carried over from 0.1.8 unverified: the note that run status 'waiting' counts as running and that t3_pending_request does not list approvals; the note that deleting a project with threads needs force: true and leaves the folder on disk; results.scheduledRun.failedThreadDetail and errors.scheduledRun.notGitRepository (on 0.1.11 the same setup completed, see scheduledRun.nonGitRepositoryThreadDetail); cli.env."
+    "Carried over from 0.1.8 unverified: the note that run status 'waiting' counts as running and that t3_pending_request does not list approvals; the note that deleting a project with threads needs force: true and leaves the folder on disk; results.scheduledRun.failedThreadDetail and errors.scheduledRun.notGitRepository (on 0.1.11 the same setup completed, see scheduledRun.nonGitRepositoryThreadDetail); cli.env.",
+    "Phase 3 samples (pull requests, t3_thread_configure, t3_thread_transfer, t3_worktree_list, t3_project_read, t3_environment_links) were captured 2026-11-19 from T3 Code v0.1.11-nightly.20261118.4890 by an outside client holding the bridge's pairing credential, on a scratch thread that was archived afterwards.",
+    "An outside client has the orchestration, worktree, and pull-requests capabilities and no calling thread: these tools need threadId, and the pull-request tools refuse without one in plain text.",
+    "link_pull_requests lower-cases the repository in its result and keeps the URL as given; a linked pull request has state null until T3 reads it from its host (about four seconds here).",
+    "watch_pull_request links first when needed and refuses only a merged pull request; a closed one is accepted. With repository and number, a thread whose project has no git remote also needs host.",
+    "unlink_pull_requests unlinks by last known state; unwatch_pull_request on a pull request that was never linked succeeds and links nothing.",
+    "t3_thread_configure rejects an unknown provider instance and accepts an unknown model id.",
+    "A fork is idle, carries relationshipToParent 'fork' and its source as parentThreadId, and keeps the source's model and modes; its transfer stays 'pending' and is listed for source and target. merge_back from a thread without a finished run fails.",
+    "unlink_pull_request (captured 2026-11-19, same T3 Code version) unlinks one pull request by url, or by repository, number, and host, whatever its state and before T3 has read it; it ends a watch on that pull request and returns wasLinked false when it was not linked.",
+    "A project's repositoryIdentity (probed 2026-11-19, same T3 Code version) has a lower-cased canonicalKey of the form host/owner/name; for a fork whose primary remote is its upstream it also has origin { canonicalKey, remoteUrl, displayName }. A project registered a moment ago has repositoryIdentity null in t3_project_create and t3_project_read results, while its t3_project_list row already carries the resolved identity.",
+    "T3's failure for a thread it cannot find ends with ' Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.', in the plain-text failures of the pull-request tools and inside the message of the thread_not_found failure JSON."
   ],
   "results": {
     "t3_thread_launch": {
@@ -1244,6 +1254,451 @@
       ],
       "nextPosition": 2,
       "hasMore": false
+    },
+    "t3_thread_configure.read": {
+      "threadId": "mcp:launch:5ad8eb9d3a6d8fadd80107cb577132a5d44d8021e6d660247d03466b0c1a4d15",
+      "modelSelection": {
+        "instanceId": "claudeAgent",
+        "model": "claude-haiku-5-5"
+      },
+      "runtimeMode": "full-access",
+      "interactionMode": "default"
+    },
+    "t3_thread_configure.set": {
+      "sequence": 806393
+    },
+    "t3_thread_configure.unknownModelIsAccepted": {
+      "args": {
+        "modelSelection": {
+          "instanceId": "claudeAgent",
+          "model": "no-such-model"
+        }
+      },
+      "result": {
+        "sequence": 806394
+      },
+      "readBack": {
+        "threadId": "mcp:launch:5ad8eb9d3a6d8fadd80107cb577132a5d44d8021e6d660247d03466b0c1a4d15",
+        "modelSelection": {
+          "instanceId": "claudeAgent",
+          "model": "no-such-model"
+        },
+        "runtimeMode": "full-access",
+        "interactionMode": "default"
+      }
+    },
+    "t3_thread_transfer.fork": {
+      "sequence": 806396,
+      "targetThreadId": "mcp:7cc40505-6249-4612-ae9f-2ab9bc0ef8f3:fork"
+    },
+    "t3_thread_transfer.status": {
+      "transfers": [
+        {
+          "id": "context-transfer:type:fork:source-thread:mcp%3Alaunch%3A5ad8eb9d3a6d8fadd80107cb577132a5d44d8021e6d660247d03466b0c1a4d15:target-thread:mcp%3A7cc40505-6249-4612-ae9f-2ab9bc0ef8f3%3Afork:06417148-1025-4026-9dea-98c540a4d915",
+          "sourceThreadId": "mcp:launch:5ad8eb9d3a6d8fadd80107cb577132a5d44d8021e6d660247d03466b0c1a4d15",
+          "targetThreadId": "mcp:7cc40505-6249-4612-ae9f-2ab9bc0ef8f3:fork",
+          "status": "pending"
+        }
+      ]
+    },
+    "t3_thread_transfer.forkThreadDetail": {
+      "title": "DevSpace bridge probe 20261119T005811 fork",
+      "status": "idle",
+      "parentThreadId": "mcp:launch:5ad8eb9d3a6d8fadd80107cb577132a5d44d8021e6d660247d03466b0c1a4d15",
+      "relationshipToParent": "fork",
+      "runtimeMode": "full-access",
+      "itemCount": 5
+    },
+    "link_pull_requests": {
+      "args": {
+        "urls": [
+          "https://github.com/octocat/Hello-World/pull/1",
+          "https://github.com/becksclair/devspace/pull/19",
+          "https://example.com/not-a-pr",
+          "https://github.com/octocat/Hello-World/pull/11750",
+          "https://github.com/octocat/Hello-World/pull/1"
+        ]
+      },
+      "result": {
+        "linked": [
+          {
+            "host": "github.com",
+            "repository": "octocat/hello-world",
+            "numbers": [
+              1,
+              11750
+            ]
+          },
+          {
+            "host": "github.com",
+            "repository": "becksclair/devspace",
+            "numbers": [
+              19
+            ]
+          }
+        ],
+        "alreadyLinked": [],
+        "linkedCount": 3,
+        "invalidUrls": [
+          "https://example.com/not-a-pr"
+        ]
+      }
+    },
+    "link_pull_requests.alreadyLinked": {
+      "linked": [],
+      "alreadyLinked": [
+        {
+          "host": "github.com",
+          "repository": "becksclair/devspace",
+          "numbers": [
+            19
+          ]
+        }
+      ],
+      "linkedCount": 1
+    },
+    "list_thread_pull_requests.beforeFirstSync": {
+      "pullRequests": [
+        {
+          "host": "github.com",
+          "repository": "octocat/hello-world",
+          "number": 1,
+          "url": "https://github.com/octocat/Hello-World/pull/1",
+          "source": "agent",
+          "watching": false,
+          "state": null,
+          "title": null,
+          "headBranch": null,
+          "baseBranch": null,
+          "isDraft": null,
+          "stack": null
+        },
+        {
+          "host": "github.com",
+          "repository": "becksclair/devspace",
+          "number": 19,
+          "url": "https://github.com/becksclair/devspace/pull/19",
+          "source": "agent",
+          "watching": false,
+          "state": null,
+          "title": null,
+          "headBranch": null,
+          "baseBranch": null,
+          "isDraft": null,
+          "stack": null
+        },
+        {
+          "host": "github.com",
+          "repository": "octocat/hello-world",
+          "number": 11750,
+          "url": "https://github.com/octocat/Hello-World/pull/11750",
+          "source": "agent",
+          "watching": false,
+          "state": null,
+          "title": null,
+          "headBranch": null,
+          "baseBranch": null,
+          "isDraft": null,
+          "stack": null
+        }
+      ],
+      "chains": [
+        {
+          "kind": "derived",
+          "numbers": [
+            1
+          ]
+        },
+        {
+          "kind": "derived",
+          "numbers": [
+            19
+          ]
+        },
+        {
+          "kind": "derived",
+          "numbers": [
+            11750
+          ]
+        }
+      ],
+      "nextCursor": null
+    },
+    "list_thread_pull_requests.synced": {
+      "pullRequests": [
+        {
+          "host": "github.com",
+          "repository": "octocat/hello-world",
+          "number": 1,
+          "url": "https://github.com/octocat/Hello-World/pull/1",
+          "source": "agent",
+          "watching": false,
+          "state": "closed",
+          "title": "Edited README via GitHub",
+          "headBranch": "patch-1",
+          "baseBranch": "master",
+          "isDraft": false,
+          "stack": null
+        },
+        {
+          "host": "github.com",
+          "repository": "becksclair/devspace",
+          "number": 19,
+          "url": "https://github.com/becksclair/devspace/pull/19",
+          "source": "agent",
+          "watching": false,
+          "state": "merged",
+          "title": "fix(oauth): scope revocation to the owning client and enforce one rate limiter per endpoint",
+          "headBranch": "fix/oauth-revocation-and-limits",
+          "baseBranch": "main",
+          "isDraft": false,
+          "stack": null
+        },
+        {
+          "host": "github.com",
+          "repository": "octocat/hello-world",
+          "number": 11750,
+          "url": "https://github.com/octocat/Hello-World/pull/11750",
+          "source": "agent",
+          "watching": false,
+          "state": "open",
+          "title": "Add GitHub collaboration notes",
+          "headBranch": "feature-update",
+          "baseBranch": "master",
+          "isDraft": false,
+          "stack": null
+        }
+      ],
+      "chains": [
+        {
+          "kind": "derived",
+          "numbers": [
+            1
+          ]
+        },
+        {
+          "kind": "derived",
+          "numbers": [
+            19
+          ]
+        },
+        {
+          "kind": "derived",
+          "numbers": [
+            11750
+          ]
+        }
+      ],
+      "nextCursor": null
+    },
+    "list_thread_pull_requests.statesMerged": {
+      "pullRequests": [
+        {
+          "host": "github.com",
+          "repository": "becksclair/devspace",
+          "number": 19,
+          "url": "https://github.com/becksclair/devspace/pull/19",
+          "source": "agent",
+          "watching": false,
+          "state": "merged",
+          "title": "fix(oauth): scope revocation to the owning client and enforce one rate limiter per endpoint",
+          "headBranch": "fix/oauth-revocation-and-limits",
+          "baseBranch": "main",
+          "isDraft": false,
+          "stack": null
+        }
+      ],
+      "chains": [
+        {
+          "kind": "derived",
+          "numbers": [
+            19
+          ]
+        }
+      ],
+      "nextCursor": null
+    },
+    "watch_pull_request": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 11750,
+      "url": "https://github.com/octocat/Hello-World/pull/11750",
+      "watching": true,
+      "wasWatching": false
+    },
+    "watch_pull_request.alreadyWatching": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 11750,
+      "url": "https://github.com/octocat/Hello-World/pull/11750",
+      "watching": true,
+      "wasWatching": true
+    },
+    "watch_pull_request.closedNotMerged": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 1,
+      "url": "https://github.com/octocat/Hello-World/pull/1",
+      "watching": true,
+      "wasWatching": false
+    },
+    "unwatch_pull_request": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 11750,
+      "url": "https://github.com/octocat/Hello-World/pull/11750",
+      "watching": false,
+      "wasWatching": true
+    },
+    "unwatch_pull_request.notWatching": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 11750,
+      "url": "https://github.com/octocat/Hello-World/pull/11750",
+      "watching": false,
+      "wasWatching": false
+    },
+    "unwatch_pull_request.neverLinked": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 2,
+      "url": "https://github.com/octocat/Hello-World/pull/2",
+      "watching": false,
+      "wasWatching": false
+    },
+    "unlink_pull_requests": {
+      "args": {
+        "states": [
+          "closed",
+          "merged"
+        ]
+      },
+      "result": {
+        "unlinked": [
+          {
+            "host": "github.com",
+            "repository": "octocat/hello-world",
+            "state": "closed",
+            "numbers": [
+              1
+            ]
+          },
+          {
+            "host": "github.com",
+            "repository": "becksclair/devspace",
+            "state": "merged",
+            "numbers": [
+              19
+            ]
+          }
+        ],
+        "unlinkedCount": 2,
+        "remaining": 1
+      }
+    },
+    "unlink_pull_requests.nothingMatches": {
+      "unlinked": [],
+      "unlinkedCount": 0,
+      "remaining": 0
+    },
+    "unlink_pull_request.watched": {
+      "args": {
+        "url": "https://github.com/octocat/Hello-World/pull/11750"
+      },
+      "result": {
+        "host": "github.com",
+        "repository": "octocat/hello-world",
+        "number": 11750,
+        "wasLinked": true
+      },
+      "unwatchAfterwards": {
+        "watching": false,
+        "wasWatching": false
+      }
+    },
+    "unlink_pull_request.notLinked": {
+      "host": "github.com",
+      "repository": "octocat/hello-world",
+      "number": 11750,
+      "wasLinked": false
+    },
+    "unlink_pull_request.byRepositoryNumberHost": {
+      "args": {
+        "repository": "octocat/Hello-World",
+        "number": 2,
+        "host": "github.com"
+      },
+      "result": {
+        "host": "github.com",
+        "repository": "octocat/hello-world",
+        "number": 2,
+        "wasLinked": true
+      }
+    },
+    "t3_worktree_list.notARepository": {
+      "refs": [],
+      "isRepo": false,
+      "hasPrimaryRemote": false,
+      "nextCursor": null,
+      "totalCount": 0
+    },
+    "t3_worktree_list.repository": {
+      "isAtRepositoryRoot": true,
+      "refs": [
+        {
+          "name": "feat/t3-bridge-expand-tools",
+          "isRemote": false,
+          "current": true,
+          "isDefault": false,
+          "worktreePath": "/Users/rclair/.t3/worktrees/devspace/feat-t3-bridge-expand-t-db5d24c85c439195"
+        },
+        {
+          "name": "main",
+          "isRemote": false,
+          "upstreamRef": "refs/remotes/origin/main",
+          "current": false,
+          "isDefault": true,
+          "worktreePath": "/Users/rclair/projects/devspace"
+        }
+      ],
+      "isRepo": true,
+      "hasPrimaryRemote": true,
+      "nextCursor": null,
+      "totalCount": 2
+    },
+    "t3_project_read": {
+      "id": "04c01280-dfbf-482f-97a5-f3106cb70b3d",
+      "title": "devspace",
+      "workspaceRoot": "/Users/rclair/projects/devspace",
+      "repositoryIdentity": {
+        "canonicalKey": "github.com/becksclair/devspace",
+        "locator": {
+          "source": "git-remote",
+          "remoteName": "origin",
+          "remoteUrl": "ssh://git@github.com/becksclair/devspace.git"
+        },
+        "rootPath": "/Users/rclair/projects/devspace",
+        "displayName": "becksclair/devspace",
+        "provider": "github",
+        "owner": "becksclair",
+        "name": "devspace"
+      },
+      "faviconPath": "docs/assets/devspace-logo-light.png",
+      "projectIcon": null,
+      "defaultModelSelection": null,
+      "defaultThreadEnvMode": null,
+      "autoPull": false,
+      "scripts": [],
+      "pinnedAt": null,
+      "archivedAt": null,
+      "createdAt": "2026-11-08T17:16:15.425Z",
+      "updatedAt": "2026-11-13T01:45:33.471Z",
+      "deletedAt": null
+    },
+    "t3_environment_links.noLinks": {
+      "environmentId": "00000000-0000-4000-8000-0000000000e1",
+      "links": [],
+      "notListed": "Not listed: not linked yet. Call t3_environment_link with a hint from the user's words."
     }
   },
   "errors": {
@@ -1318,6 +1773,60 @@
       "message": "Destination path already exists and is not empty."
     },
     "scheduledRun.notGitRepository": "Workspace preparation failed during provision worktree: Git command failed in GitWorkflowService.resolveWorktreeBaseRemote (/tmp/devspace-t3-probe/sched): Failed to resolve the VCS driver for this Git command.",
+    "t3_thread_configure.noThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass threadId: this MCP client is not running inside a T3 thread."
+    },
+    "t3_thread_configure.unknownProvider": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "orchestration_error",
+      "message": "The operation could not be completed."
+    },
+    "t3_thread_transfer.noThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass threadId: this MCP client is not running inside a T3 thread."
+    },
+    "t3_thread_transfer.mergeBackWithoutTarget": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "invalid_request",
+      "message": "This action needs `targetThreadId`."
+    },
+    "t3_thread_transfer.mergeBackFromIdleFork": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "orchestration_error",
+      "message": "No stable source run was found for merge-back source latest_stable."
+    },
+    "t3_thread_transfer.unknownThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "thread_not_found",
+      "message": "The thread was not found. Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one."
+    },
+    "t3_worktree_list.noThread": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "target_required",
+      "message": "Pass threadId: this MCP client is not running inside a T3 thread."
+    },
+    "t3_project_read.notFound": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "invalid_request",
+      "message": "The project was not found."
+    },
+    "t3_project_read.missingProjectId": {
+      "code": -32602,
+      "message": "Invalid parameters for tool 't3_project_read': Missing key\n  at [\"projectId\"]"
+    },
+    "pullRequestTools.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
+    "pullRequestTools.unknownThread": "Thread nope-thread was not found. Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.",
+    "watch_pull_request.merged": "The pull request is merged, so there is nothing to watch.",
+    "watch_pull_request.repositoryWithoutHost": "This thread's project has no recognised remote. Pass host or url.",
+    "watch_pull_request.noTarget": "Pass either url, or both repository and number.",
+    "watch_pull_request.notAPullRequestUrl": "This is not a recognised pull request URL. Pass repository and number instead.",
+    "unlink_pull_request.repositoryWithoutHost": "This thread's project has no recognised remote. Pass host or url.",
+    "unlink_pull_request.noTarget": "Pass either url, or both repository and number.",
+    "unlink_pull_request.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
+    "plainTextNote": "String entries are isError results whose single text content is that plain text: T3's pull-request tools do not return the failure JSON.",
     "note": "Tool failures are returned as isError results whose single text content is the JSON shown here.",
     "jsonRpcNote": "Entries shaped {code: -32602, message} are JSON-RPC errors (thrown; clients prefix the message with 'MCP error -32602: '), not isError results. Calling a tool that is not listed for the client is one of them."
   },

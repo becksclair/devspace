@@ -20,6 +20,9 @@
   deployed suites (S1–S10) and the ChatGPT text acceptance (model list, project
   creation and default model, scheduled task run as a full-access thread,
   rename, task deletion, archive) passed. The user's voice pass remains.
+  Phase 3 (eleven more tools for orchestrator agents, 32 in total) is implemented
+  on `feat/t3-bridge-expand-tools` and not yet deployed; see "Phase 3 tool
+  surface".
 - **Priority**: P1
 - **Effort**: Phase 1 M, Phase 2 S
 - **Risk**: MEDIUM — adds a remotely reachable capability that starts full-access coding agents on Svartal
@@ -322,7 +325,7 @@ machine (`disabledCapabilities`).
 
 | Tool | Exposed schema | Forwarded arguments |
 |------|----------------|---------------------|
-| all forwarded | `environmentId` removed | — |
+| all forwarded | `environmentId` removed | — (since Phase 3 a call that passes `environmentId` is refused; before, the field was dropped) |
 | `t3_thread_launch` | `runtimeMode` and `delegatedFrom` removed | `runtimeMode: "full-access"` always; `clientRequestId` added if absent |
 | `t3_thread_send`, `t3_thread_interrupt` | — | `clientRequestId` added if absent |
 | `t3_thread_list` | — | `allProjects: true` when `projectId` is absent; `includeSubagents: false` and `limit: 10` by default |
@@ -367,8 +370,9 @@ Each forwarded tool keeps T3's description with targeted overrides: remove
 the chosen option label. Every T3 tool description ends with one shared line:
 "Find threads with t3_thread_search or t3_thread_list; never ask the user for
 IDs. Refer to threads by title and project, and give the thread link when the
-user may want to open it in the T3 app. Threads always run in full-access
-mode."
+user may want to open it in the T3 app. Threads you launch always run in
+full-access mode." (Phase 3 added "you launch": a fork keeps its source's
+mode.)
 
 ### `t3_inbox`
 
@@ -448,6 +452,84 @@ the request was sent.
     and starts full-access agents with each request's content. DevSpace
     callers can already start threads directly, so webhooks would add only a
     persistent outside trigger.
+
+### Phase 3 tool surface
+
+Eleven tools for orchestrator agents that reach T3 through DevSpace (Hermes,
+Grok Bot), registered after the Phase 2 tools in this order (32 in total). Probed on
+2026-11-19 against T3 Code `v0.1.11-nightly.20261118.4890` from an outside
+client holding the bridge's own pairing credential: T3 gives such a client the
+`orchestration`, `worktree`, and `pull-requests` capabilities and no calling
+thread, so every tool below works once `threadId` is passed and none had to be
+dropped.
+
+| Tool | Shaping | Read-only | Retried |
+|------|---------|:---------:|:-------:|
+| `watch_pull_request` | `threadId` required; DevSpace's own description (T3's is written for the watching agent); refused unless the pull request is in the repository of the thread's project; only `url`, or `repository`, `number`, and `host`, forwarded | no | no (a repeat could restore a trigger another session removed) |
+| `unwatch_pull_request` | `threadId` required; DevSpace's own description | no | no (same) |
+| `link_pull_requests` | `threadId` required; T3's `next` (an instruction to the agent inside a subagent thread) removed from the result | no | no (a repeat would answer `alreadyLinked` although the first attempt linked them) |
+| `list_thread_pull_requests` | `threadId` required | yes | yes (read) |
+| `unlink_pull_requests` | `threadId` required | no | no (its result is the only record of which pull requests matched) |
+| `unlink_pull_request` | `threadId` required | no | no (a repeat would answer `wasLinked: false` although the first attempt removed the link) |
+| `t3_thread_configure` | `threadId` required | no | yes (read, or sets the model) |
+| `t3_thread_transfer` | `threadId` required | no | `status` only |
+| `t3_worktree_list` | `threadId` required; `limit` defaults to 50 | yes | yes (read) |
+| `t3_project_read` | Result also refreshes the project title shown in thread rows; credentials removed from the git remote URLs in `repositoryIdentity` (also from `t3_project_create` and `t3_project_update` results) | yes | yes (read) |
+| `t3_environment_links` | DevSpace's own description; result reduced to `{ environmentId, links }` (T3's `notListed` names a linking tool that is not exposed) | yes | yes (read) |
+
+- None of these tools takes `clientRequestId` in T3, so none gets one.
+- T3's pull-request tools answer failures in plain text
+  (`Pass threadId: this MCP client is not running inside a T3 thread.`), not
+  with the `OrchestratorMcpFailure` JSON; both pass through unchanged.
+- `t3_thread_configure` accepts a model id T3 does not know (it rejects only an
+  unknown provider), so the description tells callers to take the id from
+  `orchestrator_capabilities`.
+- A fork keeps its source's modes; `t3_thread_configure` never changes modes.
+- `unlink_pull_request` was added after the first review of the pull request:
+  `unlink_pull_requests` goes by state, so it could not remove one pull request
+  among several in the same state, nor one whose state T3 had not read yet.
+- A call that passes a non-null `environmentId` is refused by every tool, including
+  `t3_inbox`, before anything reaches T3. Until Phase 3 the field was dropped
+  silently; with `t3_environment_links` handing out other machines' ids, a
+  dropped field would start a thread here while the caller believed it started
+  there. A closed top-level T3 schema (`t3_environment_links`) is opened when
+  it is registered, so the MCP layer cannot strip the field before the bridge
+  refuses it.
+- Never exposed:
+  - `link_pull_request`: `link_pull_requests` covers it.
+  - `t3_worktree_status`, `t3_worktree_handoff`, and the other tools that act
+    as the calling thread: T3 does not serve them to an outside client.
+  - `t3_environment_link` and `t3_environment_unlink`: the bridge acts on its
+    own machine only.
+- `watch_pull_request` is a persistent outside trigger, like the webhook
+  triggers Phase 2 left out: pull-request activity, comments included, starts
+  turns in the watched thread. It is exposed because it is bound to one pull
+  request on a host T3 already reads and is the tool orchestrator agents most
+  need; `docs/security.md` states the exposure.
+- Watch scope (added in review): the bridge arms a watch only on a pull request
+  of the thread's own repository, the primary remote of its project or the
+  `origin` of a fork, and refuses every other, a scratch thread's included.
+  It is a guardrail on DevSpace's tool: a client cannot, directly or by
+  mistake, subscribe a thread that works on something else to an unrelated
+  pull request. It is not a boundary. A client can ask a thread's agent to
+  watch any pull request with T3's own tool, change a checkout's remotes, or
+  start a thread in a clone of a public repository; `docs/security.md` lists
+  these. The repository comes from T3's `repositoryIdentity`
+  (`canonicalKey`, and `origin.canonicalKey` for a fork), read from the project
+  and, when T3 has not resolved it yet, from the project listing. A `url` must
+  equal its own normalized `https` form and end in a pull-request path, so the
+  bridge and T3 cannot read two pull requests out of one string.
+- T3's failure for a thread it cannot find ends with advice to pass
+  `environmentId`. The bridge replaces that sentence in every failure it
+  returns with what an outside caller can do; T3 failures otherwise pass
+  through unchanged.
+- A slow `t3_project_read` no longer overwrites a project title that a rename
+  cached while the read was in flight.
+- Rebased onto the T3 0.1.11 adaptation (PR #21): the description rewrites of
+  these tools are `DESCRIPTION_RULES` entries, the fixtures are that capture
+  plus these tools, and the fake answers an unknown thread as T3 0.1.11 does
+  (`thread_not_found`, in T3's three wordings, with its advice about linked
+  environments). The live suite compares that reply with real T3.
 
 ## Implementation contract
 
@@ -669,6 +751,21 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 | B31 | `orchestrator_capabilities` returns the compact provider and model list | ✓ | ✓ | | |
 | B32 | Retry classification: `list_scheduled_tasks`, `orchestrator_capabilities`, `t3_project_update`, and `schedule_task` are retried once after a dropped response; `delete_scheduled_task`, `run_scheduled_task_now`, `t3_project_create`, and `t3_project_clone` are never retried after the request was sent | ✓ | ✓ | | |
 
+### Behavior matrix (Phase 3)
+
+| ID | Behavior | Unit | E2E | Live | Deployed |
+|----|----------|:----:|:---:|:----:|:--------:|
+| B33 | The eleven Phase 3 tools are exposed after the Phase 2 tools, with read-only hints per the table, `threadId` required where the table says so, no `environmentId`, and descriptions (live and fallback) free of in-thread wording and of tools DevSpace does not expose; `watch_pull_request` says the thread's agent is woken, not the caller | ✓ | ✓ | ✓ | ✓ |
+| B34 | Pull requests: link (with `invalidUrls` and `alreadyLinked`), list (state, watch flag, `states` filter, paging), watch (links first, refuses a merged PR), unwatch, unlink by state, and unlink one by URL or number whatever its state (ending its watch); only the caller's arguments reach T3 and T3's results and plain-text failures pass through | ✓ | ✓ | | |
+| B35 | `t3_thread_configure` reads and sets the model and leaves the modes; `t3_thread_transfer` forks into an idle thread with the source's history and setup, merges back, and lists transfers for source and target | ✓ | ✓ | | |
+| B36 | `t3_project_read` passes the record through without remote-URL credentials and teaches the bridge the project title; `t3_worktree_list` defaults `limit` to 50; `t3_environment_links` returns `{ environmentId, links }` | ✓ | ✓ | | |
+| B37 | Retry classification per the Phase 3 table: reads, `t3_thread_configure`, and `t3_thread_transfer` `status` are retried once; a `link`, `unlink`, `watch`, `unwatch`, `fork`, or `merge_back` whose response was lost is sent once; a lost lookup before a watch is reported as not sent | ✓ | ✓ | | |
+| B38 | Every tool, `t3_inbox` included, refuses a call that passes `environmentId` with one message that says the bridge acts on its own machine only and that `t3_environment_links` only lists links; nothing reaches T3 and `t3_thread_launch` starts no thread; an explicit `null` is accepted and not forwarded | ✓ | ✓ | ✓ | ✓ |
+| B39 | `watch_pull_request` is refused before it reaches T3 unless the pull request is in the repository of the thread's project (primary remote, or `origin` of a fork): another repository, a thread without a remote, and every URL that is not the plain `https` pull-request address; the identity falls back to the project listing; `unwatch_pull_request` is unrestricted. T3's advice to pass `environmentId` is replaced in every failure | ✓ | ✓ | | |
+
+The live suite also compares T3 with the fake for these tools: failures without
+a thread, and the fields of every result, sampled on one scratch thread.
+
 ### Orchestrator scenarios
 
 | ID | Scenario | E2E | Live | Deployed |
@@ -683,6 +780,7 @@ Scenarios use only DevSpace-exposed tools through `ctx.client`, parse
 | S8 | Rename a scratch thread, then regenerate its title | ✓ | ✓ | ✓ |
 | S9 | Clone a small public repository into a temporary folder, register it as a project, pick a model from `orchestrator_capabilities`, and set it as the project default | ✓ | ✓ | ✓ |
 | S10 | In S9's project, schedule a far-future one-time task, list it, run it now, confirm the run thread is `full-access` and replies, delete the task, and confirm it is gone | ✓ | ✓ | ✓ |
+| S11 | On a scratch thread: read its model and set the same one, fork it and find the transfer on both threads, link two public pull requests and unlink one by URL at once, wait for T3 to read the other's state, be refused a watch on it, unlink it with the batch tool. Then clone that repository, start a thread in the clone, watch and unwatch the pull request from there, and unlink it. Finally list the thread's branches, read its project, and list linked machines | ✓ | ✓ | ✓ |
 
 The live and deployed harnesses remove the S9 project through their own direct
 T3 client (`t3_project_delete`; deletion is never exposed through DevSpace),
