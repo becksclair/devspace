@@ -20,7 +20,7 @@ Plans 001-005 came from the improve skill's deep audit on 2026-08-28 (at `2effcd
 | 012  | Recover from node restarts immediately, and stop one caller's cancellation from failing shared hellos | P1 | S | — | DONE |
 | 013  | Key OAuth rate limits on the real client when DevSpace sits behind a local tunnel | P1 | S | 008 | DONE |
 | 014  | Turn AGENTS.md into an accurate operating guide and add CLAUDE.md | P2 | S | — | DONE |
-| 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (two phases) | P1 | M + S | — | IN PROGRESS (Phase 2 deployed; voice pass pending) |
+| 015  | Bridge T3 Code thread orchestration into DevSpace for a voice orchestrator (three phases) | P1 | M + S | — | IN PROGRESS (Phase 2 deployed; voice pass pending; Phase 3 tool expansion implemented, not deployed) |
 | 016  | Keep managed workspaces whose commits or stashes exist nowhere else | P1 | S–M | 017 (merge order) | TODO |
 | 017  | Give git child processes the filtered environment that shells already get | P1 | S–M | — | DONE (approved at `696411e`; PR #9 merged into `advisor/audit-2026-11-11` as `07aeb2e`) |
 | 018  | Serve the Svartal gateway from immutable release directories instead of the working checkout | P1 | M (Step 1 is S) | — | DONE (PR #12 merged as `f6a8a19`; the operator cutover was performed on 2026-11-13 and the gateway runs release `f6a8a19` from `~/.local/opt/devspace`) |

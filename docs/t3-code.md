@@ -1,6 +1,6 @@
 # T3 Code orchestration
 
-The T3 bridge lets an MCP host, typically ChatGPT in voice mode on a phone, orchestrate T3 Code on the DevSpace machine through the existing DevSpace connector. The host finds projects and threads by name, starts threads in full-access mode, steers, interrupts, and reads them, answers agent questions, checks an inbox of threads that need you or have finished, and settles threads it has handled. It can also rename threads, create or clone projects and set their default model, and schedule tasks that start new threads later. T3 Code's agents do the coding in their own threads; the host stays the orchestrator.
+The T3 bridge lets an MCP host, typically ChatGPT in voice mode on a phone, orchestrate T3 Code on the DevSpace machine through the existing DevSpace connector. The host finds projects and threads by name, starts threads in full-access mode, steers, interrupts, and reads them, answers agent questions, checks an inbox of threads that need you or have finished, and settles threads it has handled. It can also rename threads, create or clone projects and set their default model, and schedule tasks that start new threads later. For orchestrator agents that drive T3 through DevSpace (Hermes, Grok Bot, and other MCP clients), it also links pull requests to threads and has a thread's agent watch them, reads and sets a thread's model, forks a thread, and reads a project, a thread's branches and worktrees, and the machines linked to T3. T3 Code's agents do the coding in their own threads; the host stays the orchestrator.
 
 ```text
 ChatGPT (voice) → devspace-saga.heliasar.com/mcp → Svartal DevSpace gateway
@@ -31,13 +31,13 @@ One bridge per DevSpace process serves every MCP session. It connects lazily ove
 | HTTP 401 | Mint a new credential, reconnect, and retry once. A second 401 returns `T3 Code rejected DevSpace's credential.` |
 | HTTP 404 on the MCP session (T3 restarted) | Reconnect and retry once. |
 | Connection refused, or runtime file missing | Return `T3 Code is not reachable on this machine.` The next call tries again; DevSpace does not need a restart. |
-| Any other failure after the request was sent | Reconnect and retry once when the call is a read (`t3_project_list`, `t3_thread_search`, `t3_thread_list`, `t3_thread_read`, `t3_thread_wait`, `list_scheduled_tasks`, `orchestrator_capabilities`, and the inbox's own reads), carries `clientRequestId` (launch, send, interrupt, `t3_thread_update`, and scheduled-task creation always do), or only sets fields (`t3_project_update`, and `schedule_task` with `scheduledTaskId`). `t3_pending_request`, `t3_thread_organize`, `t3_queue`, `t3_project_create`, `t3_project_clone`, `run_scheduled_task_now`, and `delete_scheduled_task` are never retried; they return `T3 Code connection failed during <tool>; it may or may not have run.`, or the unreachable error when an unauthenticated probe of T3's protected-resource metadata (two-second timeout) gets no connection. |
+| Any other failure after the request was sent | Reconnect and retry once when the call is a read (`t3_project_list`, `t3_thread_search`, `t3_thread_list`, `t3_thread_read`, `t3_thread_wait`, `list_scheduled_tasks`, `orchestrator_capabilities`, `list_thread_pull_requests`, `t3_worktree_list`, `t3_project_read`, `t3_environment_links`, `t3_thread_transfer` with `status`, and the inbox's own reads), carries `clientRequestId` (launch, send, interrupt, `t3_thread_update`, and scheduled-task creation always do), or sets a thread or project to the given values, so that repeating it leaves the same state (`t3_project_update`, `schedule_task` with `scheduledTaskId`, `t3_thread_configure`, `link_pull_requests`, `watch_pull_request`, and `unwatch_pull_request`; after such a retry `alreadyLinked` or `wasWatching` can describe the first attempt). `t3_pending_request`, `t3_thread_organize`, `t3_queue`, `t3_project_create`, `t3_project_clone`, `run_scheduled_task_now`, `delete_scheduled_task`, `unlink_pull_requests`, and `t3_thread_transfer` with `fork` or `merge_back` are never retried; they return `T3 Code connection failed during <tool>; it may or may not have run.`, or the unreachable error when an unauthenticated probe of T3's protected-resource metadata (two-second timeout) gets no connection. |
 
-Tool names are fixed. Input schemas come from T3's live `tools/list`, trimmed as described in the tool reference, and the catalog is cached per process and refreshed on every new connection to T3; the first fetch has a three-second budget. When T3 is unreachable, the same 21 names register with loose schemas, so ChatGPT's cached tool list stays stable. After a failed or timed-out fetch, MCP sessions opened during the next 60 seconds get those loose schemas at once, without waiting, while the catalog keeps loading in the background. Once T3 is back, the catalog reloads, and MCP sessions opened after that get the live schemas without a DevSpace restart.
+Tool names are fixed. Input schemas come from T3's live `tools/list`, trimmed as described in the tool reference, and the catalog is cached per process and refreshed on every new connection to T3; the first fetch has a three-second budget. When T3 is unreachable, the same 31 names register with loose schemas, so ChatGPT's cached tool list stays stable. After a failed or timed-out fetch, MCP sessions opened during the next 60 seconds get those loose schemas at once, without waiting, while the catalog keeps loading in the background. Once T3 is back, the catalog reloads, and MCP sessions opened after that get the live schemas without a DevSpace restart.
 
 ### Full access
 
-Every thread the bridge launches runs in T3's `full-access` runtime mode, the most permissive of `approval-required`, `auto-accept-edits`, `auto`, and `full-access`. The bridge forces `runtimeMode: "full-access"` on every launch and removes `runtimeMode` and `delegatedFrom` from the exposed launch schema, so a caller cannot choose another mode. Tool descriptions state that threads always run in full-access mode. Scheduled-task runs are started by T3, also in `full-access` mode (see [Scheduled tasks](#scheduled-tasks)).
+Every thread the bridge launches runs in T3's `full-access` runtime mode, the most permissive of `approval-required`, `auto-accept-edits`, `auto`, and `full-access`. The bridge forces `runtimeMode: "full-access"` on every launch and removes `runtimeMode` and `delegatedFrom` from the exposed launch schema, so a caller cannot choose another mode. Tool descriptions state that threads you launch always run in full-access mode. Scheduled-task runs are started by T3, also in `full-access` mode (see [Scheduled tasks](#scheduled-tasks)). A fork made with `t3_thread_transfer` keeps its source thread's modes, so a fork of a thread started in the T3 app with another mode keeps that mode. `t3_thread_configure` changes a thread's model and never its modes.
 
 ### Inbox
 
@@ -70,6 +70,20 @@ As of T3 Code 0.1.11 the project needs no default model of its own and no git re
 - **Folder.** In a git repository each run gets its own worktree under `~/.t3/worktrees/<folder>/`. In any other folder the run works in the project folder itself.
 
 Each run of a task created through DevSpace starts a new thread (unless the task sets `freshSession`, when runs share the thread the first run made) in `full-access` mode. Tasks created through DevSpace are never bound to a calling thread, and their creation carries a `clientRequestId`, so a retried creation returns the same `scheduledTaskId`. An update (`scheduledTaskId` given) changes only the fields it names. `run_scheduled_task_now` also runs a disabled task. A task created in the T3 app keeps its own thread binding, runtime mode, and model when DevSpace updates it.
+
+### Threads from outside T3
+
+T3 writes its tools for an agent running inside a thread, where "this thread" is the caller. A DevSpace client is outside every thread: T3 gives it the `orchestration`, `worktree`, and `pull-requests` capabilities and no calling thread. Three rules follow.
+
+- **`threadId` is required** wherever T3 would default to the calling thread: `t3_pending_request`, `t3_thread_organize`, `t3_queue`, `t3_thread_update`, the five pull-request tools, `t3_thread_configure`, `t3_thread_transfer`, and `t3_worktree_list`. DevSpace marks it required in each schema and answers `threadId is required. Find the thread with t3_thread_search or t3_thread_list.` without contacting T3.
+- **Tools that act as the calling thread are not exposed.** T3 does not serve them to a client outside a thread (see [Not exposed](#not-exposed)).
+- **This machine only.** DevSpace removes `environmentId` from every tool's schema and silently drops one a caller passes anyway, so calls never go to a linked machine. `t3_environment_links` reports the links as a status check, and its description says that an `environmentId` passed to another tool is ignored.
+
+### Pull requests
+
+`link_pull_requests` attaches pull requests to a thread by URL. T3 then shows each one's state on the thread and settles the thread when it merges. `list_thread_pull_requests` returns T3's last known state of each (`open`, `closed`, `merged`, or `null` for the few seconds before T3 first reads it from the host), and `unlink_pull_requests` removes the ones in the given states. There is no unlink by URL: T3's single-PR tools are not exposed.
+
+`watch_pull_request` does not notify the caller. It has the thread's own agent watch the pull request: when checks fail, required checks pass, a comment or review arrives, or a merge conflict appears, T3 sends the thread a message and its agent runs a turn. The watch stays on until `unwatch_pull_request` or until the pull request closes. T3 also ends it after ten wakes in a row that carried only comments (in `v0.1.11`) or after repeated failures to read the pull request, and tells the thread's agent that it can watch again. T3 refuses to watch a merged pull request. Follow what the agent did with `t3_inbox` and `t3_thread_read`. Read [Security Model](security.md#t3-code-bridge) before watching a pull request that people you do not trust can comment on.
 
 ## Setup
 
@@ -107,7 +121,7 @@ Deployment, verification, and rollback steps are in [Svartal gateway](svartal-ga
 
 ### Refresh the connector in ChatGPT
 
-DevSpace registers the T3 tools when an MCP session starts, and ChatGPT caches the tool list. After enabling or disabling the bridge, or updating DevSpace to a version that changes the T3 tools, refresh the DevSpace connector in ChatGPT's settings. Refreshing opens a new MCP session without re-authorizing, and the 21 T3 tools appear.
+DevSpace registers the T3 tools when an MCP session starts, and ChatGPT caches the tool list. After enabling or disabling the bridge, or updating DevSpace to a version that changes the T3 tools, refresh the DevSpace connector in ChatGPT's settings. Refreshing opens a new MCP session without re-authorizing, and the 31 T3 tools appear.
 
 ### Disable
 
@@ -145,6 +159,15 @@ Talk about threads by project and title. The orchestrator resolves names to IDs 
 | "What's scheduled?" | `list_scheduled_tasks` |
 | "Run the dependency check now" | `list_scheduled_tasks`, then `run_scheduled_task_now` |
 | "Pause it" / "Delete it" | `schedule_task` with `enabled: false` / `delete_scheduled_task` |
+| "Attach this PR to the parser thread" | `link_pull_requests` with the thread and the PR URL |
+| "Which PRs does it have, and are they merged?" | `list_thread_pull_requests` |
+| "Have it babysit the PR" | `watch_pull_request` (T3 wakes the thread's agent on PR activity), later `unwatch_pull_request` |
+| "Drop the merged PRs from it" | `unlink_pull_requests` with `states: ["merged"]` |
+| "Which model is it on?" / "Switch it to Opus" | `t3_thread_configure`, with `modelSelection` from `orchestrator_capabilities` to change it |
+| "Fork it and try the other approach" | `t3_thread_transfer` with `fork`, then `t3_thread_send` to the fork |
+| "Which branch and folder is it working in?" | `t3_worktree_list` |
+| "What's that project's repository and default model?" | `t3_project_read` |
+| "Is my other machine reachable?" | `t3_environment_links` |
 
 ### Taking over in the T3 app
 
@@ -183,13 +206,26 @@ Descriptions are T3's own, adapted for a caller outside a thread (`DESCRIPTION_R
 | `schedule_task` | no | Create a task (no `scheduledTaskId`; see [Scheduled tasks](#scheduled-tasks)) or update one. `schedule.type`: `interval` (`everyMs`, at least 60000), `fixed_time` (`timeOfDay`, optional `weekdays`), or `once` (`runAt`). Creation forces `bindToCurrentThread: false` and adds `clientRequestId` when absent. Webhook triggers are removed from the schema and rejected; `webhookUrl` and `webhookSignature` are removed from results. |
 | `run_scheduled_task_now` | no | Start one run now; `taskId` is the task's `scheduledTaskId`. Follow the returned thread with `t3_thread_wait` and `t3_thread_read`. |
 | `delete_scheduled_task` | no | Delete a task by `scheduledTaskId`. A missing task returns `task_not_found`. |
+| `watch_pull_request` | no | Have a thread's agent watch a pull request; see [Pull requests](#pull-requests). `threadId` required. Name the PR by `url`, or by `repository`, `number`, and `host` (T3 needs `host` or `url` when the thread's project has no git remote). Links the PR first when needed. DevSpace's own description. Returns `{ host, repository, number, url, watching, wasWatching }`. A merged PR returns `The pull request is merged, so there is nothing to watch.` |
+| `unwatch_pull_request` | no | Stop a thread's watch; the PR stays linked. `threadId` required; the PR is named the same way. DevSpace's own description. Same result shape; a PR that was never watched returns `wasWatching: false`. |
+| `link_pull_requests` | no | Link one or more PRs to a thread by `urls`. `threadId` required. Returns `{ linked, alreadyLinked, linkedCount, invalidUrls? }`; `linked` and `alreadyLinked` group PR numbers by `host` and lower-cased `repository`, and `invalidUrls` lists URLs that are not pull requests. T3's `next` (an instruction to the agent inside a subagent thread) is removed. |
+| `list_thread_pull_requests` | yes | A thread's linked PRs. `threadId` required; `states` filters; 50 per page, `cursor` from `nextCursor`. Returns `{ pullRequests: [{ host, repository, number, url, source, watching, state, title, headBranch, baseBranch, isDraft, stack }], chains, nextCursor }`. `state` is T3's last sync, not a live read of the host. |
+| `unlink_pull_requests` | no | Unlink a thread's PRs whose last known state is in `states`. `threadId` required. PRs with no known state stay linked. Returns `{ unlinked: [{ host, repository, state, numbers }], unlinkedCount, remaining }`. |
+| `t3_thread_configure` | no | Without `modelSelection`, read `{ threadId, modelSelection, runtimeMode, interactionMode }`. With `modelSelection` (`{ instanceId, model, options? }` from `orchestrator_capabilities`), set the thread's provider, model, and options and return `{ sequence }`. `threadId` required. T3 rejects an unknown provider and accepts any model id, so pass one that `orchestrator_capabilities` lists. |
+| `t3_thread_transfer` | no | `fork`: copy a thread into a new idle thread with the same project, model, and modes; `merge_back`: merge its context into a related thread in the same project (`targetThreadId`); both return `{ sequence, targetThreadId }`. `status`: `{ transfers: [{ id, sourceThreadId, targetThreadId, status }] }` for the thread as source or target. `threadId` (the source) required. A fork runs nothing until it gets a message with `t3_thread_send`. |
+| `t3_worktree_list` | yes | Branches of a thread's repository and where each is checked out. `threadId` required; `limit` 50 (at most 200); `query` filters by name. Returns `{ refs: [{ name, isRemote, current, isDefault, worktreePath }], isRepo, hasPrimaryRemote, nextCursor, totalCount }`; a folder that is not a repository returns `isRepo: false` and no refs. |
+| `t3_project_read` | yes | One project's full record by `projectId`: `{ id, title, workspaceRoot, repositoryIdentity, defaultModelSelection, scripts, … }`. `t3_project_list` returns only titles and folders. Credentials in the remote URLs under `repositoryIdentity` are removed (also from `t3_project_create` and `t3_project_update` results). |
+| `t3_environment_links` | yes | The machines linked to this T3 Code: `{ environmentId, links: [{ environmentId, label, status, access, expiresAt, lastError }] }`, with `status` `reachable`, `unreachable`, or `expired`. DevSpace's own description; T3's `notListed` hint (it names a linking tool that is not exposed) is removed. |
 
 ### Not exposed
 
 - **Batch launch (`create_threads`).** T3 serves it only to agents inside a thread; a client outside one is told the tool does not exist. Start several threads with repeated `t3_thread_launch` calls.
 - **Project deletion (`t3_project_delete`).** Kept out of the voice surface; delete projects in the T3 Code app.
 - **Webhook triggers for scheduled tasks.** A webhook URL accepts requests from anyone who holds it and starts full-access agents with each request's content. DevSpace callers can already start threads directly, so a webhook would add only a persistent outside trigger. Set webhooks up in the T3 Code app.
-- **Other project settings** (scripts, workspace root, icon, archiving, and the like). `t3_project_create` takes only a title and a folder, and `t3_project_update` only the title and the default model; change the rest in the T3 Code app.
+- **Other project settings** (scripts, workspace root, icon, archiving, and the like). `t3_project_create` takes only a title and a folder, and `t3_project_update` only the title and the default model; change the rest in the T3 Code app. `t3_project_read` shows them.
+- **Single pull-request link and unlink (`link_pull_request`, `unlink_pull_request`).** `link_pull_requests` covers linking one. Unlinking is by state only, so one PR among several in the same state cannot be unlinked through DevSpace; unlink it in the T3 Code app.
+- **Tools that act as the calling thread** (`t3_worktree_status`, `t3_worktree_handoff`, `delegate_task`, `task_status`, `task_cancel`, and the like). T3 does not serve them to a client outside a thread.
+- **Other machines.** `environmentId` is removed from every tool, and `t3_environment_link` and `t3_environment_unlink` are not exposed; link machines in the T3 Code app.
 
 ## Verification
 
@@ -224,6 +260,12 @@ An Electron `CompileAndCall` warning on stderr is harmless. If the launcher repo
 **`Project … has no default model, so this caller cannot pick one for it.`** `schedule_task` found no default model for the project in T3's settings and no default model for T3 itself. Set a default model in the T3 Code app's settings and create the task again.
 
 **`workspaceRoot must be an absolute path (or start with ~/), not "…".`** T3 resolves a relative path against its own working directory, the home folder, so DevSpace rejects relative `workspaceRoot` and `destinationPath` values. Pass an absolute path or one starting with `~/`.
+
+**`Pass threadId: this MCP client is not running inside a T3 thread.`** T3's own refusal for a tool that needs a thread. DevSpace requires `threadId` before forwarding, so this appears only when a tool reached T3 without one; update DevSpace if T3 added a thread-bound tool.
+
+**`Thread … was not found. Thread ids belong to one environment: …`** The thread does not exist on this machine. T3's text goes on to suggest passing an `environmentId`; DevSpace does not forward one, so find the thread with `t3_thread_search` on the machine it lives on.
+
+**A linked pull request shows `state: null`, or `unlink_pull_requests` leaves it linked.** T3 has not read the pull request from its host yet. It normally does within a few seconds of linking; it cannot when T3 Code has no access to the pull request's host.
 
 **ChatGPT does not show the T3 tools, or shows an old list.** Refresh the DevSpace connector in ChatGPT. If they are still missing, check that `t3.enabled` is `true` in the `config.json` DevSpace actually reads, that DevSpace was restarted after the change, and that `t3` is not a disabled capability for the instance, the session, or the gateway's local machine.
 
