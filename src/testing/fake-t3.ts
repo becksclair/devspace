@@ -2369,7 +2369,11 @@ export class FakeT3 {
     return thread;
   }
 
-  /** A pull request named by `url`, or by `repository` and `number` with `host` or the host of the project's remote. */
+  /**
+   * A pull request named by `url`, or by `repository` and `number` with `host`. Without `host` the
+   * fake answers `github.com` for any project with a remote: like `repositoryIdentity`, it models
+   * GitHub remotes only.
+   */
   private pullRequestTarget(args: JsonObject, thread?: ThreadRecord): PullRequestTarget {
     const url = optString(args.url);
     if (url !== undefined) {
