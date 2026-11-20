@@ -224,6 +224,27 @@ const EXPANSION_TEXT_FAILURES: Array<{ tool: string; args: Json }> = [
   { tool: "unwatch_pull_request", args: { url: CONTRACT_PULL_REQUEST } },
 ];
 const THREAD_REQUIRED_TEXT = "Pass threadId: this MCP client is not running inside a T3 thread.";
+/**
+ * Pull-request and CI tools that act on the calling thread's branch or repository. T3 lists them to
+ * an outside client but gives them no `threadId` and refuses them outside a thread, so DevSpace
+ * does not expose them. Only the read-only ones are called here.
+ */
+const CALLING_THREAD_PR_TOOLS = [
+  "pull_request_create",
+  "pull_request_list",
+  "pull_request_read",
+  "pull_request_update",
+  "pull_request_respond",
+  "pull_request_review",
+  "pull_request_merge",
+  "ci_logs",
+  "ci_rerun",
+];
+const CALLING_THREAD_PR_PROBES: Array<{ tool: string; args: Json }> = [
+  { tool: "pull_request_list", args: { limit: 1 } },
+  { tool: "pull_request_read", args: { repository: "octocat/Hello-World", number: 1 } },
+  { tool: "ci_logs", args: { repository: "octocat/Hello-World", number: 1, tailLines: 1 } },
+];
 /** One tool for each of T3's three wordings of an unknown thread, and the tools added after Phase 2. */
 const UNKNOWN_THREAD_CASES: Array<{ tool: string; args: Json }> = [
   { tool: "t3_thread_read", args: { threadId: "devspace-contract-probe" } },
@@ -742,6 +763,21 @@ async function contractAssertions(options: {
       const real = await rpcFailure(realCall, tool, args);
       assert.deepEqual(real, { code: -32602, message: `Tool '${tool}' not found` });
       assert.deepEqual(await rpcFailure(fakeCall, tool, args), real, `${tool}: the fake must refuse it like T3`);
+    }
+  });
+
+  await check("contract: calling-thread pull-request and CI tools take no threadId and refuse outside clients", async () => {
+    const real = await listAllTools(options.realClient);
+    for (const name of CALLING_THREAD_PR_TOOLS) {
+      const tool = real.find((entry) => entry.name === name);
+      assert.ok(tool, `T3 no longer lists ${name}; update CALLING_THREAD_PR_TOOLS and docs/t3-code.md`);
+      const properties = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties : {};
+      assert.ok(!("threadId" in properties), `${name} now takes threadId; decide whether DevSpace should expose it`);
+    }
+    for (const { tool, args } of CALLING_THREAD_PR_PROBES) {
+      const result = await realCall(tool, args);
+      assert.equal(result.isError, true, `${tool} must fail outside a thread`);
+      assert.equal(resultText(result), THREAD_REQUIRED_TEXT, `${tool} outside a thread`);
     }
   });
 

@@ -1,8 +1,8 @@
 {
-  "capturedFrom": "T3 Code v0.1.11-nightly.20261118.4890",
+  "capturedFrom": "T3 Code v0.1.11-nightly.20261119.4954",
   "notes": [
     "Captured 2026-11-19 from T3 Code v0.1.11 by an MCP client signed in from outside a thread with a full-access token, using scratch threads, projects, and scheduled tasks that the capture probe created and then archived or deleted; no user data.",
-    "Thread-only tools (task_status, create_threads, preview_open) are not listed for MCP clients signed in from outside a thread (tools/list returns 53 tools); calling one fails with JSON-RPC -32602 \"Tool '<name>' not found\".",
+    "Thread-only tools (task_status, create_threads, preview_open) are not listed for MCP clients signed in from outside a thread (tools/list returns 62 tools in v0.1.11-nightly.20261119.4954); calling one fails with JSON-RPC -32602 \"Tool '<name>' not found\".",
     "A pending user question leaves the thread status 'running'; pendingRequestCount on the thread detail becomes > 0.",
     "t3_thread_read without a position pages from the start, oldest first. Its default view is 'messages' (user and assistant messages only); view 'activity' adds command_execution, checkpoint, and other items, so positions in the messages view have gaps.",
     "afterPosition is exclusive; afterPosition -1 reads from the start.",
@@ -13,7 +13,7 @@
     "Archiving also settles (the archived thread reads archived true, settled true); archived threads disappear from t3_thread_list.",
     "clientRequestId makes t3_thread_launch, t3_thread_update, and schedule_task idempotent (same ids returned); t3_thread_send idempotency is carried over from 0.1.8 unverified.",
     "401 WWW-Authenticate carries resource_metadata unless the presented token is non-empty without a '.', and error=\"invalid_token\" whenever a token was presented; real MCP client tokens contain a '.'.",
-    "t3_project_create ignores defaultModelSelection (the result is always null); set it with t3_project_update, which stores {instanceId, model} plus options and drops provider.",
+    "Since v0.1.11-nightly.20261119.4954 (probed 2026-11-20): t3_project_create refuses a non-null defaultModelSelection with invalid_request (t3_project_create.defaultModel). t3_project_update accepts one and stores it on the project record, but T3 now reports and resolves a project's default model from its server settings (projectSettingsOverrides), and ignores the record once those settings are folded, as on Svartal; the update result, t3_project_read, and t3_project_list rows report defaultModelSelection null, and only the t3_project_delete result shows the stored value. Earlier: create ignored the field and update applied it.",
     "schedule_task accepts a project without a default model (schedule_task.projectWithoutDefaultModel). Both scheduled runs ran claudeAgent / claude-fable-5-2 although their projects' default model was claude-haiku-5-5, so the run model does not come from the project default. Outside callers are never bound (boundThreadId null); clientRequestId makes creation idempotent.",
     "Only schedule_task creation returns webhookUrl (with T3 Connect on). Update results and list_scheduled_tasks rows carry webhookSignature but not webhookUrl. list_scheduled_tasks accepts scheduledTaskId to return one task.",
     "run_scheduled_task_now works on disabled tasks, starts a new full-access thread in the task's project, and reports lastRunStatus 'succeeded' with lastRunError null once started. In a git project the run gets a new worktree under ~/.t3/worktrees/<project>/; in a project whose folder is not a git repository it ran in place (worktreePath null) and completed.",
@@ -29,7 +29,9 @@
     "A fork is idle, carries relationshipToParent 'fork' and its source as parentThreadId, and keeps the source's model and modes; its transfer stays 'pending' and is listed for source and target. merge_back from a thread without a finished run fails.",
     "unlink_pull_request (captured 2026-11-19, same T3 Code version) unlinks one pull request by url, or by repository, number, and host, whatever its state and before T3 has read it; it ends a watch on that pull request and returns wasLinked false when it was not linked.",
     "A project's repositoryIdentity (probed 2026-11-19, same T3 Code version) has a lower-cased canonicalKey of the form host/owner/name; for a fork whose primary remote is its upstream it also has origin { canonicalKey, remoteUrl, displayName }. A project registered a moment ago has repositoryIdentity null in t3_project_create and t3_project_read results, while its t3_project_list row already carries the resolved identity.",
-    "T3's failure for a thread it cannot find ends with ' Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.', in the plain-text failures of the pull-request tools and inside the message of the thread_not_found failure JSON."
+    "T3's failure for a thread it cannot find ends with ' Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.', in the plain-text failures of the pull-request tools and inside the message of the thread_not_found failure JSON.",
+    "The pull-request and CI tools added in v0.1.11-nightly.20261119.4954 (pull_request_create, pull_request_list, pull_request_read, pull_request_update, pull_request_respond, pull_request_review, pull_request_merge, ci_logs, ci_rerun) are listed to an outside client, take no threadId, and act on the calling thread's branch or repository. pull_request_list, pull_request_read, and ci_logs called from outside a thread fail with the plain text in callingThreadPullRequestTools.noThread (probed 2026-11-20); the write tools were not called.",
+    "watch_pull_request takes until ('checks' | 'merged') since v0.1.11-nightly.20261119.4954. Omitted, an existing watch keeps its value and a new watch starts at 'checks'. It sets how long T3 counts the watch as a task that keeps the thread working (checks: until checks finish; merged: until the pull request merges or closes or is unwatched); the watch itself keeps waking the thread either way (read from T3's source)."
   ],
   "results": {
     "t3_thread_launch": {
@@ -1767,6 +1769,11 @@
       "code": -32602,
       "message": "Invalid parameters for tool 't3_project_create': Expected string\n  at [\"defaultModelSelection\"][\"instanceId\"]"
     },
+    "t3_project_create.defaultModel": {
+      "_tag": "OrchestratorMcpFailure",
+      "code": "invalid_request",
+      "message": "Creating a project does not set its default model; set defaultModelSelection afterwards with t3_project_update."
+    },
     "t3_project_clone.nonEmpty": {
       "_tag": "OrchestratorMcpFailure",
       "code": "orchestration_error",
@@ -1819,6 +1826,7 @@
     },
     "pullRequestTools.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
     "pullRequestTools.unknownThread": "Thread nope-thread was not found. Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.",
+    "callingThreadPullRequestTools.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
     "watch_pull_request.merged": "The pull request is merged, so there is nothing to watch.",
     "watch_pull_request.repositoryWithoutHost": "This thread's project has no recognised remote. Pass host or url.",
     "watch_pull_request.noTarget": "Pass either url, or both repository and number.",
