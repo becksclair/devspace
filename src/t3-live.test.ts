@@ -994,8 +994,10 @@ async function cleanupStampedProjects(direct: T3Call, stamp: string, workDir: st
   };
   for (const project of await stampedProjects()) await ok(direct, "t3_project_delete", { projectId: project.id, force: true });
   const stampedWorktrees = async (): Promise<string[]> => (await readdir(T3_WORKTREES_DIR).catch(() => [] as string[])).filter((entry) => entry.includes(stamp));
-  for (const entry of await stampedWorktrees()) await removeThreadFolder(join(T3_WORKTREES_DIR, entry));
-  if (workDir) await removeThreadFolder(workDir);
+  // Attempt every removal before reporting, so one folder that cannot be removed does not leave the others behind.
+  const folders = [...(await stampedWorktrees()).map((entry) => join(T3_WORKTREES_DIR, entry)), ...(workDir ? [workDir] : [])];
+  const failed = (await Promise.allSettled(folders.map(removeThreadFolder))).filter((result) => result.status === "rejected");
+  if (failed.length > 0) throw new Error(failed.map((result) => describe(result.reason)).join("; "));
   assert.deepEqual((await stampedProjects()).map((project) => project.title), [], "no project carries the stamp");
   assert.deepEqual(await stampedWorktrees(), [], "no worktree carries the stamp");
   assert.deepEqual((await stampedTasks()).map((task) => task.title), [], "no scheduled task carries the stamp");
