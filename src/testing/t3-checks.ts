@@ -199,7 +199,7 @@ export interface CatalogTool {
  *     standard write tools are destructive and open-world (when annotations are given).
  * B12/B15: launch hides `runtimeMode` and `delegatedFrom`; no `environmentId`; `threadId` required.
  * B27/B29/B30 (schemas): schedule_task hides thread binding and webhook triggers; project create
- *     hides `defaultModelSelection`; project update exposes only projectId, title, and default model.
+ *     hides `defaultModelSelection`; project update exposes only projectId and title.
  * B17: descriptions end with the shared guidance and carry no in-thread phrasing.
  */
 export function checkCatalog(
@@ -289,8 +289,13 @@ export function checkCatalog(
       assert.deepEqual(Object.keys(properties).sort(), ["createWorkspaceRootIfMissing", "title", "workspaceRoot"]);
     }
     if (tool.name === "t3_project_update") {
-      assert.deepEqual(Object.keys(properties).sort(), ["defaultModelSelection", "projectId", "title"]);
+      assert.deepEqual(Object.keys(properties).sort(), ["projectId", "title"]);
       assert.ok(required.includes("projectId"), "t3_project_update requires projectId");
+    }
+    if (tool.name === "watch_pull_request") {
+      const until = String((properties.until as Json | undefined)?.description ?? "");
+      assert.match(until, /"merged": until the PR merges/, "watch_pull_request explains until");
+      assert.doesNotMatch(until, /this thread|\byou\b/i, "watch_pull_request until must not use in-thread phrasing");
     }
   }
 }
@@ -310,6 +315,7 @@ export function checkExpansionDescription(name: string, description: string): vo
     assert.match(description, /Only a PR in the repository of the thread's project can be watched/, "watch_pull_request must state its scope");
     assert.match(description, /wakes that thread's agent, not you/, "watch_pull_request must say who is woken");
     assert.match(description, /untrusted text/, "watch_pull_request must say that PR comments are untrusted input to the agent");
+    assert.match(description, /`until` sets how long T3 keeps the thread working on it/, "watch_pull_request must explain until");
   }
   if (name === "t3_project_read") assert.match(description, /`projectId`/);
   if (name === "t3_environment_links") assert.match(description, /take no `environmentId` \(a call that passes one is rejected\)/);
@@ -1030,6 +1036,11 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
     }),
   ) as Json;
   assert.equal(kept.code, "orchestration_error", "an explicit createWorkspaceRootIfMissing: false is kept");
+  // B29: a project started from its title gets only the title (T3 refuses any other field there).
+  mark = fake.calls.length;
+  const named = await ok(call, "t3_project_create", { title: `Named ${stamp}`, createWorkspaceRootIfMissing: true });
+  assert.deepEqual(forwarded(fake, "t3_project_create", mark), [{ title: `Named ${stamp}` }]);
+  assert.equal(named.workspaceRoot, join(fake.home, ".t3", "projects", `Named ${stamp}`));
 
   // Clone a repository into an absolute folder, then register it.
   const destination = join(fake.home, "clones", `hello-${stamp}`);
@@ -1044,7 +1055,7 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
     records((await ok(call, "t3_thread_list", { projectId, limit: 100 })).threads).find((row) => row.threadId === inProject.threadId)?.project;
   assert.equal(await projectOf(), `Hello ${stamp}`);
 
-  // B30: only projectId, title, and defaultModelSelection reach T3.
+  // B30: only projectId and title reach T3 (T3 does not apply a default model set through MCP).
   mark = fake.calls.length;
   const updated = await ok(call, "t3_project_update", {
     projectId,
@@ -1054,8 +1065,8 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
     scripts: [],
     workspaceRoot: "/elsewhere",
   });
-  assert.deepEqual(Object.keys(forwarded(fake, "t3_project_update", mark)[0] ?? {}).sort(), ["defaultModelSelection", "projectId", "title"]);
-  assert.deepEqual(updated.defaultModelSelection, HAIKU);
+  assert.deepEqual(Object.keys(forwarded(fake, "t3_project_update", mark)[0] ?? {}).sort(), ["projectId", "title"]);
+  assert.equal(updated.defaultModelSelection, null);
   // Checked before any project listing, which would refresh the titles on its own.
   assert.equal(await projectOf(), `Hello ${stamp} renamed`, "thread rows show the renamed project");
   assert.equal(updated.archivedAt, null, "the project was not archived");
@@ -1248,6 +1259,14 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   assert.deepEqual(forwarded(fake, "watch_pull_request", mark), [{ threadId, url: PR_OPEN }]);
   assert.deepEqual(watched, { host: "github.com", repository: "octocat/hello-world", number: 11, url: PR_OPEN, watching: true, wasWatching: false });
   assert.equal((await ok(call, "watch_pull_request", { threadId, url: PR_OPEN })).wasWatching, true, "a repeated watch reports wasWatching");
+  // `until` reaches T3 with either way of naming the PR.
+  mark = fake.calls.length;
+  await ok(call, "watch_pull_request", { threadId, url: PR_OPEN, until: "merged" });
+  await ok(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 11, host: "github.com", until: "checks" });
+  assert.deepEqual(forwarded(fake, "watch_pull_request", mark), [
+    { threadId, url: PR_OPEN, until: "merged" },
+    { threadId, repository: "octocat/Hello-World", number: 11, host: "github.com", until: "checks" },
+  ]);
   const fresh = "https://github.com/octocat/Hello-World/pull/15";
   const linkedByWatch = await ok(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15, host: "github.com" });
   assert.deepEqual(
