@@ -641,24 +641,24 @@ function workDir(ctx: ScenarioContext): string {
   return ctx.workDir;
 }
 
-/** Clones the sample repository, registers it as a project, and sets its default model. */
-async function clonedProject(run: ScenarioRun, model: { instanceId: string; model: string }): Promise<ProjectRecord> {
+/** Clones the sample repository and registers it as a project. */
+async function clonedProject(run: ScenarioRun): Promise<ProjectRecord> {
   const { ctx } = run;
   const destinationPath = `${workDir(ctx)}/hello-${ctx.stamp}-${run.id}`;
   const clone = await callTool<CloneResult>(ctx, "t3_project_clone", { remoteUrl: CLONE_URL, destinationPath });
   assert.equal(clone.cwd, destinationPath, "t3_project_clone must clone into the requested folder");
   const project = await callTool<ProjectRecord>(ctx, "t3_project_create", { title: threadTitle(ctx, run.id), workspaceRoot: clone.cwd });
   assert.equal(project.workspaceRoot, clone.cwd);
-  const updated = await callTool<ProjectRecord>(ctx, "t3_project_update", { projectId: project.id, defaultModelSelection: model });
-  assert.equal(updated.defaultModelSelection?.model, model.model, "t3_project_update must set the default model");
-  return updated;
+  return project;
 }
 
-// S9: clone a repository, register it, pick a model, and make it the project default; create a project in a new folder.
+// S9: clone a repository, register it, pick a model, and rename the project; create a project in a new folder.
 async function projectSetup(run: ScenarioRun): Promise<Record<string, unknown>> {
   const { ctx } = run;
   const model = await pickModel(ctx);
-  const project = await clonedProject(run, model);
+  const registered = await clonedProject(run);
+  const project = await callTool<ProjectRecord>(ctx, "t3_project_update", { projectId: registered.id, title: `${registered.title} renamed` });
+  assert.equal(project.title, `${registered.title} renamed`, "t3_project_update must rename the project");
   const listed = await callTool<ProjectListResult>(ctx, "t3_project_list", {});
   assert.ok(listed.projects.some((row) => row.projectId === project.id && row.title === project.title), "the new project is listed");
 
@@ -671,8 +671,7 @@ async function projectSetup(run: ScenarioRun): Promise<Record<string, unknown>> 
 // S10: schedule a task, list it, run it now (a new full-access thread), delete it.
 async function scheduledTask(run: ScenarioRun): Promise<Record<string, unknown>> {
   const { ctx } = run;
-  const model = ctx.modelSelection ?? DEFAULT_SCENARIO_MODEL;
-  const project = await clonedProject(run, model);
+  const project = await clonedProject(run);
   const title = threadTitle(ctx, run.id);
   const runAt = new Date(Date.now() + FAR_FUTURE_MS).toISOString();
   const task = await callTool<ScheduledTask>(ctx, "schedule_task", {
@@ -792,7 +791,7 @@ async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
   // A thread that works in a clone of the pull request's repository can watch it. The watch is
   // removed whatever happens next, so no failed step leaves a full-access thread watching a public
   // pull request; a failed removal fails the scenario.
-  const repository = await clonedProject(run, await pickModel(ctx));
+  const repository = await clonedProject(run);
   const inRepository = await launch(run, SCENARIO_PROMPTS.reply("OK"), { projectId: repository.id });
   await waitForRun(run, inRepository.threadId);
   const watchTarget = { threadId: inRepository.threadId, url: SCENARIO_PULL_REQUEST };
@@ -840,7 +839,7 @@ export const SCENARIOS: Scenario[] = [
   { id: "S6", title: "Queue a message on a running turn, then edit and cancel it", targets: [...NON_DEPLOYED_TARGETS], run: tracked("S6", editQueue) },
   { id: "S7", title: "Scratch thread lifecycle with inbox preview and settling", targets: [...ALL_TARGETS], run: tracked("S7", inboxLifecycle) },
   { id: "S8", title: "Rename a thread and regenerate its title", targets: [...ALL_TARGETS], run: tracked("S8", renameThread) },
-  { id: "S9", title: "Clone and register a project, pick a model, set it as the default", targets: [...ALL_TARGETS], run: tracked("S9", projectSetup) },
+  { id: "S9", title: "Clone and register a project, pick a model, rename the project", targets: [...ALL_TARGETS], run: tracked("S9", projectSetup) },
   { id: "S10", title: "Schedule a task, run it now as a full-access thread, delete it", targets: [...ALL_TARGETS], run: tracked("S10", scheduledTask) },
   { id: "S11", title: "Read a thread's model, fork it, link and unlink pull requests, and watch one from its own repository", targets: [...ALL_TARGETS], run: tracked("S11", threadTools) },
 ];

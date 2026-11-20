@@ -140,7 +140,7 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
   },
   run_scheduled_task_now: { environmentId: "string", taskId: "string" },
   delete_scheduled_task: { environmentId: "string", scheduledTaskId: "string" },
-  watch_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string" },
+  watch_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string", until: "string" },
   unwatch_pull_request: { environmentId: "string", threadId: "string", url: "string", repository: "string", number: "integer", host: "string" },
   link_pull_requests: { environmentId: "string", threadId: "string", urls: "array" },
   list_thread_pull_requests: { environmentId: "string", threadId: "string", states: "array", cursor: "string" },
@@ -171,6 +171,7 @@ const REQUIRED_ENUM_VALUES: Record<string, string[]> = {
   "t3_queue.action": ["list", "read", "edit", "cancel"],
   "t3_thread_update.action": ["rename", "regenerate_title"],
   "t3_thread_transfer.action": ["fork", "merge_back", "status"],
+  "watch_pull_request.until": ["checks", "merged"],
 };
 /** Fields the bridge reads from T3's results; every real result must carry them. */
 const BRIDGE_READS = {
@@ -869,7 +870,8 @@ async function contractAssertions(options: {
 
 /**
  * Phase 2 facts the bridge relies on, checked against T3 and the fake: the webhook fields the bridge
- * strips, the default model T3 ignores on create, the webhook URL key it removes from results, and
+ * strips, the default model T3 refuses on create and does not apply on update, the webhook URL key
+ * it removes from results, and
  * the capability and scheduled-task fields it reads.
  */
 async function phase2Contract(
@@ -895,14 +897,12 @@ async function phase2Contract(
     ["real", realCall, join(workDir, `contract-${stamp}`)],
     ["fake", fakeCall, join(fake.home, `contract-${stamp}`)],
   ] as const) {
-    const project = await ok(call, "t3_project_create", {
-      title: `DevSpace bridge check ${stamp} contract project`,
-      workspaceRoot: root,
-      createWorkspaceRootIfMissing: true,
-      defaultModelSelection: model,
-    });
+    const createArgs = { title: `DevSpace bridge check ${stamp} contract project`, workspaceRoot: root, createWorkspaceRootIfMissing: true };
+    const withModel = await failureCode(call, "t3_project_create", { ...createArgs, defaultModelSelection: model });
+    assert.equal(withModel.code, "invalid_request", `${side}: T3 refuses a default model on create`);
+    const project = await ok(call, "t3_project_create", createArgs);
     try {
-      assert.equal(project.defaultModelSelection, null, `${side}: T3 ignores defaultModelSelection on create (if this fails, T3 fixed it; expose it again)`);
+      assert.equal(project.defaultModelSelection, null, `${side}: a new project has no default model of its own`);
       // T3 resolves a scheduled task's model from its own settings, so a project with no default
       // model of its own can schedule (0.1.8 refused). T3's settings must hold a default model.
       const unmodeled = await ok(call, "schedule_task", {
@@ -914,8 +914,16 @@ async function phase2Contract(
         enabled: false,
       });
       await ok(call, "delete_scheduled_task", { scheduledTaskId: unmodeled.scheduledTaskId });
+      // T3 keeps project defaults in its server settings and stores a default model given to
+      // t3_project_update on the project record, which it no longer reads, so DevSpace does not
+      // expose the field.
       const updated = await ok(call, "t3_project_update", { projectId: project.id, defaultModelSelection: model });
-      assert.deepEqual(updated.defaultModelSelection, model, `${side}: t3_project_update sets the default model`);
+      const reread = await ok(call, "t3_project_read", { projectId: project.id });
+      assert.deepEqual(
+        [updated.defaultModelSelection, reread.defaultModelSelection],
+        [null, null],
+        `${side}: T3 does not apply a default model set through MCP (if this fails, T3 applies it again; re-expose defaultModelSelection in t3_project_update)`,
+      );
       const task = await ok(call, "schedule_task", {
         projectId: project.id,
         title: `DevSpace bridge check ${stamp} contract webhook`,

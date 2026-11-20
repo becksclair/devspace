@@ -140,17 +140,21 @@ const WORKTREE_LIST_DEFAULT_LIMIT = 50;
 /**
  * Fields the project create and update tools forward. T3's other project settings cannot be
  * changed through DevSpace, notably `scripts` (commands T3 runs on every new worktree);
- * `t3_project_read` returns them read-only. T3 ignores a default model given at creation, so it
- * is set with `t3_project_update`.
+ * `t3_project_read` returns them read-only. Nor can a project's default model: T3 refuses one at
+ * creation, and since it moved project defaults into its server settings it stores one given to
+ * `t3_project_update` on the project record, which it no longer reads, and reports `null`.
  */
 const PROJECT_CREATE_FIELDS = ["title", "workspaceRoot", "createWorkspaceRootIfMissing"] as const;
-const PROJECT_UPDATE_FIELDS = ["projectId", "title", "defaultModelSelection"] as const;
+const PROJECT_UPDATE_FIELDS = ["projectId", "title"] as const;
 /** Webhook trigger settings; webhook triggers are not exposed (they accept requests from outside). */
 const WEBHOOK_SCHEDULE_FIELDS = ["signature", "maxDeliveryAgeMinutes", "dedupe", "filters"] as const;
 /** Secret-bearing scheduled-task fields removed from results: the webhook URL carries its access token. */
 const WEBHOOK_RESULT_FIELDS = ["webhookUrl", "webhookSignature"] as const;
 const SCHEDULE_DESCRIPTION =
   "Trigger: {type:'interval',everyMs} (everyMs at least 60000), {type:'fixed_time',timeOfDay:'HH:MM',weekdays?} (weekdays 0-6, 0 is Sunday; default every day), or {type:'once',runAt} (ISO-8601).";
+/** T3's own wording addresses the thread's agent ("this thread", "you will act on it yourself"). */
+const WATCH_UNTIL_DESCRIPTION =
+  "How long T3 keeps the watching thread working on the watch. Omit it to keep the current value; a new watch starts at \"checks\". \"checks\": until the PR's checks finish. \"merged\": until the PR merges or closes or the watch is removed. The watch wakes the thread's agent either way.";
 const ACTIVE_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 const OUTCOME_BY_STATUS: Record<string, "finished" | "failed" | "stopped"> = {
   completed: "finished",
@@ -249,14 +253,14 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "List T3 models",
     readOnly: true,
     summary: "List the agent providers and models T3 Code can run, with each model's options. The list is short; `search` finds other models.",
-    note: "Name models to the user by their `label`. A provider with `constraints` cannot run now; do not pick its models. Use a provider's `providerInstanceId` as `instanceId` and a model's `id` as `model` in t3_thread_launch `modelSelection` or t3_project_update `defaultModelSelection`.",
+    note: "Name models to the user by their `label`. A provider with `constraints` cannot run now; do not pick its models. Use a provider's `providerInstanceId` as `instanceId` and a model's `id` as `model` in t3_thread_launch or t3_thread_configure `modelSelection`.",
     ownDescription: true,
   },
   t3_project_create: {
     title: "Create a T3 project",
     readOnly: false,
     summary: "Register a folder as a T3 Code project, or create a new git repository for one.",
-    note: "Without `workspaceRoot`, T3 creates a git repository at `~/.t3/projects/<title>`. A `workspaceRoot` must be an absolute path (or start with `~/`) and is created when missing. Set the project's default model afterwards with t3_project_update.",
+    note: "Without `workspaceRoot`, T3 creates a git repository at `~/.t3/projects/<title>`. A `workspaceRoot` must be an absolute path (or start with `~/`) and is created when missing.",
   },
   t3_project_clone: {
     title: "Clone a repository for T3",
@@ -267,8 +271,8 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
   t3_project_update: {
     title: "Update a T3 project",
     readOnly: false,
-    summary: "Rename a T3 Code project or set its default model.",
-    note: "`defaultModelSelection` is `{ instanceId, model }` from orchestrator_capabilities.",
+    summary: "Rename a T3 Code project.",
+    note: "A project's default model cannot be set here; T3 uses the one set in the T3 Code app's settings. To run a thread on a particular model, pass `modelSelection` to t3_thread_launch.",
   },
   list_scheduled_tasks: {
     title: "List scheduled T3 tasks",
@@ -279,7 +283,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Schedule a T3 task",
     readOnly: false,
     summary: "Create or update a T3 Code scheduled task that starts a new thread on a schedule.",
-    note: "Pass `projectId` when creating a task. Unless `freshSession` is set, each run starts a new full-access thread, in its own worktree when the project is a git repository. The task keeps the model T3 resolves from its own settings when the task is created (normally T3's default model); it cannot be set here, and a default set with t3_project_update may not be the one used. Webhook triggers are not available here.",
+    note: "Pass `projectId` when creating a task. Unless `freshSession` is set, each run starts a new full-access thread, in its own worktree when the project is a git repository. The task keeps the model T3 resolves from its own settings when the task is created (normally T3's default model); it cannot be set here. Webhook triggers are not available here.",
   },
   run_scheduled_task_now: {
     title: "Run a scheduled T3 task now",
@@ -296,7 +300,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Watch a pull request for a T3 thread",
     readOnly: false,
     summary:
-      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other); a merged PR is refused. The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, or merge conflicts, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
+      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other); a merged PR is refused. The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, or merge conflicts, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. `until` sets how long T3 keeps the thread working on it: `checks` (a new watch's default) until checks finish, `merged` until the PR merges or closes or you unwatch it; omitted, an existing watch keeps its value. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
     ownDescription: true,
   },
   unwatch_pull_request: {
@@ -1978,7 +1982,8 @@ function shapeArguments(name: string, input: Args): Args | string {
     }
     case "t3_project_create": {
       const picked = pick(args, PROJECT_CREATE_FIELDS);
-      if (picked.workspaceRoot === undefined) return picked;
+      // T3 makes the folder of a project started from its title, and refuses any other field there.
+      if (picked.workspaceRoot === undefined) return pick(picked, ["title"]);
       const root = absolutePath(picked.workspaceRoot, "workspaceRoot");
       if (root.error) return root.error;
       picked.workspaceRoot = root.path;
@@ -2110,9 +2115,12 @@ function watchedRepository(args: Args, defaultKey: string): string | null | unde
   return `${host}/${args.repository.trim()}`.toLowerCase();
 }
 
-/** Only the thread and one way of naming the pull request, so T3 cannot read a second target. */
+/**
+ * Only the thread, one way of naming the pull request (so T3 cannot read a second target), and
+ * `until`.
+ */
 function watchArguments(args: Args): Args {
-  return pick(args, nonEmptyString(args.url) ? ["threadId", "url"] : ["threadId", "repository", "number", "host"]);
+  return pick(args, nonEmptyString(args.url) ? ["threadId", "url", "until"] : ["threadId", "repository", "number", "host", "until"]);
 }
 
 /**
@@ -2173,6 +2181,9 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
       for (const key of Object.keys(properties)) if (!fields.includes(key)) delete properties[key];
       break;
     }
+    case "watch_pull_request":
+      if (isRecord(properties.until)) properties.until = { ...properties.until, description: WATCH_UNTIL_DESCRIPTION };
+      break;
     case "schedule_task": {
       // `trimmed` is a deep copy, so the nested schedule schema is edited in place.
       delete properties.bindToCurrentThread;

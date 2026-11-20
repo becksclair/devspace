@@ -70,7 +70,11 @@ interface ProjectRecord {
   workspaceRoot: string;
   faviconPath: string | null;
   projectIcon: JsonObject | null;
-  /** `{instanceId, model}` plus `options` when set; T3 drops `provider`. */
+  /**
+   * The project's default model as T3 reports it: the one its server settings hold for the
+   * project (set in the T3 Code app; `addProject` stands in for that). `{instanceId, model}` plus
+   * `options` when set; T3 drops `provider`.
+   */
   defaultModelSelection: JsonObject | null;
   defaultThreadEnvMode: string | null;
   autoPull: boolean;
@@ -1644,15 +1648,26 @@ export class FakeT3 {
   }
 
   /**
-   * Real T3 ignores `defaultModelSelection` here (the result is always `null`; set it with
-   * `t3_project_update`). Without `workspaceRoot` it makes `<home>/.t3/projects/<title>` with a
-   * README and a git repository; with one, the folder must exist unless
-   * `createWorkspaceRootIfMissing` is true.
+   * Real T3 refuses a default model here. Without `workspaceRoot` it takes only a title and makes
+   * `<home>/.t3/projects/<title>` with a README and a git repository; with one, the folder must
+   * exist unless `createWorkspaceRootIfMissing` is true.
    */
   private projectCreate(args: JsonObject): JsonObject {
     storedModelSelection("t3_project_create", args.defaultModelSelection);
     const title = String(args.title);
     const given = optString(args.workspaceRoot);
+    if (given === undefined && (args.scripts !== undefined || args.createWorkspaceRootIfMissing !== undefined || args.defaultModelSelection !== undefined)) {
+      throw new ToolFailure(
+        "invalid_request",
+        "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
+      );
+    }
+    if (given !== undefined && args.defaultModelSelection !== undefined && args.defaultModelSelection !== null) {
+      throw new ToolFailure(
+        "invalid_request",
+        "Creating a project does not set its default model; set defaultModelSelection afterwards with t3_project_update.",
+      );
+    }
     const root = given !== undefined ? resolve(this.home, given) : join(this.home, ".t3", "projects", title);
     if ([...this.projects.values()].some((project) => project.workspaceRoot === root)) {
       throw new ToolFailure("invalid_request", "The workspace is already registered to a project.");
@@ -1678,13 +1693,17 @@ export class FakeT3 {
     return this.projectRow(project);
   }
 
+  /**
+   * Real T3 validates `defaultModelSelection` and stores it on the project record, which it no
+   * longer reads once project settings live in its server settings, so the reported default model
+   * does not change.
+   */
   private projectUpdate(args: JsonObject): JsonObject {
     const project = this.requireProject(args.projectId);
-    const selection = storedModelSelection("t3_project_update", args.defaultModelSelection);
+    storedModelSelection("t3_project_update", args.defaultModelSelection);
     const at = nowIso();
     if (typeof args.title === "string") project.title = args.title;
     if (typeof args.workspaceRoot === "string") project.workspaceRoot = resolve(this.home, args.workspaceRoot);
-    if (selection !== undefined) project.defaultModelSelection = selection;
     if (typeof args.autoPull === "boolean") project.autoPull = args.autoPull;
     if (args.projectIcon !== undefined) project.projectIcon = isRecord(args.projectIcon) ? { ...args.projectIcon } : null;
     if (args.faviconPath !== undefined) project.faviconPath = optString(args.faviconPath) ?? null;
