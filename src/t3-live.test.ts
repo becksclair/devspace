@@ -66,6 +66,14 @@ const LOCAL_SCENARIOS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "
 const DEPLOYED_SCENARIOS = ["S1", "S2", "S3", "S7", "S8", "S9", "S10", "S11"];
 /** Where T3 keeps worktrees for project threads (scheduled runs create them). */
 const T3_WORKTREES_DIR = join(homedir(), ".t3", "worktrees");
+/**
+ * Removes a folder that real T3 threads worked in. A thread's agent tooling can still be writing into it
+ * after the thread is archived (a Claude plugin's `.remember/logs` once did), which makes a single recursive
+ * rm fail with ENOTEMPTY; Node's retries (also on EBUSY and EPERM) wait for those writes to stop.
+ */
+async function removeThreadFolder(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+}
 // Row keys real T3 includes only for some threads.
 const OPTIONAL_ROW_KEYS = new Set(["branch"]);
 /** The deployed suite's DevSpace OAuth client and refresh token (directory 0700, file 0600; never printed). */
@@ -985,9 +993,11 @@ async function cleanupStampedProjects(direct: T3Call, stamp: string, workDir: st
     return found;
   };
   for (const project of await stampedProjects()) await ok(direct, "t3_project_delete", { projectId: project.id, force: true });
-  if (workDir) await rm(workDir, { recursive: true, force: true });
   const stampedWorktrees = async (): Promise<string[]> => (await readdir(T3_WORKTREES_DIR).catch(() => [] as string[])).filter((entry) => entry.includes(stamp));
-  for (const entry of await stampedWorktrees()) await rm(join(T3_WORKTREES_DIR, entry), { recursive: true, force: true });
+  // Attempt every removal before reporting, so one folder that cannot be removed does not leave the others behind.
+  const folders = [...(await stampedWorktrees()).map((entry) => join(T3_WORKTREES_DIR, entry)), ...(workDir ? [workDir] : [])];
+  const failed = (await Promise.allSettled(folders.map(removeThreadFolder))).filter((result) => result.status === "rejected");
+  if (failed.length > 0) throw new Error(failed.map((result) => describe(result.reason)).join("; "));
   assert.deepEqual((await stampedProjects()).map((project) => project.title), [], "no project carries the stamp");
   assert.deepEqual(await stampedWorktrees(), [], "no worktree carries the stamp");
   assert.deepEqual((await stampedTasks()).map((task) => task.title), [], "no scheduled task carries the stamp");
@@ -1273,7 +1283,7 @@ async function runLocal(stamp: string): Promise<void> {
     if (!threadsCleaned) await check("cleanup: every thread titled with the stamp is archived", archiveStampedThreads);
     await check("cleanup: no project, folder, worktree, or scheduled task carrying the stamp remains", async () => {
       if (harness) await cleanupStampedProjects(directCaller(harness), stamp, workDir);
-      else await rm(workDir, { recursive: true, force: true });
+      else await removeThreadFolder(workDir);
     });
     await client?.close().catch(() => undefined);
     running.close?.();
@@ -1475,7 +1485,7 @@ async function runDeployed(stamp: string): Promise<void> {
   } finally {
     await check("cleanup: no project, folder, worktree, or scheduled task carrying the stamp remains", async () => {
       if (harness) await cleanupStampedProjects(directCaller(harness), stamp, workDir);
-      else await rm(workDir, { recursive: true, force: true });
+      else await removeThreadFolder(workDir);
     });
     await harness?.close().catch(() => undefined);
     await check("cleanup: revoke the harness's T3 sessions", async () => {
