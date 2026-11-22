@@ -2082,7 +2082,8 @@ export class FakeT3 {
   private async threadWait(args: JsonObject, context: CallContext): Promise<JsonObject> {
     const thread = this.requireThread(args.threadId);
     const runId = optString(args.runId);
-    const run = runId !== undefined ? thread.runs.find((candidate) => candidate.runId === runId) : latestRun(thread);
+    // Without `runId`, T3 waits on the run with the highest ordinal, a queued one included.
+    const run = runId !== undefined ? thread.runs.find((candidate) => candidate.runId === runId) : thread.runs.at(-1);
     if (runId !== undefined && !run) throw new ToolFailure("not_found", `Run ${runId} was not found.`);
     if (!run) return { threadId: thread.threadId, runId: null, status: "idle", timedOut: false };
     const timeoutMs = clamp(typeof args.timeoutMs === "number" ? args.timeoutMs : 30_000, 0, 600_000);
