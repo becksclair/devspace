@@ -1,6 +1,6 @@
 {
-  "capturedFrom": "T3 Code v0.1.11-nightly.20261119.4954",
-  "capturedAt": "2026-11-20",
+  "capturedFrom": "T3 Code v0.1.12-nightly.20261121.5064",
+  "capturedAt": "2026-11-22",
   "allToolNames": [
     "orchestrator_capabilities",
     "t3_workflow_stop",
@@ -500,6 +500,43 @@
                     ],
                     "additionalProperties": true
                   }
+                },
+                "trackedFolders": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "discovered": {
+                            "anyOf": [
+                              {
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "name"
+                        ],
+                        "additionalProperties": true
+                      },
+                      "maxItems": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "pinnedAt": {
                   "anyOf": [
@@ -2174,6 +2211,10 @@
           "untilDelegatedWorkSettled": {
             "type": "boolean",
             "description": "Also wait for its delegated and background tasks and their completions to settle. `resultRun` then names the run with its final answer."
+          },
+          "untilOutput": {
+            "type": "boolean",
+            "description": "Also wait for the `output` the run was asked for, which a later turn may submit."
           }
         },
         "required": [
@@ -2259,6 +2300,14 @@
                 "type": "null"
               }
             ]
+          },
+          "output": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -2279,7 +2328,7 @@
     },
     {
       "name": "t3_thread_launch",
-      "description": "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+      "description": "Create a top-level thread in its workspace before starting. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. On error or lost reply, reuse `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2295,6 +2344,9 @@
           },
           "title": {
             "type": "string"
+          },
+          "generateTitle": {
+            "type": "boolean"
           },
           "modelSelection": {
             "type": "object",
@@ -2346,6 +2398,22 @@
               },
               "startFromOrigin": {
                 "type": "boolean"
+              },
+              "repositories": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                },
+                "maxItems": 128,
+                "description": "Tracked Git folders to give a worktree. Default: all, or none above 8."
               }
             },
             "required": [
@@ -2417,6 +2485,10 @@
               ]
             },
             "maxItems": 8
+          },
+          "outputSchema": {
+            "type": "object",
+            "description": "As in `t3_thread_send`. Needs `message`."
           },
           "clientRequestId": {
             "type": "string"
@@ -2575,6 +2647,10 @@
           "freshContext": {
             "type": "boolean",
             "description": "Start a new provider session without the thread's earlier context, like /clear. Never steers."
+          },
+          "outputSchema": {
+            "type": "object",
+            "description": "JSON Schema for a result the turn must return as data, read back as `output` from `t3_thread_wait`. Never steers."
           },
           "clientRequestId": {
             "type": "string"
@@ -4248,6 +4324,25 @@
                 "runOnWorktreeCreate"
               ]
             }
+          },
+          "trackedFolders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "name"
+              ]
+            },
+            "maxItems": 128
           }
         },
         "required": [
@@ -4665,6 +4760,43 @@
               "additionalProperties": true
             }
           },
+          "trackedFolders": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "discovered": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "name"
+                  ],
+                  "additionalProperties": true
+                },
+                "maxItems": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "pinnedAt": {
             "anyOf": [
               {
@@ -4880,6 +5012,26 @@
                 "runOnWorktreeCreate"
               ]
             }
+          },
+          "trackedFolders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "name"
+              ]
+            },
+            "maxItems": 128,
+            "description": "Extra folders by absolute path. Replaces the whole list."
           },
           "pinned": {
             "type": "boolean"
@@ -5303,6 +5455,43 @@
               ],
               "additionalProperties": true
             }
+          },
+          "trackedFolders": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "discovered": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "name"
+                  ],
+                  "additionalProperties": true
+                },
+                "maxItems": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "pinnedAt": {
             "anyOf": [
@@ -5797,6 +5986,43 @@
               "additionalProperties": true
             }
           },
+          "trackedFolders": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "discovered": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "name"
+                  ],
+                  "additionalProperties": true
+                },
+                "maxItems": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "pinnedAt": {
             "anyOf": [
               {
@@ -6271,7 +6497,7 @@
     {
       "name": "watch_pull_request",
       "title": "Watch pull request",
-      "description": "Watch an open PR for this thread, linking it first if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, or conflicts. Handle old comments first. Only later ones wake you. After this call, end your turn. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
+      "description": "Watch an open PR for this thread, linking it if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, conflicts, and once on merge or close unless you did it via CLI. Handle old comments first; only new ones wake you. After this call, end your turn. The watch stays on: do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -6301,7 +6527,7 @@
               "checks",
               "merged"
             ],
-            "description": "How long this thread stays working. Omit it to keep the current value; a new watch starts at \"checks\". \"checks\": until checks finish, for a PR you hand to the user. \"merged\": until it merges or closes or you unwatch it, when you will act on it yourself, such as merging after someone else approves."
+            "description": "How long this thread stays working. Omit to keep the current value; a new watch starts at \"checks\". \"checks\": until checks finish, for a PR you hand to the user. \"merged\": until it merges, closes or is unwatched, when you act on it yourself, such as merging after approval."
           }
         }
       },
@@ -6327,6 +6553,31 @@
           },
           "wasWatching": {
             "type": "boolean"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "merged",
+                  "closed"
+                ],
+                "description": "The PR already ended, so nothing was watched."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -6398,6 +6649,31 @@
           },
           "wasWatching": {
             "type": "boolean"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "merged",
+                  "closed"
+                ],
+                "description": "The PR already ended, so nothing was watched."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -7605,6 +7881,43 @@
               ],
               "additionalProperties": true
             }
+          },
+          "trackedFolders": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "discovered": {
+                      "anyOf": [
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "name"
+                  ],
+                  "additionalProperties": true
+                },
+                "maxItems": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "pinnedAt": {
             "anyOf": [

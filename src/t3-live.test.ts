@@ -221,7 +221,10 @@ const EXPANSION_ERROR_CASES: Array<{ tool: string; args: Json; code: string }> =
   { tool: "t3_worktree_list", args: {}, code: "target_required" },
   { tool: "t3_project_read", args: { projectId: "devspace-contract-probe" }, code: "invalid_request" },
 ];
-const CONTRACT_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/1";
+// Open and untouched since 2012, so T3 links and watches it.
+const CONTRACT_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/37";
+// Closed without merging in 2011: T3 neither watches nor links it, and says so in the result.
+const CONTRACT_ENDED_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/1";
 // Linked with the first and unlinked by URL straight away, before T3 can have read its state.
 const CONTRACT_SECOND_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/2";
 const EXPANSION_TEXT_FAILURES: Array<{ tool: string; args: Json }> = [
@@ -614,6 +617,7 @@ interface ExpansionSample {
   listing: Json;
   watched: Json;
   unwatched: Json;
+  ended: Json;
   unlinkedOne: Json;
   unlinked: Json;
   refs: Json;
@@ -662,26 +666,31 @@ async function sampleExpansionShapes(call: T3Call, title: string, modelSelection
     watchAttempted = true;
     const watched = await ok(call, "watch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST });
     const unwatched = await ok(call, "unwatch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST });
-    watchAttempted = false;
+    const ended = await ok(call, "watch_pull_request", { threadId, url: CONTRACT_ENDED_PULL_REQUEST });
+    // A watch T3 armed anyway is removed (and its removal checked) in `finally`.
+    watchAttempted = unwatched.watching !== false || ended.watching !== false;
     // Every state: the pull request may have changed state since the listing above.
     const unlinked = await ok(call, "unlink_pull_requests", { threadId, states: ["open", "closed", "merged"] });
     const refs = await ok(call, "t3_worktree_list", { threadId });
     const project = await ok(call, "t3_project_read", { projectId: launch.projectId });
     const links = await ok(call, "t3_environment_links", {});
-    return { configuration, configured, fork, transfers, linked, listing, watched, unwatched, unlinkedOne, unlinked, refs, project, links };
+    return { configuration, configured, fork, transfers, linked, listing, watched, unwatched, ended, unlinkedOne, unlinked, refs, project, links };
   } finally {
     // Archiving does not end a watch, so one that may be on is removed first (two attempts); a
     // watch that could not be removed fails the check instead of staying behind unnoticed.
     let watchLeft = watchAttempted;
     for (let attempt = 0; watchLeft && attempt < 2; attempt += 1) {
-      const removed = await call("unwatch_pull_request", { threadId, url: CONTRACT_PULL_REQUEST }).catch(() => undefined);
-      watchLeft = removed === undefined || removed.isError === true;
+      watchLeft = false;
+      for (const url of [CONTRACT_PULL_REQUEST, CONTRACT_ENDED_PULL_REQUEST]) {
+        const removed = await call("unwatch_pull_request", { threadId, url }).catch(() => undefined);
+        if (removed === undefined || removed.isError === true) watchLeft = true;
+      }
     }
     for (const id of threadIds) {
       await call("t3_thread_organize", { threadId: id, action: "settle" });
       await call("t3_thread_organize", { threadId: id, action: "archive" });
     }
-    if (watchLeft) fail(`the watch on ${CONTRACT_PULL_REQUEST} could not be removed from thread ${threadId}`);
+    if (watchLeft) fail(`a watch on ${CONTRACT_PULL_REQUEST} or ${CONTRACT_ENDED_PULL_REQUEST} could not be removed from thread ${threadId}`);
   }
 }
 
@@ -715,6 +724,7 @@ async function expansionContract(realCall: T3Call, fakeCall: T3Call, stamp: stri
   compareKeys("pull request listing", [real.listing], [fake.listing], ["pullRequests", "chains", "nextCursor"]);
   compareKeys("pull request entries", records(real.listing.pullRequests), records(fake.listing.pullRequests), ["url", "repository", "number", "state", "watching"]);
   compareKeys("watch results", [real.watched, real.unwatched], [fake.watched, fake.unwatched], ["url", "number", "watching", "wasWatching"]);
+  compareKeys("watch result for an ended pull request", [real.ended], [fake.ended], ["url", "number", "watching", "wasWatching", "state", "next"]);
   compareKeys("unlink result", [real.unlinked], [fake.unlinked], ["unlinked", "unlinkedCount", "remaining"]);
   compareKeys("single unlink result", [real.unlinkedOne], [fake.unlinkedOne], ["host", "repository", "number", "wasLinked"]);
   assert.equal(real.unlinkedOne.wasLinked, true, "T3 unlinks one pull request by URL before it has read its state");
@@ -723,7 +733,8 @@ async function expansionContract(realCall: T3Call, fakeCall: T3Call, stamp: stri
   // The bridge returns `environmentId` and `links` and drops `notListed`.
   compareKeys("linked environments", [real.links], [fake.links], ["environmentId", "links", "notListed"]);
   assert.equal(real.configuration.runtimeMode, "full-access");
-  assert.deepEqual([real.watched.watching, real.unwatched.watching], [true, false], "T3 watches a pull request that is not merged");
+  assert.deepEqual([real.watched.watching, real.unwatched.watching], [true, false], "T3 watches an open pull request");
+  assert.deepEqual([real.ended.watching, real.ended.state], [false, "closed"], "T3 does not watch a closed pull request");
   assert.deepEqual([real.unlinked.unlinkedCount, real.unlinked.remaining], [1, 0]);
 }
 
@@ -1129,6 +1140,7 @@ async function runLocal(stamp: string): Promise<void> {
   const harnessProvider = createT3TokenProvider({ runner, resolveOrigin, label: harnessLabel, fetchImpl });
 
   const fake = await FakeT3.start();
+  fake.setPullRequest(CONTRACT_ENDED_PULL_REQUEST, { state: "closed", title: "Edited README via GitHub" });
   const fakeCliLog: CliRecord[] = [];
   const fakeRunner = recordingRunner(createT3CliRunner(fake.cliPath, []), fakeCliLog, new Set());
   const fakeProvider = createT3TokenProvider({ runner: fakeRunner, resolveOrigin: async () => fake.origin, label: harnessLabel });

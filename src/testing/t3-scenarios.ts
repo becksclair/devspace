@@ -101,7 +101,7 @@ interface ThreadSummary {
 interface ThreadItem { position: number; itemId: string; type: string; createdBy?: string; text?: string | null; updatedAt?: string }
 interface ThreadReadResult { thread: ThreadSummary; items: ThreadItem[]; olderAvailable?: boolean }
 interface LaunchResult { threadId: string; link: string; projectId?: string; runId?: string; status?: string }
-interface WaitResult { threadId: string; runId?: string | null; status: string; timedOut: boolean }
+interface WaitResult { threadId: string; runId?: string | null; status: string; timedOut: boolean; output?: unknown }
 interface SendResult { threadId: string; runId?: string; status?: string; delivery: string }
 interface InterruptResult { threadId: string; runId?: string | null; status: string }
 interface InboxNeedsYou {
@@ -159,8 +159,9 @@ const REAL_POLL_MS = 2_000;
 const SINCE_MARGIN_MS = 2_000;
 const SLEEP_SECONDS = 60;
 const STEER_MESSAGE = "No change; keep waiting for the command to finish.";
-// A public pull request that was closed without merging in 2011, so T3 can link and watch it.
-const SCENARIO_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/1";
+// A public pull request that has been open, untouched, since 2012, so T3 can link and watch it
+// (T3 watches no pull request that already merged or closed).
+const SCENARIO_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/37";
 // Linked and unlinked by URL straight away, before T3 can have read its state.
 const SCENARIO_SECOND_PULL_REQUEST = "https://github.com/octocat/Hello-World/pull/2";
 const PULL_REQUEST_STATES = ["open", "closed", "merged"] as const;
@@ -265,13 +266,19 @@ async function settleThenArchive(run: ScenarioRun, threadId: string): Promise<vo
   run.archived.add(threadId);
 }
 
-async function launch(run: ScenarioRun, message: string, placement: { projectId: string } | { scratch: true } = { scratch: true }): Promise<LaunchResult> {
+async function launch(
+  run: ScenarioRun,
+  message: string,
+  placement: { projectId: string } | { scratch: true } = { scratch: true },
+  extra: Record<string, unknown> = {},
+): Promise<LaunchResult> {
   const { ctx } = run;
   const result = await callTool<LaunchResult>(ctx, "t3_thread_launch", {
     ...placement,
     title: threadTitle(ctx, run.id),
     message,
     ...(ctx.modelSelection ? { modelSelection: ctx.modelSelection } : {}),
+    ...extra,
   });
   assert.equal(typeof result.threadId, "string", "t3_thread_launch must return a threadId");
   run.launched.push(result.threadId);
@@ -280,12 +287,15 @@ async function launch(run: ScenarioRun, message: string, placement: { projectId:
 }
 
 // Loops bounded t3_thread_wait calls until the run stops or the scenario deadline passes.
-async function waitForRun(run: ScenarioRun, threadId: string): Promise<WaitResult> {
+async function waitForRun(run: ScenarioRun, threadId: string, untilOutput = false): Promise<WaitResult> {
   for (;;) {
     const remaining = run.deadline - Date.now();
-    if (remaining <= 0) throw new Error(`${run.id} timed out after ${run.ctx.timeoutMs} ms waiting for thread ${threadId} to finish`);
+    if (remaining <= 0) {
+      const awaited = untilOutput ? "to finish and submit its output" : "to finish";
+      throw new Error(`${run.id} timed out after ${run.ctx.timeoutMs} ms waiting for thread ${threadId} ${awaited}`);
+    }
     const timeoutMs = Math.min(WAIT_SLICE_MS, Math.max(1_000, remaining));
-    const result = await callTool<WaitResult>(run.ctx, "t3_thread_wait", { threadId, timeoutMs });
+    const result = await callTool<WaitResult>(run.ctx, "t3_thread_wait", { threadId, timeoutMs, ...(untilOutput ? { untilOutput } : {}) });
     assert.equal(typeof result.timedOut, "boolean", "t3_thread_wait must return timedOut");
     if (!result.timedOut) return result;
   }
@@ -608,12 +618,16 @@ async function inboxLifecycle(run: ScenarioRun): Promise<Record<string, unknown>
   return { threadId, link: launched.link, since, waitStatus: wait.status, outcome: entry.outcome, preview: entry.preview };
 }
 
-// S8: rename a thread, then regenerate its title.
+// S8: start a thread that returns a structured result, then rename it and regenerate its title.
 async function renameThread(run: ScenarioRun): Promise<Record<string, unknown>> {
   const { ctx } = run;
-  const launched = await launch(run, SCENARIO_PROMPTS.reply("OK"));
+  const outputSchema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"], additionalProperties: false };
+  const launched = await launch(run, `${SCENARIO_PROMPTS.reply("OK")}. Return that word as \`answer\`.`, { scratch: true }, { outputSchema });
   const threadId = launched.threadId;
-  await waitForRun(run, threadId);
+  const wait = await waitForRun(run, threadId, true);
+  assert.equal(wait.status, "completed");
+  assert.ok(isRecord(wait.output) && typeof wait.output.answer === "string", `t3_thread_wait with untilOutput must return the output, got ${JSON.stringify(wait.output)}`);
+  assert.match(wait.output.answer, /OK/, "the structured answer carries the reply");
   const title = `${threadTitle(ctx, run.id)} renamed`;
   const renamed = await callTool<ThreadUpdateResult>(ctx, "t3_thread_update", { threadId, action: "rename", title });
   assert.equal(renamed.title, title, "t3_thread_update must return the new title");
@@ -622,7 +636,7 @@ async function renameThread(run: ScenarioRun): Promise<Record<string, unknown>> 
   assert.equal((await readThread(ctx, threadId, 1)).thread.title, title);
   const regenerating = await callTool<ThreadUpdateResult>(ctx, "t3_thread_update", { threadId, action: "regenerate_title" });
   assert.ok(isRecord(regenerating.titleRegeneration), "regenerate_title must report the regeneration request");
-  return { threadId, link: launched.link, renamedTo: title };
+  return { threadId, link: launched.link, output: wait.output, renamedTo: title };
 }
 
 /** Picks the scenario model from orchestrator_capabilities, the way an orchestrator would. */
@@ -754,7 +768,7 @@ async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
     urls: [SCENARIO_PULL_REQUEST, SCENARIO_SECOND_PULL_REQUEST, "https://example.com/not-a-pull-request"],
   });
   assert.equal(linked.linkedCount, 2);
-  assert.deepEqual(linked.linked.map((group) => group.numbers), [[1, 2]]);
+  assert.deepEqual(linked.linked.map((group) => [...group.numbers].sort((x, y) => x - y)), [[2, 37]]);
   assert.deepEqual(linked.invalidUrls, ["https://example.com/not-a-pull-request"]);
   const unlinkedOne = await callTool<UnlinkOneResult>(ctx, "unlink_pull_request", { threadId, url: SCENARIO_SECOND_PULL_REQUEST });
   assert.deepEqual([unlinkedOne.number, unlinkedOne.wasLinked], [2, true], "one pull request is unlinked by URL whatever its state");
@@ -796,14 +810,24 @@ async function threadTools(run: ScenarioRun): Promise<Record<string, unknown>> {
   await waitForRun(run, inRepository.threadId);
   const watchTarget = { threadId: inRepository.threadId, url: SCENARIO_PULL_REQUEST };
   let watched: WatchResult;
-  let unwatched: WatchResult;
+  let unwatched: WatchResult | undefined;
   try {
     watched = await callTool<WatchResult>(ctx, "watch_pull_request", watchTarget);
   } finally {
-    unwatched = await callTool<WatchResult>(ctx, "unwatch_pull_request", watchTarget);
+    // Two attempts: a watch left behind would let anyone who comments on the public pull request
+    // start turns in a full-access thread, and archiving the thread does not end it.
+    const failures: string[] = [];
+    for (let attempt = 0; attempt < 2 && unwatched?.watching !== false; attempt += 1) {
+      unwatched = await callTool<WatchResult>(ctx, "unwatch_pull_request", watchTarget).catch((error: unknown) => {
+        failures.push(describeError(error));
+        return undefined;
+      });
+    }
+    if (unwatched?.watching !== false) {
+      throw new Error(`the watch on ${SCENARIO_PULL_REQUEST} may still be on in thread ${inRepository.threadId}: ${failures.join("; ") || "unwatch reported watching"}`);
+    }
   }
-  assert.deepEqual([watched.number, watched.watching, watched.wasWatching], [1, true, false]);
-  assert.equal(unwatched.watching, false, "unwatching stops the watch");
+  assert.deepEqual([watched.number, watched.watching, watched.wasWatching], [37, true, false]);
   const afterWatch = await callTool<UnlinkOneResult>(ctx, "unlink_pull_request", watchTarget);
   assert.equal(afterWatch.wasLinked, true, "watching linked the pull request to the thread");
 
@@ -838,7 +862,7 @@ export const SCENARIOS: Scenario[] = [
   { id: "S5", title: "Answer an agent question surfaced by the inbox", targets: [...NON_DEPLOYED_TARGETS], run: tracked("S5", answerQuestion) },
   { id: "S6", title: "Queue a message on a running turn, then edit and cancel it", targets: [...NON_DEPLOYED_TARGETS], run: tracked("S6", editQueue) },
   { id: "S7", title: "Scratch thread lifecycle with inbox preview and settling", targets: [...ALL_TARGETS], run: tracked("S7", inboxLifecycle) },
-  { id: "S8", title: "Rename a thread and regenerate its title", targets: [...ALL_TARGETS], run: tracked("S8", renameThread) },
+  { id: "S8", title: "Get a structured result from a thread, rename it, and regenerate its title", targets: [...ALL_TARGETS], run: tracked("S8", renameThread) },
   { id: "S9", title: "Clone and register a project, pick a model, rename the project", targets: [...ALL_TARGETS], run: tracked("S9", projectSetup) },
   { id: "S10", title: "Schedule a task, run it now as a full-access thread, delete it", targets: [...ALL_TARGETS], run: tracked("S10", scheduledTask) },
   { id: "S11", title: "Read a thread's model, fork it, link and unlink pull requests, and watch one from its own repository", targets: [...ALL_TARGETS], run: tracked("S11", threadTools) },
