@@ -280,7 +280,7 @@ An Electron `CompileAndCall` warning on stderr is harmless. If the launcher repo
 
 **`watch_pull_request watches only pull requests of the thread's own repository …`** The pull request is in another repository, or the thread's project has no git remote that T3 recognises (see [Pull requests](#pull-requests)). Start the watch from a thread whose project is a checkout of that repository, or link the pull request with `link_pull_requests` and follow it with `list_thread_pull_requests`. If the URL is right and still refused, pass it in its plain form, `https://<host>/<owner>/<name>/pull/<number>`.
 
-**`Could not change whether the pull request is watched.`** from `watch_pull_request`. T3 refuses a watch from a thread that is settled or archived. Unsettle or unarchive the thread with `t3_thread_organize` first, or watch from a thread that is still in use.
+**`Could not change whether the pull request is watched.`** from `watch_pull_request`. T3 refuses a watch from a thread that is settled or archived. Unsettle the thread with `t3_thread_organize` first; archiving also settles a thread, so an archived one needs `unarchive` and then `unsettle`. Or watch from a thread that is still in use.
 
 **`environmentId is not supported: …`** The call named a machine. DevSpace's T3 tools act only on the T3 Code of the machine DevSpace runs on, and nothing was sent to T3. To act on this machine, repeat the call without `environmentId`; to work on another machine, connect to a DevSpace that runs there.
 
