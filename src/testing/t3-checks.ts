@@ -907,6 +907,36 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
     assert.ok(args && typeof args.clientRequestId === "string" && args.clientRequestId.length > 0, `${tool} gets a clientRequestId`);
   }
 
+  // Structured output: `outputSchema` reaches T3 on launch and send, `untilOutput` on wait, and
+  // the wait result's `output` comes back unchanged.
+  const outputSchema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] };
+  mark = fake.calls.length;
+  const structured = await ok(call, "t3_thread_launch", { scratch: true, title: "Shaping output", message: "Reply with exactly SHAPED", outputSchema });
+  const structuredId = String(structured.threadId);
+  const structuredWait = await ok(call, "t3_thread_wait", { threadId: structuredId, untilOutput: true });
+  assert.deepEqual(forwarded(fake, "t3_thread_launch", mark)[0]?.outputSchema, outputSchema);
+  assert.equal(forwarded(fake, "t3_thread_wait", mark)[0]?.untilOutput, true);
+  assert.deepEqual(structuredWait.output, { answer: "SHAPED" });
+  mark = fake.calls.length;
+  await ok(call, "t3_thread_send", { threadId: structuredId, message: "Reply with exactly AGAIN", outputSchema });
+  assert.deepEqual(forwarded(fake, "t3_thread_send", mark)[0]?.outputSchema, outputSchema);
+  assert.deepEqual((await ok(call, "t3_thread_wait", { threadId: structuredId, untilOutput: true })).output, { answer: "AGAIN" });
+  assert.ok(!("output" in (await ok(call, "t3_thread_wait", { threadId }))), "a run without outputSchema returns no output");
+  await ok(call, "t3_thread_organize", { threadId: structuredId, action: "archive" });
+  // A send with outputSchema never steers: behind a running turn it queues, and a wait without
+  // runId waits on that queued run, as T3's does. The running turn is a fixture that only an
+  // interrupt ends, and the interrupt comes after the wait reached the fake, so nothing is timed.
+  const { threadId: busyId } = fake.addThread({ title: "Shaping busy", status: "running" });
+  const queued = await ok(call, "t3_thread_send", { threadId: busyId, message: "Reply with exactly QUEUED", outputSchema });
+  assert.equal(queued.delivery, "queued");
+  mark = fake.calls.length;
+  const queuedWaiting = ok(call, "t3_thread_wait", { threadId: busyId, untilOutput: true });
+  await waitFor("the wait to reach the fake", () => forwarded(fake, "t3_thread_wait", mark).length > 0);
+  await ok(call, "t3_thread_interrupt", { threadId: busyId });
+  const queuedWait = await queuedWaiting;
+  assert.deepEqual([queuedWait.runId, queuedWait.output], [queued.runId, { answer: "QUEUED" }]);
+  await ok(call, "t3_thread_organize", { threadId: busyId, action: "archive" });
+
   // B15: threadId is required before anything is sent to T3.
   mark = fake.calls.length;
   const pullRequest = { url: "https://github.com/octocat/Hello-World/pull/1" };
@@ -1176,6 +1206,7 @@ const PR_CLOSED = "https://github.com/octocat/Hello-World/pull/12";
 const PR_MERGED = "https://github.com/becksclair/devspace/pull/13";
 const PR_UNREAD = "https://github.com/octocat/Hello-World/pull/14";
 const PR_MERGED_HERE = "https://github.com/octocat/Hello-World/pull/16";
+const PR_CLOSED_HERE = "https://github.com/octocat/Hello-World/pull/17";
 const PR_REPOSITORY = "https://github.com/octocat/Hello-World.git";
 /** T3's not-found text with its advice to pass `environmentId` replaced by the bridge. */
 const LOCAL_THREAD_HINT = "These tools reach only the T3 Code of the machine DevSpace runs on; find the thread with t3_thread_search or t3_thread_list.";
@@ -1202,6 +1233,7 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   const { projectId } = fake.addProject({ title: "pull-request-fixture", git: true, remoteUrl: PR_REPOSITORY });
   const { threadId } = fake.addThread({ projectId, title: "Pull request thread", messages: [{ role: "user", text: "open the PRs" }] });
   fake.setPullRequest(PR_MERGED_HERE, { state: "merged", title: "Merged here" });
+  fake.setPullRequest(PR_CLOSED_HERE, { state: "closed", title: "Closed here" });
   fake.setPullRequest(PR_CLOSED, { state: "closed", title: "Closed one" });
   fake.setPullRequest(PR_MERGED, { state: "merged", title: "Merged one" });
   fake.setPullRequest(PR_UNREAD, { state: null });
@@ -1253,7 +1285,7 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   assert.deepEqual(numbers(await ok(call, "list_thread_pull_requests", { threadId, states: ["merged", "closed"] })), [12, 13]);
   assert.deepEqual(forwarded(fake, "list_thread_pull_requests", mark), [{ threadId, states: ["merged", "closed"] }]);
 
-  // Watching links first when needed, reports the previous state, and refuses a merged PR.
+  // Watching links first when needed and reports the previous state.
   mark = fake.calls.length;
   const watched = await ok(call, "watch_pull_request", { threadId, url: PR_OPEN });
   assert.deepEqual(forwarded(fake, "watch_pull_request", mark), [{ threadId, url: PR_OPEN }]);
@@ -1274,7 +1306,13 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
     { url: fresh, watching: true, wasWatching: false },
     "watching by repository, number, and host links the PR",
   );
-  assert.equal(await fails(call, "watch_pull_request", { threadId, url: PR_MERGED_HERE }), "The pull request is merged, so there is nothing to watch.");
+  // A PR that already merged or closed is neither watched nor linked; T3's `next` (an instruction
+  // to end the calling agent's turn) is removed.
+  for (const [url, state, number] of [[PR_MERGED_HERE, "merged", 16], [PR_CLOSED_HERE, "closed", 17]] as const) {
+    const ended = await ok(call, "watch_pull_request", { threadId, url });
+    assert.deepEqual(ended, { host: "github.com", repository: "octocat/hello-world", number, url, watching: false, wasWatching: false, state }, `watching a ${state} PR`);
+    assert.ok(!numbers(await ok(call, "list_thread_pull_requests", { threadId })).includes(number), `watching a ${state} PR does not link it`);
+  }
   assert.equal(await fails(call, "watch_pull_request", { threadId }), "Pass either url, or both repository and number.");
   // Without `host` T3 takes it from the project's remote.
   assert.equal((await ok(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15 })).wasWatching, true);

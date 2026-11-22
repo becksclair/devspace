@@ -1,5 +1,5 @@
 {
-  "capturedFrom": "T3 Code v0.1.11-nightly.20261119.4954",
+  "capturedFrom": "T3 Code v0.1.12-nightly.20261121.5064",
   "notes": [
     "Captured 2026-11-19 from T3 Code v0.1.11 by an MCP client signed in from outside a thread with a full-access token, using scratch threads, projects, and scheduled tasks that the capture probe created and then archived or deleted; no user data.",
     "Thread-only tools (task_status, create_threads, preview_open) are not listed for MCP clients signed in from outside a thread (tools/list returns 62 tools in v0.1.11-nightly.20261119.4954); calling one fails with JSON-RPC -32602 \"Tool '<name>' not found\".",
@@ -23,7 +23,7 @@
     "Phase 3 samples (pull requests, t3_thread_configure, t3_thread_transfer, t3_worktree_list, t3_project_read, t3_environment_links) were captured 2026-11-19 from T3 Code v0.1.11-nightly.20261118.4890 by an outside client holding the bridge's pairing credential, on a scratch thread that was archived afterwards.",
     "An outside client has the orchestration, worktree, and pull-requests capabilities and no calling thread: these tools need threadId, and the pull-request tools refuse without one in plain text.",
     "link_pull_requests lower-cases the repository in its result and keeps the URL as given; a linked pull request has state null until T3 reads it from its host (about four seconds here).",
-    "watch_pull_request links first when needed and refuses only a merged pull request; a closed one is accepted. With repository and number, a thread whose project has no git remote also needs host.",
+    "watch_pull_request links first when needed. Since v0.1.12-nightly.20261121.5064 (captured 2026-11-22) a pull request that already merged or closed is neither watched nor linked: the call succeeds with watching false, state 'merged' or 'closed', and a next telling the agent to end its turn (before, only a merged one was refused, with the text 'The pull request is merged, so there is nothing to watch.'). A watch from a settled or archived thread fails with 'Could not change whether the pull request is watched.' With repository and number, a thread whose project has no git remote also needs host.",
     "unlink_pull_requests unlinks by last known state; unwatch_pull_request on a pull request that was never linked succeeds and links nothing.",
     "t3_thread_configure rejects an unknown provider instance and accepts an unknown model id.",
     "A fork is idle, carries relationshipToParent 'fork' and its source as parentThreadId, and keeps the source's model and modes; its transfer stays 'pending' and is listed for source and target. merge_back from a thread without a finished run fails.",
@@ -31,7 +31,8 @@
     "A project's repositoryIdentity (probed 2026-11-19, same T3 Code version) has a lower-cased canonicalKey of the form host/owner/name; for a fork whose primary remote is its upstream it also has origin { canonicalKey, remoteUrl, displayName }. A project registered a moment ago has repositoryIdentity null in t3_project_create and t3_project_read results, while its t3_project_list row already carries the resolved identity.",
     "T3's failure for a thread it cannot find ends with ' Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.', in the plain-text failures of the pull-request tools and inside the message of the thread_not_found failure JSON.",
     "The pull-request and CI tools added in v0.1.11-nightly.20261119.4954 (pull_request_create, pull_request_list, pull_request_read, pull_request_update, pull_request_respond, pull_request_review, pull_request_merge, ci_logs, ci_rerun) are listed to an outside client, take no threadId, and act on the calling thread's branch or repository. pull_request_list, pull_request_read, and ci_logs called from outside a thread fail with the plain text in callingThreadPullRequestTools.noThread (probed 2026-11-20); the write tools were not called.",
-    "watch_pull_request takes until ('checks' | 'merged') since v0.1.11-nightly.20261119.4954. Omitted, an existing watch keeps its value and a new watch starts at 'checks'. It sets how long T3 counts the watch as a task that keeps the thread working (checks: until checks finish; merged: until the pull request merges or closes or is unwatched); the watch itself keeps waking the thread either way (read from T3's source)."
+    "watch_pull_request takes until ('checks' | 'merged') since v0.1.11-nightly.20261119.4954. Omitted, an existing watch keeps its value and a new watch starts at 'checks'. It sets how long T3 counts the watch as a task that keeps the thread working (checks: until checks finish; merged: until the pull request merges or closes or is unwatched); the watch itself keeps waking the thread either way (read from T3's source).",
+    "Captured 2026-11-22 from T3 Code v0.1.12-nightly.20261121.5064: project records carry trackedFolders (an array of { path, name, discovered? }; [] when none, discovered true for nested repositories T3 found), which t3_project_create and t3_project_update also accept. t3_thread_launch and t3_thread_send accept outputSchema (a JSON Schema for a result the turn returns as data), and t3_thread_wait accepts untilOutput, which keeps the wait open until a completed run that owes such a result has submitted it; the wait result then carries output. t3_thread_launch also accepts generateTitle and workspaceStrategy.repositories. The tools/list names are unchanged (62)."
   ],
   "results": {
     "t3_thread_launch": {
@@ -307,6 +308,7 @@
       "defaultThreadEnvMode": null,
       "autoPull": false,
       "scripts": [],
+      "trackedFolders": [],
       "pinnedAt": null,
       "archivedAt": null,
       "createdAt": "2026-11-08T14:59:18.697Z",
@@ -671,6 +673,7 @@
       "defaultThreadEnvMode": null,
       "autoPull": false,
       "scripts": [],
+      "trackedFolders": [],
       "pinnedAt": null,
       "archivedAt": null,
       "createdAt": "2026-11-19T02:22:47.061Z",
@@ -688,6 +691,7 @@
       "defaultThreadEnvMode": null,
       "autoPull": false,
       "scripts": [],
+      "trackedFolders": [],
       "pinnedAt": null,
       "archivedAt": null,
       "createdAt": "2026-11-19T02:22:47.161Z",
@@ -708,6 +712,7 @@
       "defaultThreadEnvMode": null,
       "autoPull": false,
       "scripts": [],
+      "trackedFolders": [],
       "pinnedAt": null,
       "archivedAt": null,
       "createdAt": "2026-11-19T02:22:47.171Z",
@@ -725,6 +730,7 @@
       "defaultThreadEnvMode": null,
       "autoPull": false,
       "scripts": [],
+      "trackedFolders": [],
       "pinnedAt": null,
       "archivedAt": null,
       "createdAt": "2026-11-19T02:22:47.061Z",
@@ -1536,13 +1542,25 @@
       "watching": true,
       "wasWatching": true
     },
-    "watch_pull_request.closedNotMerged": {
+    "watch_pull_request.alreadyClosed": {
       "host": "github.com",
       "repository": "octocat/hello-world",
       "number": 1,
       "url": "https://github.com/octocat/Hello-World/pull/1",
-      "watching": true,
-      "wasWatching": false
+      "watching": false,
+      "wasWatching": false,
+      "state": "closed",
+      "next": "This PR is already closed, so there is nothing to watch. Report that and end your turn."
+    },
+    "watch_pull_request.alreadyMerged": {
+      "host": "github.com",
+      "repository": "becksclair/devspace",
+      "number": 13,
+      "url": "https://github.com/becksclair/devspace/pull/13",
+      "watching": false,
+      "wasWatching": false,
+      "state": "merged",
+      "next": "This PR is already merged, so there is nothing to watch. Report that and end your turn."
     },
     "unwatch_pull_request": {
       "host": "github.com",
@@ -1691,6 +1709,7 @@
       "defaultThreadEnvMode": null,
       "autoPull": false,
       "scripts": [],
+      "trackedFolders": [],
       "pinnedAt": null,
       "archivedAt": null,
       "createdAt": "2026-11-08T17:16:15.425Z",
@@ -1827,7 +1846,6 @@
     "pullRequestTools.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
     "pullRequestTools.unknownThread": "Thread nope-thread was not found. Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.",
     "callingThreadPullRequestTools.noThread": "Pass threadId: this MCP client is not running inside a T3 thread.",
-    "watch_pull_request.merged": "The pull request is merged, so there is nothing to watch.",
     "watch_pull_request.repositoryWithoutHost": "This thread's project has no recognised remote. Pass host or url.",
     "watch_pull_request.noTarget": "Pass either url, or both repository and number.",
     "watch_pull_request.notAPullRequestUrl": "This is not a recognised pull request URL. Pass repository and number instead.",

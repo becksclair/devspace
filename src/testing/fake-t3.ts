@@ -79,6 +79,8 @@ interface ProjectRecord {
   defaultThreadEnvMode: string | null;
   autoPull: boolean;
   scripts: JsonObject[];
+  /** Extra git folders of the project (T3 also lists nested repositories it discovers); none here. */
+  trackedFolders: JsonObject[];
   pinnedAt: string | null;
   archivedAt: string | null;
   createdAt: string;
@@ -202,6 +204,10 @@ interface RunRecord {
   interruptRequested: boolean;
   commandItem: ItemRecord | null;
   timers: Set<NodeJS.Timeout>;
+  /** JSON Schema for a result the turn returns as data (`outputSchema` on launch or send). */
+  outputSchema?: JsonObject;
+  /** The submitted result; `t3_thread_wait` returns it as `output`. */
+  output?: JsonObject;
 }
 
 interface ThreadRecord {
@@ -288,7 +294,7 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-const SERVER_INFO = { name: "T3 Code", version: "0.1.11-nightly.20261119.4954" };
+const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261121.5064" };
 const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 const SUPPORTED_SCOPES = ["orchestration:read", "orchestration:operate"];
 const TOKEN_TTL_SECONDS = 2_592_000;
@@ -2076,12 +2082,14 @@ export class FakeT3 {
   private async threadWait(args: JsonObject, context: CallContext): Promise<JsonObject> {
     const thread = this.requireThread(args.threadId);
     const runId = optString(args.runId);
-    const run = runId !== undefined ? thread.runs.find((candidate) => candidate.runId === runId) : latestRun(thread);
+    // Without `runId`, T3 waits on the run with the highest ordinal, a queued one included.
+    const run = runId !== undefined ? thread.runs.find((candidate) => candidate.runId === runId) : thread.runs.at(-1);
     if (runId !== undefined && !run) throw new ToolFailure("not_found", `Run ${runId} was not found.`);
     if (!run) return { threadId: thread.threadId, runId: null, status: "idle", timedOut: false };
     const timeoutMs = clamp(typeof args.timeoutMs === "number" ? args.timeoutMs : 30_000, 0, 600_000);
     const timedOut = await this.waitForRun(run, timeoutMs, context.signal);
-    return { threadId: thread.threadId, runId: run.runId, status: run.status, timedOut };
+    // `untilOutput` also waits for the output a run owes; the fake submits it as the run completes.
+    return { threadId: thread.threadId, runId: run.runId, status: run.status, timedOut, ...(run.output ? { output: run.output } : {}) };
   }
 
   private threadLaunch(args: JsonObject, context: CallContext): JsonObject {
@@ -2120,7 +2128,7 @@ export class FakeT3 {
       createdAt: nowIso(),
     });
     if (message) {
-      const run = this.newRun(thread, "preparing", message, threadId);
+      const run = this.newRun(thread, "preparing", message, threadId, isRecord(args.outputSchema) ? args.outputSchema : undefined);
       this.beginRun(thread, run, "launch");
     }
     if (key !== undefined) this.idempotent.set(key, { threadId });
@@ -2152,11 +2160,14 @@ export class FakeT3 {
     }
 
     const messageId = `message:mcp:${encodeURIComponent(`client:${context.clientId}`)}:thread-send:${clientRequestId ?? randomUUID()}`;
-    const mode = optString(args.mode) ?? "auto";
+    const outputSchema = isRecord(args.outputSchema) ? args.outputSchema : undefined;
+    const requestedMode = optString(args.mode) ?? "auto";
+    // A send that asks for `outputSchema` never steers: T3 queues a steer or restart instead.
+    const mode = outputSchema && (requestedMode === "steer" || requestedMode === "restart") ? "queue" : requestedMode;
     const active = activeRun(thread);
     let run: RunRecord;
     let delivery: "started" | "queued" | "steered" | "restarted";
-    if (mode === "steer" || (mode === "auto" && active && STEERABLE_RUN_STATUSES.has(active.status))) {
+    if (mode === "steer" || (mode === "auto" && !outputSchema && active && STEERABLE_RUN_STATUSES.has(active.status))) {
       if (!active || !STEERABLE_RUN_STATUSES.has(active.status)) {
         throw new ToolFailure(
           "thread_not_sendable",
@@ -2168,13 +2179,13 @@ export class FakeT3 {
       run = active;
       delivery = "steered";
     } else if ((mode === "queue" || mode === "auto") && active) {
-      run = this.newRun(thread, "queued", message, messageId);
+      run = this.newRun(thread, "queued", message, messageId, outputSchema);
       thread.queue.push(run.runId);
       this.touch(thread);
       delivery = "queued";
     } else {
       if (mode === "restart" && active) this.finishRun(thread, active, "cancelled", false);
-      run = this.newRun(thread, "starting", message, messageId);
+      run = this.newRun(thread, "starting", message, messageId, outputSchema);
       this.beginRun(thread, run, "send");
       delivery = mode === "restart" && active ? "restarted" : "started";
     }
@@ -2511,7 +2522,12 @@ export class FakeT3 {
     return { host: target.host, repository: target.repository, number: target.number, wasLinked };
   }
 
-  /** Watching links the pull request first; a merged one is refused. Unwatching never links. */
+  /**
+   * Watching links the pull request first. One that already merged or closed is neither watched
+   * nor linked: T3 answers `watching: false` with its `state` and a `next` that tells the agent to
+   * end its turn. T3 checks a merged state it knows of on every watch, but reads the pull request
+   * for a closed one only when it is not watched yet. Unwatching never links.
+   */
   private setWatching(args: JsonObject, watching: boolean): JsonObject {
     const thread = this.pullRequestThread(args.threadId);
     const target = this.pullRequestTarget(args, thread);
@@ -2523,7 +2539,19 @@ export class FakeT3 {
     let link = thread.pullRequests.find((entry) => pullRequestKey(entry) === pullRequestKey(target));
     const wasWatching = link?.watching === true;
     if (watching) {
-      if (this.factsOf(target).state === "merged") throw new TextFailure("The pull request is merged, so there is nothing to watch.");
+      const { state } = this.factsOf(target);
+      if (state === "merged" || (state === "closed" && !wasWatching)) {
+        return {
+          host: target.host,
+          repository: target.repository,
+          number: target.number,
+          url: target.url,
+          watching: false,
+          wasWatching,
+          state,
+          next: `This PR is already ${state}, so there is nothing to watch. Report that and end your turn.`,
+        };
+      }
       if (!link) {
         link = { ...target, watching: false, linked: ++this.linkCounter };
         thread.pullRequests.push(link);
@@ -2668,6 +2696,7 @@ export class FakeT3 {
       defaultThreadEnvMode: null,
       autoPull: false,
       scripts: [],
+      trackedFolders: [],
       pinnedAt: null,
       archivedAt: null,
       createdAt: at,
@@ -2699,6 +2728,7 @@ export class FakeT3 {
       defaultThreadEnvMode: project.defaultThreadEnvMode,
       autoPull: project.autoPull,
       scripts: structuredClone(project.scripts),
+      trackedFolders: structuredClone(project.trackedFolders),
       pinnedAt: project.pinnedAt,
       archivedAt: project.archivedAt,
       createdAt: project.createdAt,
@@ -2834,7 +2864,13 @@ export class FakeT3 {
     return thread;
   }
 
-  private newRun(thread: ThreadRecord, status: RunStatus, message: string | null, messageId: string | null): RunRecord {
+  private newRun(
+    thread: ThreadRecord,
+    status: RunStatus,
+    message: string | null,
+    messageId: string | null,
+    outputSchema?: JsonObject,
+  ): RunRecord {
     const ordinal = thread.nextOrdinal++;
     const run: RunRecord = {
       runId: `run:thread:${encodeURIComponent(thread.threadId)}:ordinal:${ordinal}`,
@@ -2853,6 +2889,7 @@ export class FakeT3 {
       interruptRequested: false,
       commandItem: null,
       timers: new Set(),
+      ...(outputSchema ? { outputSchema } : {}),
     };
     thread.runs.push(run);
     return run;
@@ -2933,8 +2970,10 @@ export class FakeT3 {
     }
   }
 
+  /** A run asked for an `outputSchema` submits `{ answer: <reply> }` before it completes. */
   private completeWithReply(thread: ThreadRecord, run: RunRecord, text: string): void {
     if (!isActive(run)) return;
+    if (run.outputSchema) run.output = { answer: text };
     this.addAssistantItem(thread, run.runId, text);
     this.finishRun(thread, run, "completed");
   }
