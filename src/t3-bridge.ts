@@ -139,7 +139,8 @@ const PULL_REQUEST_PATH = /^\/(?:pull|pulls|-\/merge_requests|pull-requests|pull
 const WORKTREE_LIST_DEFAULT_LIMIT = 50;
 /**
  * Fields the project create and update tools forward. T3's other project settings cannot be
- * changed through DevSpace, notably `scripts` (commands T3 runs on every new worktree);
+ * changed through DevSpace, notably `scripts` (commands T3 runs on every new worktree) and
+ * `trackedFolders` (the extra git folders a project's threads get worktrees of);
  * `t3_project_read` returns them read-only. Nor can a project's default model: T3 refuses one at
  * creation, and since it moved project defaults into its server settings it stores one given to
  * `t3_project_update` on the project record, which it no longer reads, and reports `null`.
@@ -300,7 +301,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Watch a pull request for a T3 thread",
     readOnly: false,
     summary:
-      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other); a merged PR is refused. The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, or merge conflicts, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. `until` sets how long T3 keeps the thread working on it: `checks` (a new watch's default) until checks finish, `merged` until the PR merges or closes or you unwatch it; omitted, an existing watch keeps its value. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
+      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other). A PR that already merged or closed is not watched or linked: the result has `watching: false` and `state` (`merged` or `closed`). The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, merge conflicts, and once when the PR merges or closes, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. `until` sets how long T3 keeps the thread working on it: `checks` (a new watch's default) until checks finish, `merged` until the PR merges or closes or you unwatch it; omitted, an existing watch keeps its value. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching, state? }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
     ownDescription: true,
   },
   unwatch_pull_request: {
@@ -358,8 +359,8 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
   t3_project_read: {
     title: "Read a T3 project",
     readOnly: true,
-    summary: "Read one T3 Code project's full record: its folder, git repository, default model, and saved scripts.",
-    note: "`projectId` comes from t3_project_list, which returns only titles and folders. Returns `{ id, title, workspaceRoot, repositoryIdentity, defaultModelSelection, scripts, … }`; `repositoryIdentity` names the git remote (`provider`, `owner`, `name`) and is null when the folder has none. Credentials in a remote URL are removed.",
+    summary: "Read one T3 Code project's full record: its folder, git repository, default model, saved scripts, and tracked git folders.",
+    note: "`projectId` comes from t3_project_list, which returns only titles and folders. Returns `{ id, title, workspaceRoot, repositoryIdentity, defaultModelSelection, scripts, trackedFolders, … }`; `repositoryIdentity` names the git remote (`provider`, `owner`, `name`) and is null when the folder has none. Credentials in a remote URL are removed.",
   },
   t3_environment_links: {
     title: "List machines linked to T3 Code",
@@ -961,14 +962,11 @@ export class T3Bridge {
       }
       case "watch_pull_request": {
         const refusal = await this.watchRefusal(shaped, signal);
-        return refusal === undefined ? await this.invoke(name, name, watchArguments(shaped), signal) : errorResult(refusal);
+        return refusal === undefined ? withoutNext(await this.invoke(name, name, watchArguments(shaped), signal)) : errorResult(refusal);
       }
-      case "link_pull_requests": {
-        // For a subagent thread T3 adds `next`, an instruction to the agent inside that thread.
-        const result = await this.invoke(name, name, shaped, signal);
-        const data = result.isError ? {} : resultRecord(result);
-        return "next" in data ? jsonResult(omit(data, ["next"])) : result;
-      }
+      case "unwatch_pull_request":
+      case "link_pull_requests":
+        return withoutNext(await this.invoke(name, name, shaped, signal));
       default:
         return await this.invoke(name, name, shaped, signal);
     }
@@ -2151,6 +2149,16 @@ function urlWithoutCredentials(value: string): string {
   if (web) url.username = "";
   url.password = "";
   return url.href;
+}
+
+/**
+ * Removes `next`, T3's instruction to the agent inside the calling thread: for a subagent thread
+ * after a link ("End your reply with: PR …"), and after a watch of a pull request that already
+ * merged or closed ("… Report that and end your turn."). A caller outside a thread has no turn.
+ */
+function withoutNext(result: CallToolResult): CallToolResult {
+  const data = result.isError ? {} : resultRecord(result);
+  return "next" in data ? jsonResult(omit(data, ["next"])) : result;
 }
 
 /** Removes the webhook URL (it carries its access token) and signing details from scheduled-task results. */
