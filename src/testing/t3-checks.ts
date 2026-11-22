@@ -922,15 +922,20 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
   assert.deepEqual(forwarded(fake, "t3_thread_send", mark)[0]?.outputSchema, outputSchema);
   assert.deepEqual((await ok(call, "t3_thread_wait", { threadId: structuredId, untilOutput: true })).output, { answer: "AGAIN" });
   assert.ok(!("output" in (await ok(call, "t3_thread_wait", { threadId }))), "a run without outputSchema returns no output");
-  // A send with outputSchema never steers: behind a running turn (60 s, 1.2 s in the fake, so it is
-  // still running when the send arrives) it queues, and a wait without runId waits on that queued
-  // run, as T3's does.
-  await ok(call, "t3_thread_send", { threadId: structuredId, message: "Run python3 -c 'import time; time.sleep(60)' then reply with exactly BUSY" });
-  const queued = await ok(call, "t3_thread_send", { threadId: structuredId, message: "Reply with exactly QUEUED", outputSchema });
-  assert.equal(queued.delivery, "queued");
-  const queuedWait = await ok(call, "t3_thread_wait", { threadId: structuredId, untilOutput: true });
-  assert.deepEqual([queuedWait.runId, queuedWait.output], [queued.runId, { answer: "QUEUED" }]);
   await ok(call, "t3_thread_organize", { threadId: structuredId, action: "archive" });
+  // A send with outputSchema never steers: behind a running turn it queues, and a wait without
+  // runId waits on that queued run, as T3's does. The running turn is a fixture that only an
+  // interrupt ends, and the interrupt comes after the wait reached the fake, so nothing is timed.
+  const { threadId: busyId } = fake.addThread({ title: "Shaping busy", status: "running" });
+  const queued = await ok(call, "t3_thread_send", { threadId: busyId, message: "Reply with exactly QUEUED", outputSchema });
+  assert.equal(queued.delivery, "queued");
+  mark = fake.calls.length;
+  const queuedWaiting = ok(call, "t3_thread_wait", { threadId: busyId, untilOutput: true });
+  await waitFor("the wait to reach the fake", () => forwarded(fake, "t3_thread_wait", mark).length > 0);
+  await ok(call, "t3_thread_interrupt", { threadId: busyId });
+  const queuedWait = await queuedWaiting;
+  assert.deepEqual([queuedWait.runId, queuedWait.output], [queued.runId, { answer: "QUEUED" }]);
+  await ok(call, "t3_thread_organize", { threadId: busyId, action: "archive" });
 
   // B15: threadId is required before anything is sent to T3.
   mark = fake.calls.length;
