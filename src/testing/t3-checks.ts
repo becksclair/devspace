@@ -922,9 +922,10 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
   assert.deepEqual(forwarded(fake, "t3_thread_send", mark)[0]?.outputSchema, outputSchema);
   assert.deepEqual((await ok(call, "t3_thread_wait", { threadId: structuredId, untilOutput: true })).output, { answer: "AGAIN" });
   assert.ok(!("output" in (await ok(call, "t3_thread_wait", { threadId }))), "a run without outputSchema returns no output");
-  // A send with outputSchema never steers: behind a running turn it queues, and a wait without
-  // runId waits on that queued run, as T3's does.
-  await ok(call, "t3_thread_send", { threadId: structuredId, message: "Run python3 -c 'import time; time.sleep(1)' then reply with exactly BUSY" });
+  // A send with outputSchema never steers: behind a running turn (60 s, 1.2 s in the fake, so it is
+  // still running when the send arrives) it queues, and a wait without runId waits on that queued
+  // run, as T3's does.
+  await ok(call, "t3_thread_send", { threadId: structuredId, message: "Run python3 -c 'import time; time.sleep(60)' then reply with exactly BUSY" });
   const queued = await ok(call, "t3_thread_send", { threadId: structuredId, message: "Reply with exactly QUEUED", outputSchema });
   assert.equal(queued.delivery, "queued");
   const queuedWait = await ok(call, "t3_thread_wait", { threadId: structuredId, untilOutput: true });
