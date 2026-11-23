@@ -1,6 +1,6 @@
 {
-  "capturedFrom": "T3 Code v0.1.12-nightly.20261121.5064",
-  "capturedAt": "2026-11-22",
+  "capturedFrom": "T3 Code v0.1.12-nightly.20261123.5124",
+  "capturedAt": "2026-11-23",
   "allToolNames": [
     "orchestrator_capabilities",
     "t3_workflow_stop",
@@ -23,6 +23,7 @@
     "t3_thread_organize",
     "t3_pending_request",
     "t3_queue",
+    "t3_workflow",
     "t3_attachment_prepare_upload",
     "t3_attachment_discard",
     "t3_thread_send_attachments",
@@ -2510,6 +2511,29 @@
               "environmentId",
               "threadId",
               "title"
+            ]
+          },
+          "workflowRun": {
+            "type": "object",
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "workflow": {
+                "type": "string"
+              },
+              "step": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "environmentId",
+              "runId",
+              "workflow",
+              "step"
             ]
           }
         },
@@ -6569,6 +6593,21 @@
               }
             ]
           },
+          "checksState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "passing",
+                  "failing",
+                  "pending"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "next": {
             "anyOf": [
               {
@@ -6659,6 +6698,21 @@
                   "closed"
                 ],
                 "description": "The PR already ended, so nothing was watched."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checksState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "passing",
+                  "failing",
+                  "pending"
+                ]
               },
               {
                 "type": "null"

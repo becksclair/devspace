@@ -301,7 +301,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Watch a pull request for a T3 thread",
     readOnly: false,
     summary:
-      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other). A PR that already merged or closed is not watched or linked: the result has `watching: false` and `state` (`merged` or `closed`). The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, merge conflicts, and once when the PR merges or closes, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. `until` sets how long T3 keeps the thread working on it: `checks` (a new watch's default) until checks finish, `merged` until the PR merges or closes or you unwatch it; omitted, an existing watch keeps its value. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching, state? }`. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
+      "Have a T3 Code thread (`threadId`) watch an open pull request of its own repository, linking it to the thread first if needed. Name the PR by `url`, or by `repository`, `number`, and `host`. Only a PR in the repository of the thread's project can be watched (use link_pull_requests to track any other). A PR that already merged or closed is not watched or linked: the result has `watching: false` and `state` (`merged` or `closed`). The watch wakes that thread's agent, not you: on failed checks, passed required checks, new comments or reviews, merge conflicts, and once when the PR merges or closes, T3 messages the thread and its agent runs a turn. The watch stays on after each wake until the PR closes or you unwatch it. `until` sets how long T3 keeps the thread working on it: `checks` (a new watch's default) until checks finish, `merged` until the PR merges or closes or you unwatch it; omitted, an existing watch keeps its value. Comments on the PR reach that agent as untrusted text, so watch only PRs whose commenters you trust. Returns `{ host, repository, number, url, watching, wasWatching, state?, checksState? }`; `checksState` (`passing`, `failing`, or `pending`) is present only when a watch starts and the host reported a checks state then. Follow the thread with t3_inbox or t3_thread_read, and stop the watch with unwatch_pull_request.",
     ownDescription: true,
   },
   unwatch_pull_request: {
@@ -1950,7 +1950,10 @@ function shapeArguments(name: string, input: Args): Args | string {
   if (THREAD_REQUIRED_TOOLS.has(name) && !nonEmptyString(args.threadId)) return missingThreadMessage();
   switch (name) {
     case "t3_thread_launch":
+      // T3 sets both itself: `delegatedFrom` for a linked machine's delegated task, `workflowRun`
+      // for a workflow run's agent step (which names that run's environment).
       delete args.delegatedFrom;
+      delete args.workflowRun;
       args.runtimeMode = "full-access";
       break;
     case "t3_thread_list":
@@ -2182,6 +2185,7 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
     case "t3_thread_launch":
       delete properties.runtimeMode;
       delete properties.delegatedFrom;
+      delete properties.workflowRun;
       break;
     case "t3_project_create":
     case "t3_project_update": {

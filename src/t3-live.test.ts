@@ -117,6 +117,7 @@ const BRIDGE_PROPERTIES: Record<string, Record<string, string>> = {
     runtimeMode: "string",
     clientRequestId: "string",
     delegatedFrom: "object",
+    workflowRun: "object",
   },
   t3_thread_send: { environmentId: "string", threadId: "string", message: "string", mode: "string", clientRequestId: "string" },
   t3_thread_interrupt: { environmentId: "string", threadId: "string", reason: "string", clientRequestId: "string" },

@@ -98,6 +98,8 @@ interface ProjectRecord {
 
 type PullRequestState = "open" | "closed" | "merged";
 
+type PullRequestChecksState = "passing" | "failing" | "pending";
+
 /** What T3 knows about a pull request once it has read it from its host. */
 interface PullRequestFacts {
   state: PullRequestState | null;
@@ -294,7 +296,7 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261121.5064" };
+const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261123.5124" };
 const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 const SUPPORTED_SCOPES = ["orchestration:read", "orchestration:operate"];
 const TOKEN_TTL_SECONDS = 2_592_000;
@@ -788,6 +790,8 @@ export class FakeT3 {
   private readonly deletedThreads = new Set<string>();
   private readonly tasks = new Map<string, ScheduledTaskRecord>();
   private readonly pullRequestFacts = new Map<string, PullRequestFacts>();
+  /** The checks state T3 reads from the host when a watch starts; not part of the link's entry. */
+  private readonly pullRequestChecks = new Map<string, PullRequestChecksState>();
   private readonly contextTransfers: ContextTransferRecord[] = [];
   private readonly environmentLinks: EnvironmentLinkRecord[] = [];
   private linkCounter = 0;
@@ -1038,9 +1042,14 @@ export class FakeT3 {
    * What T3 has read about a pull request from its host. An unseeded pull request reads as open;
    * `state: null` is one T3 has not read yet (real T3 fills it in a few seconds after linking).
    */
-  setPullRequest(url: string, facts: { state: "open" | "closed" | "merged" | null; title?: string }): void {
+  setPullRequest(
+    url: string,
+    facts: { state: "open" | "closed" | "merged" | null; title?: string; checksState?: PullRequestChecksState },
+  ): void {
     const target = parsePullRequestUrl(url);
     if (!target) throw new Error(`FakeT3.setPullRequest: not a pull request URL: ${url}`);
+    if (facts.checksState) this.pullRequestChecks.set(pullRequestKey(target), facts.checksState);
+    else this.pullRequestChecks.delete(pullRequestKey(target));
     this.pullRequestFacts.set(pullRequestKey(target), {
       state: facts.state,
       title: facts.state === null ? null : (facts.title ?? `Pull request ${target.number}`),
@@ -2526,7 +2535,9 @@ export class FakeT3 {
    * Watching links the pull request first. One that already merged or closed is neither watched
    * nor linked: T3 answers `watching: false` with its `state` and a `next` that tells the agent to
    * end its turn. T3 checks a merged state it knows of on every watch, but reads the pull request
-   * for a closed one only when it is not watched yet. Unwatching never links.
+   * for a closed one only when it is not watched yet. Unwatching never links. A watch that starts
+   * (one not watched yet) also reports the checks state T3 read then, as `checksState`, when the
+   * host has one (since v0.1.12-nightly.20261123.5124).
    */
   private setWatching(args: JsonObject, watching: boolean): JsonObject {
     const thread = this.pullRequestThread(args.threadId);
@@ -2558,7 +2569,16 @@ export class FakeT3 {
       }
     }
     if (link) link.watching = watching;
-    return { host: target.host, repository: target.repository, number: target.number, url: target.url, watching: link?.watching === true, wasWatching };
+    const checksState = watching && !wasWatching ? this.pullRequestChecks.get(pullRequestKey(target)) : undefined;
+    return {
+      host: target.host,
+      repository: target.repository,
+      number: target.number,
+      url: target.url,
+      watching: link?.watching === true,
+      wasWatching,
+      ...(checksState ? { checksState } : {}),
+    };
   }
 
   // -- thread configuration and context transfer -----------------------------
