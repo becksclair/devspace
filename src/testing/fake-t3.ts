@@ -98,9 +98,9 @@ interface ProjectRecord {
 
 type PullRequestState = "open" | "closed" | "merged";
 
-/** What T3 knows about a pull request once it has read it from its host. */
 type PullRequestChecksState = "passing" | "failing" | "pending";
 
+/** What T3 knows about a pull request once it has read it from its host. */
 interface PullRequestFacts {
   state: PullRequestState | null;
   title: string | null;
@@ -296,7 +296,7 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261121.5064" };
+const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261123.5124" };
 const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 const SUPPORTED_SCOPES = ["orchestration:read", "orchestration:operate"];
 const TOKEN_TTL_SECONDS = 2_592_000;

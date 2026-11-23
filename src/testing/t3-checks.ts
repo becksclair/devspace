@@ -197,7 +197,7 @@ export interface CatalogTool {
  *     `create_threads` and `t3_project_delete` are never exposed.
  * B3: read-only per the plan's table; under trusted-owner never destructive or open-world, under
  *     standard write tools are destructive and open-world (when annotations are given).
- * B12/B15: launch hides `runtimeMode` and `delegatedFrom`; no `environmentId`; `threadId` required.
+ * B12/B15: launch hides `runtimeMode`, `delegatedFrom`, and `workflowRun`; no `environmentId`; `threadId` required.
  * B27/B29/B30 (schemas): schedule_task hides thread binding and webhook triggers; project create
  *     hides `defaultModelSelection`; project update exposes only projectId and title.
  * B17: descriptions end with the shared guidance and carry no in-thread phrasing.
@@ -872,7 +872,7 @@ export async function checkReading(call: T3Call, fake: FakeT3): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 
 export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
-  // B12: launch always runs full-access with a clientRequestId; delegation is dropped.
+  // B12: launch always runs full-access with a clientRequestId; delegation and workflowRun are dropped.
   const modelSelection = { instanceId: "claudeAgent", model: "claude-haiku-5-5" };
   let mark = fake.calls.length;
   const launched = await ok(call, "t3_thread_launch", {
