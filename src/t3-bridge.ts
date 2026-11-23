@@ -1950,7 +1950,10 @@ function shapeArguments(name: string, input: Args): Args | string {
   if (THREAD_REQUIRED_TOOLS.has(name) && !nonEmptyString(args.threadId)) return missingThreadMessage();
   switch (name) {
     case "t3_thread_launch":
+      // T3 sets both itself: `delegatedFrom` for a linked machine's delegated task, `workflowRun`
+      // for a workflow run's agent step (which names that run's environment).
       delete args.delegatedFrom;
+      delete args.workflowRun;
       args.runtimeMode = "full-access";
       break;
     case "t3_thread_list":
@@ -2182,6 +2185,7 @@ function trimSchema(name: string, schema: Record<string, unknown>): Record<strin
     case "t3_thread_launch":
       delete properties.runtimeMode;
       delete properties.delegatedFrom;
+      delete properties.workflowRun;
       break;
     case "t3_project_create":
     case "t3_project_update": {
