@@ -249,6 +249,7 @@ export function checkCatalog(
     if (tool.name === "t3_thread_launch") {
       assert.ok(!("runtimeMode" in properties), "t3_thread_launch must not expose runtimeMode");
       assert.ok(!("delegatedFrom" in properties), "t3_thread_launch must not expose delegatedFrom");
+      assert.ok(!("workflowRun" in properties), "t3_thread_launch must not expose workflowRun");
       assert.ok("message" in properties && "scratch" in properties && "projectId" in properties);
     }
     if (tool.name === "t3_pending_request") {
@@ -881,12 +882,13 @@ export async function checkShaping(call: T3Call, fake: FakeT3): Promise<void> {
     modelSelection,
     runtimeMode: "approval-required",
     delegatedFrom: { threadId: "caller-thread" },
+    workflowRun: { environmentId: "other-machine", runId: "run-1", workflow: "deploy", step: "agent" },
   });
   const [launchArgs] = forwarded(fake, "t3_thread_launch", mark);
   assert.ok(launchArgs);
   assert.equal(launchArgs.runtimeMode, "full-access");
   assert.ok(typeof launchArgs.clientRequestId === "string" && launchArgs.clientRequestId.length > 0, "clientRequestId added");
-  assert.ok(!("delegatedFrom" in launchArgs) && !("environmentId" in launchArgs));
+  assert.ok(!("delegatedFrom" in launchArgs) && !("workflowRun" in launchArgs) && !("environmentId" in launchArgs));
   assert.deepEqual(launchArgs.modelSelection, modelSelection);
   const threadId = String(launched.threadId);
   await ok(call, "t3_thread_wait", { threadId });
@@ -1207,6 +1209,7 @@ const PR_MERGED = "https://github.com/becksclair/devspace/pull/13";
 const PR_UNREAD = "https://github.com/octocat/Hello-World/pull/14";
 const PR_MERGED_HERE = "https://github.com/octocat/Hello-World/pull/16";
 const PR_CLOSED_HERE = "https://github.com/octocat/Hello-World/pull/17";
+const PR_WITH_CHECKS = "https://github.com/octocat/Hello-World/pull/18";
 const PR_REPOSITORY = "https://github.com/octocat/Hello-World.git";
 /** T3's not-found text with its advice to pass `environmentId` replaced by the bridge. */
 const LOCAL_THREAD_HINT = "These tools reach only the T3 Code of the machine DevSpace runs on; find the thread with t3_thread_search or t3_thread_list.";
@@ -1237,6 +1240,7 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
   fake.setPullRequest(PR_CLOSED, { state: "closed", title: "Closed one" });
   fake.setPullRequest(PR_MERGED, { state: "merged", title: "Merged one" });
   fake.setPullRequest(PR_UNREAD, { state: null });
+  fake.setPullRequest(PR_WITH_CHECKS, { state: "open", title: "Checks failing", checksState: "failing" });
   const numbers = (data: Json): unknown[] => records(data.pullRequests).map((entry) => entry.number);
 
   // Linking forwards only the thread and the URLs; nothing is added.
@@ -1313,6 +1317,16 @@ export async function checkPullRequests(call: T3Call, fake: FakeT3): Promise<voi
     assert.deepEqual(ended, { host: "github.com", repository: "octocat/hello-world", number, url, watching: false, wasWatching: false, state }, `watching a ${state} PR`);
     assert.ok(!numbers(await ok(call, "list_thread_pull_requests", { threadId })).includes(number), `watching a ${state} PR does not link it`);
   }
+  // A watch that starts reports the checks state T3 read then; a repeated watch does not.
+  const withChecks = await ok(call, "watch_pull_request", { threadId, url: PR_WITH_CHECKS });
+  assert.deepEqual(
+    withChecks,
+    { host: "github.com", repository: "octocat/hello-world", number: 18, url: PR_WITH_CHECKS, watching: true, wasWatching: false, checksState: "failing" },
+    "a new watch passes T3's checksState through",
+  );
+  assert.ok(!("checksState" in (await ok(call, "watch_pull_request", { threadId, url: PR_WITH_CHECKS }))), "a repeated watch has no checksState");
+  assert.ok(!("checksState" in (await ok(call, "unwatch_pull_request", { threadId, url: PR_WITH_CHECKS }))), "unwatching has no checksState");
+  assert.equal((await ok(call, "unlink_pull_request", { threadId, url: PR_WITH_CHECKS })).wasLinked, true);
   assert.equal(await fails(call, "watch_pull_request", { threadId }), "Pass either url, or both repository and number.");
   // Without `host` T3 takes it from the project's remote.
   assert.equal((await ok(call, "watch_pull_request", { threadId, repository: "octocat/Hello-World", number: 15 })).wasWatching, true);
