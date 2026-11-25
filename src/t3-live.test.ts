@@ -890,9 +890,9 @@ async function contractAssertions(options: {
 
 /**
  * Phase 2 facts the bridge relies on, checked against T3 and the fake: the webhook fields the bridge
- * strips, the default model T3 refuses on create and does not apply on update, the webhook URL key
- * it removes from results, and
- * the capability and scheduled-task fields it reads.
+ * strips, the default model T3 refuses on create and reports after an update (which the bridge does
+ * not forward), the webhook URL key it removes from results, and the capability and scheduled-task
+ * fields it reads.
  */
 async function phase2Contract(
   realClient: Client,

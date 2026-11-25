@@ -72,8 +72,8 @@ interface ProjectRecord {
   projectIcon: JsonObject | null;
   /**
    * The project's default model as T3 reports it: the one its server settings hold for the
-   * project (set in the T3 Code app; `addProject` stands in for that). `{instanceId, model}` plus
-   * `options` when set; T3 drops `provider`.
+   * project (set in the T3 Code app, which `addProject` stands in for, or by `t3_project_update`).
+   * `{instanceId, model}` plus `options` when set; T3 drops `provider`.
    */
   defaultModelSelection: JsonObject | null;
   defaultThreadEnvMode: string | null;
@@ -1711,7 +1711,7 @@ export class FakeT3 {
   /**
    * Real T3 validates `defaultModelSelection` and, since v0.1.12-nightly.20261124.5204, saves it in
    * its server settings, where it resolves the project's default model, so the reported default
-   * model changes; `null` clears it.
+   * model changes; `null` clears it (T3 deletes the settings entry; not probed live).
    */
   private projectUpdate(args: JsonObject): JsonObject {
     const project = this.requireProject(args.projectId);
@@ -1909,8 +1909,8 @@ export class FakeT3 {
   /**
    * Starts a new thread in the task's project, even for a disabled task, and runs the prompt
    * through the scripted agent. A project with a `.git` gets a worktree directory; any other runs
-   * in place (`worktreePath` null). The run's model is the default model in T3's settings, not the
-   * one `t3_project_update` set on the project. "succeeded" means started.
+   * in place (`worktreePath` null). The run's model here is always the fake's default model; the
+   * project's `defaultModelSelection` is not consulted. "succeeded" means started.
    */
   private runScheduledTaskNow(args: JsonObject): JsonObject {
     const task = this.tasks.get(String(args.taskId));
