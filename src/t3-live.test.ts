@@ -890,9 +890,9 @@ async function contractAssertions(options: {
 
 /**
  * Phase 2 facts the bridge relies on, checked against T3 and the fake: the webhook fields the bridge
- * strips, the default model T3 refuses on create and does not apply on update, the webhook URL key
- * it removes from results, and
- * the capability and scheduled-task fields it reads.
+ * strips, the default model T3 refuses on create and reports after an update (which the bridge does
+ * not forward), the webhook URL key it removes from results, and the capability and scheduled-task
+ * fields it reads.
  */
 async function phase2Contract(
   realClient: Client,
@@ -934,15 +934,15 @@ async function phase2Contract(
         enabled: false,
       });
       await ok(call, "delete_scheduled_task", { scheduledTaskId: unmodeled.scheduledTaskId });
-      // T3 keeps project defaults in its server settings and stores a default model given to
-      // t3_project_update on the project record, which it no longer reads, so DevSpace does not
-      // expose the field.
+      // Since v0.1.12-nightly.20261124.5204 T3 saves a default model given to t3_project_update in
+      // its server settings, where it resolves project defaults. DevSpace still does not forward the
+      // field (an operator decision, see docs/t3-code.md), so the bridge's stripping is what keeps it out.
       const updated = await ok(call, "t3_project_update", { projectId: project.id, defaultModelSelection: model });
       const reread = await ok(call, "t3_project_read", { projectId: project.id });
       assert.deepEqual(
         [updated.defaultModelSelection, reread.defaultModelSelection],
-        [null, null],
-        `${side}: T3 does not apply a default model set through MCP (if this fails, T3 applies it again; re-expose defaultModelSelection in t3_project_update)`,
+        [model, model],
+        `${side}: T3 applies a default model set through t3_project_update`,
       );
       const task = await ok(call, "schedule_task", {
         projectId: project.id,
