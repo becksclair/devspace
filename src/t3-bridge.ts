@@ -142,8 +142,9 @@ const WORKTREE_LIST_DEFAULT_LIMIT = 50;
  * changed through DevSpace, notably `scripts` (commands T3 runs on every new worktree) and
  * `trackedFolders` (the extra git folders a project's threads get worktrees of);
  * `t3_project_read` returns them read-only. Nor can a project's default model: T3 refuses one at
- * creation, and since it moved project defaults into its server settings it stores one given to
- * `t3_project_update` on the project record, which it no longer reads, and reports `null`.
+ * creation, and although T3 applies one given to `t3_project_update` again (since
+ * v0.1.12-nightly.20261124.5204), exposing it is an operator decision (docs/t3-code.md), so the
+ * field is not forwarded.
  */
 const PROJECT_CREATE_FIELDS = ["title", "workspaceRoot", "createWorkspaceRootIfMissing"] as const;
 const PROJECT_UPDATE_FIELDS = ["projectId", "title"] as const;
@@ -273,7 +274,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
     title: "Update a T3 project",
     readOnly: false,
     summary: "Rename a T3 Code project.",
-    note: "A project's default model cannot be set here; T3 uses the one set in the T3 Code app's settings. To run a thread on a particular model, pass `modelSelection` to t3_thread_launch.",
+    note: "A project's default model cannot be set here; set it in the T3 Code app's settings. To run a thread on a particular model, pass `modelSelection` to t3_thread_launch.",
   },
   list_scheduled_tasks: {
     title: "List scheduled T3 tasks",
