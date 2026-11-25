@@ -1087,7 +1087,7 @@ export async function checkProjects(call: T3Call, fake: FakeT3): Promise<Json> {
     records((await ok(call, "t3_thread_list", { projectId, limit: 100 })).threads).find((row) => row.threadId === inProject.threadId)?.project;
   assert.equal(await projectOf(), `Hello ${stamp}`);
 
-  // B30: only projectId and title reach T3 (T3 does not apply a default model set through MCP).
+  // B30: only projectId and title reach T3 (T3 would apply a forwarded default model).
   mark = fake.calls.length;
   const updated = await ok(call, "t3_project_update", {
     projectId,

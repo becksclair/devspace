@@ -296,7 +296,7 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261123.5124" };
+const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261124.5209" };
 const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 const SUPPORTED_SCOPES = ["orchestration:read", "orchestration:operate"];
 const TOKEN_TTL_SECONDS = 2_592_000;
@@ -1709,14 +1709,15 @@ export class FakeT3 {
   }
 
   /**
-   * Real T3 validates `defaultModelSelection` and stores it on the project record, which it no
-   * longer reads once project settings live in its server settings, so the reported default model
-   * does not change.
+   * Real T3 validates `defaultModelSelection` and, since v0.1.12-nightly.20261124.5204, saves it in
+   * its server settings, where it resolves the project's default model, so the reported default
+   * model changes; `null` clears it.
    */
   private projectUpdate(args: JsonObject): JsonObject {
     const project = this.requireProject(args.projectId);
-    storedModelSelection("t3_project_update", args.defaultModelSelection);
+    const selection = storedModelSelection("t3_project_update", args.defaultModelSelection);
     const at = nowIso();
+    if (selection !== undefined) project.defaultModelSelection = selection;
     if (typeof args.title === "string") project.title = args.title;
     if (typeof args.workspaceRoot === "string") project.workspaceRoot = resolve(this.home, args.workspaceRoot);
     if (typeof args.autoPull === "boolean") project.autoPull = args.autoPull;
