@@ -98,7 +98,7 @@ Such a pull request can still be linked, listed, and unlinked; only the watch is
 
 - T3 Code running on the same machine as the DevSpace process that serves the tools. In gateway mode that is the gateway host; remote nodes are not involved.
 - The T3 CLI at `~/.t3/bin/t3`. The defaults assume DevSpace runs as the OS user that runs T3 Code.
-- Verified against T3 Code `v0.1.12-nightly.20261124.5209`. T3 Code ships nightly; run the live suite after T3 updates that touch MCP or auth.
+- Verified against T3 Code `v0.1.14-nightly.20261128.5372`. T3 Code ships nightly; run the live suite after T3 updates that touch MCP or auth.
 
 ### Settings
 
@@ -208,7 +208,7 @@ Descriptions are T3's own, adapted for a caller outside a thread (`DESCRIPTION_R
 | `t3_thread_organize` | no | `settle`, `unsettle`, `snooze` (with `snoozedUntil`), `unsnooze`, `pin`, `unpin`, `archive`, `unarchive`, `mark_unread`. `threadId` required. |
 | `t3_queue` | no | A thread's queued messages: `list`, `read`, `edit`, `cancel`, `reorder`, `promote_to_steer`. `threadId` required. |
 | `t3_thread_update` | no | Rename a thread (`action: "rename"` with `title`) or regenerate its title (`regenerate_title`). `threadId` required; `clientRequestId` added when absent. |
-| `orchestrator_capabilities` | yes | Providers and models T3 can run; the list is short, and `search` finds other models. DevSpace's own description. Returns `{ providers: [{ providerInstanceId, displayName, models: [{ id, label?, options? }], constraints? }] }`; each option has `id`, `values`, and `default`, and `constraints` (kept only when present) says why a provider cannot run now, such as a disabled provider. |
+| `orchestrator_capabilities` | yes | Providers and models T3 can run; the list is short, and `search` finds other models. DevSpace's own description. Returns `{ providers: [{ providerInstanceId, displayName, models: [{ id, label?, options? }], constraints? }] }`; each option has `id`, `values`, and `default`, and `constraints` (kept only when present) says why a provider cannot run now, such as a disabled provider. T3's `favorite: true` on models the user starred in the T3 app (first seen in `v0.1.14-nightly.20261128.5372`) is not forwarded: the compact list keeps what a caller needs to pick and name a model, and surfacing T3's favorites to DevSpace callers is a product decision, not a contract-sync change. |
 | `t3_project_create` | no | Register a folder as a project, or, without `workspaceRoot`, have T3 create a git repository at `~/.t3/projects/<title>`. `workspaceRoot` must be absolute or start with `~/` (expanded to the DevSpace user's home folder); `createWorkspaceRootIfMissing` defaults to `true` when it is given, and without it only `title` is forwarded (T3 refuses any other field there). Only `title`, `workspaceRoot`, and `createWorkspaceRootIfMissing` are exposed and forwarded: T3 refuses a default model at creation, and project scripts stay out. |
 | `t3_project_clone` | no | Clone a repository into a new or empty folder. `destinationPath` is required, with the same path rule. Register the clone with `t3_project_create`, passing the returned `cwd` as `workspaceRoot`. |
 | `t3_project_update` | no | Rename a project. Only `projectId` and `title` are exposed and forwarded; a default model cannot be set (see [Not exposed](#not-exposed)). |
