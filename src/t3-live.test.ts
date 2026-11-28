@@ -74,9 +74,8 @@ const T3_WORKTREES_DIR = join(homedir(), ".t3", "worktrees");
 async function removeThreadFolder(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
-// Row keys real T3 includes only for some rows: `branch` for some threads, `favorite` for the
-// capability models the user starred in the T3 app.
-const OPTIONAL_ROW_KEYS = new Set(["branch", "favorite"]);
+// Row keys real T3 includes only for some threads.
+const OPTIONAL_ROW_KEYS = new Set(["branch"]);
 /** The deployed suite's DevSpace OAuth client and refresh token (directory 0700, file 0600; never printed). */
 const DEPLOYED_OAUTH_CACHE = join(homedir(), ".local", "state", "devspace", "t3-deployed-check.json");
 const DEPLOYED_OAUTH_TIMEOUT_MS = 15_000;
@@ -498,7 +497,7 @@ function compareToolSchemas(real: Tool[], snapshot: Tool[]): void {
 }
 
 /** The fake must emit exactly T3's fields (optional ones aside); the bridge's reads must exist. */
-function compareKeys(what: string, real: Json[], fake: Json[], reads: string[]): void {
+function compareKeys(what: string, real: Json[], fake: Json[], reads: string[], optional: string[] = []): void {
   assert.ok(real.length > 0, `no real ${what} to compare`);
   assert.ok(fake.length > 0, `no fake ${what} to compare`);
   const realUnion = new Set(real.flatMap((entry) => Object.keys(entry)));
@@ -507,8 +506,9 @@ function compareKeys(what: string, real: Json[], fake: Json[], reads: string[]):
     const missing = reads.filter((key) => !(key in entry));
     assert.deepEqual(missing, [], `real ${what} lacks fields the bridge reads`);
   }
-  const onlyFake = [...fakeUnion].filter((key) => !realUnion.has(key) && !OPTIONAL_ROW_KEYS.has(key));
-  const onlyReal = [...realUnion].filter((key) => !fakeUnion.has(key) && !OPTIONAL_ROW_KEYS.has(key));
+  const isOptional = (key: string) => OPTIONAL_ROW_KEYS.has(key) || optional.includes(key);
+  const onlyFake = [...fakeUnion].filter((key) => !realUnion.has(key) && !isOptional(key));
+  const onlyReal = [...realUnion].filter((key) => !fakeUnion.has(key) && !isOptional(key));
   assert.deepEqual({ onlyFake, onlyReal }, { onlyFake: [], onlyReal: [] }, `${what}: the fake must match T3's fields`);
 }
 
@@ -978,7 +978,8 @@ async function phase2Contract(
   const realProviders = records(real.capabilities.providers);
   const fakeProviders = records(fakeSample.capabilities.providers);
   compareKeys("capability providers", realProviders, fakeProviders, BRIDGE_READS.capabilityProvider);
-  compareKeys("capability models", realProviders.flatMap((entry) => records(entry.models)), fakeProviders.flatMap((entry) => records(entry.models)), BRIDGE_READS.capabilityModel);
+  // T3 adds `favorite` only to the models the user starred in the T3 app.
+  compareKeys("capability models", realProviders.flatMap((entry) => records(entry.models)), fakeProviders.flatMap((entry) => records(entry.models)), BRIDGE_READS.capabilityModel, ["favorite"]);
   const claude = realProviders.find((entry) => entry.providerInstanceId === model.instanceId);
   assert.ok(claude && records(claude.models).some((entry) => entry.id === model.model), `T3 lists ${model.instanceId}/${model.model}`);
 }

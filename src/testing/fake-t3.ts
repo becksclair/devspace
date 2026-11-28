@@ -296,7 +296,7 @@ interface CallContext {
   signal: AbortSignal;
 }
 
-const SERVER_INFO = { name: "T3 Code", version: "0.1.12-nightly.20261124.5209" };
+const SERVER_INFO = { name: "T3 Code", version: "0.1.14-nightly.20261128.5372" };
 const FULL_ACCESS_SCOPES = ["orchestration:read", "orchestration:operate", "settings:write", "source-control:write"];
 const SUPPORTED_SCOPES = ["orchestration:read", "orchestration:operate"];
 const TOKEN_TTL_SECONDS = 2_592_000;
