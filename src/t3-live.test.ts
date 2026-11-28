@@ -74,8 +74,9 @@ const T3_WORKTREES_DIR = join(homedir(), ".t3", "worktrees");
 async function removeThreadFolder(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
-// Row keys real T3 includes only for some threads.
-const OPTIONAL_ROW_KEYS = new Set(["branch"]);
+// Row keys real T3 includes only for some rows: `branch` for some threads, `favorite` for the
+// capability models the user starred in the T3 app.
+const OPTIONAL_ROW_KEYS = new Set(["branch", "favorite"]);
 /** The deployed suite's DevSpace OAuth client and refresh token (directory 0700, file 0600; never printed). */
 const DEPLOYED_OAUTH_CACHE = join(homedir(), ".local", "state", "devspace", "t3-deployed-check.json");
 const DEPLOYED_OAUTH_TIMEOUT_MS = 15_000;

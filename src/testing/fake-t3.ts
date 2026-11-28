@@ -353,6 +353,8 @@ const CAPABILITY_PROVIDERS: JsonObject[] = [
           { id: "ultracode", values: [false, true] },
           { id: "fastMode", values: [false, true] },
         ],
+        // T3 marks a model the user starred in the T3 app; other models omit the key.
+        favorite: true,
       },
       {
         id: "claude-sonnet-5-5",
